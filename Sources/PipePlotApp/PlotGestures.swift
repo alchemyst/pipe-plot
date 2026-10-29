@@ -8,26 +8,28 @@ import PipePlotCore
 struct PlotInteractionOverlay: NSViewRepresentable {
     let guides: [Guide]
     let selectionRange: ClosedRange<Date>?
+    let now: Date
+    let plotBounds: CGRect
     let timeAtX: (CGFloat) -> Date
     let valueAtY: (CGFloat) -> Double
     let xAtTime: (Date) -> CGFloat
     let yAtValue: (Double) -> CGFloat
     let onGuide: (Guide, PlotGesturePhase) -> Void
-    let onSelection: (Date, Date, PlotSelectionEdge?, PlotGesturePhase) -> Void
+    let onSelection: (Date, Date, PlotSelectionEdge?, Bool, PlotGesturePhase) -> Void
     let onPan: (CGSize, PlotGesturePhase) -> Void
     let onZoom: (Double, Date, PlotGesturePhase) -> Void
     let onHover: (Date?) -> Void
 
     func makeNSView(context: Context) -> PlotInteractionView {
         let view = PlotInteractionView()
-        view.update(guides: guides, selectionRange: selectionRange, timeAtX: timeAtX,
+        view.update(guides: guides, selectionRange: selectionRange, now: now, plotBounds: plotBounds, timeAtX: timeAtX,
                     valueAtY: valueAtY, xAtTime: xAtTime, yAtValue: yAtValue,
                     onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover)
         return view
     }
 
     func updateNSView(_ view: PlotInteractionView, context: Context) {
-        view.update(guides: guides, selectionRange: selectionRange, timeAtX: timeAtX,
+        view.update(guides: guides, selectionRange: selectionRange, now: now, plotBounds: plotBounds, timeAtX: timeAtX,
                     valueAtY: valueAtY, xAtTime: xAtTime, yAtValue: yAtValue,
                     onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover)
     }
@@ -46,12 +48,14 @@ final class PlotInteractionView: NSView {
 
     private var guides: [Guide] = []
     private var selectionRange: ClosedRange<Date>?
+    private var now = Date()
+    private var plotBounds = CGRect.zero
     private var timeAtX: (CGFloat) -> Date = { _ in .now }
     private var valueAtY: (CGFloat) -> Double = { _ in 0 }
     private var xAtTime: (Date) -> CGFloat = { _ in 0 }
     private var yAtValue: (Double) -> CGFloat = { _ in 0 }
     private var onGuide: (Guide, PlotGesturePhase) -> Void = { _, _ in }
-    private var onSelection: (Date, Date, PlotSelectionEdge?, PlotGesturePhase) -> Void = { _, _, _, _ in }
+    private var onSelection: (Date, Date, PlotSelectionEdge?, Bool, PlotGesturePhase) -> Void = { _, _, _, _, _ in }
     private var onPan: (CGSize, PlotGesturePhase) -> Void = { _, _ in }
     private var onZoom: (Double, Date, PlotGesturePhase) -> Void = { _, _, _ in }
     private var onHover: (Date?) -> Void = { _ in }
@@ -65,16 +69,18 @@ final class PlotInteractionView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    func update(guides: [Guide], selectionRange: ClosedRange<Date>?,
+    func update(guides: [Guide], selectionRange: ClosedRange<Date>?, now: Date, plotBounds: CGRect,
                 timeAtX: @escaping (CGFloat) -> Date, valueAtY: @escaping (CGFloat) -> Double,
                 xAtTime: @escaping (Date) -> CGFloat, yAtValue: @escaping (Double) -> CGFloat,
                 onGuide: @escaping (Guide, PlotGesturePhase) -> Void,
-                onSelection: @escaping (Date, Date, PlotSelectionEdge?, PlotGesturePhase) -> Void,
+                onSelection: @escaping (Date, Date, PlotSelectionEdge?, Bool, PlotGesturePhase) -> Void,
                 onPan: @escaping (CGSize, PlotGesturePhase) -> Void,
                 onZoom: @escaping (Double, Date, PlotGesturePhase) -> Void,
                 onHover: @escaping (Date?) -> Void) {
         self.guides = guides
         self.selectionRange = selectionRange
+        self.now = now
+        self.plotBounds = plotBounds
         self.timeAtX = timeAtX
         self.valueAtY = valueAtY
         self.xAtTime = xAtTime
@@ -122,7 +128,7 @@ final class PlotInteractionView: NSView {
         } else {
             let time = timeAtX(point.x)
             activeDrag = .selection(start: time, end: time, edge: nil)
-            onSelection(time, time, nil, .began)
+            onSelection(time, time, nil, false, .began)
         }
     }
 
@@ -139,9 +145,11 @@ final class PlotInteractionView: NSView {
         case let .selection(start, end, edge):
             let time = timeAtX(point.x)
             switch edge {
-            case .start: onSelection(min(time, end), max(time, end), .start, .changed)
-            case .end: onSelection(min(start, time), max(start, time), .end, .changed)
-            case nil: onSelection(min(timeAtX(dragOrigin.x), time), max(timeAtX(dragOrigin.x), time), nil, .changed)
+            case .start: onSelection(min(time, end), max(time, end), .start, false, .changed)
+            case .end: onSelection(min(start, time), max(start, time), .end, isNearNow(point.x), .changed)
+            case nil:
+                let lower = min(timeAtX(dragOrigin.x), time), upper = max(timeAtX(dragOrigin.x), time)
+                onSelection(lower, upper, nil, isNearNow(xAtTime(upper)), .changed)
             }
         case .pan:
             onPan(movement, .changed)
@@ -164,11 +172,16 @@ final class PlotInteractionView: NSView {
         case let .selection(start, end, edge):
             let time = timeAtX(point.x)
             switch edge {
-            case .start: onSelection(min(time, end), max(time, end), .start, .ended)
-            case .end: onSelection(min(start, time), max(start, time), .end, .ended)
+            case .start: onSelection(min(time, end), max(time, end), .start, false, .ended)
+            case .end:
+                let linked = isNearNow(point.x) && start <= now
+                let lower = min(start, linked ? now : time), upper = max(start, linked ? now : time)
+                onSelection(lower, upper, .end, linked, .ended)
             case nil:
                 let origin = timeAtX(dragOrigin.x)
-                onSelection(min(origin, time), max(origin, time), nil, .ended)
+                let linked = isNearNow(xAtTime(max(origin, time)))
+                let lower = min(origin, time), upper = max(origin, time)
+                onSelection(lower, linked ? now : upper, nil, linked, .ended)
             }
         case .pan:
             let movement = CGSize(width: point.x - lastPoint.x, height: point.y - lastPoint.y)
@@ -206,7 +219,7 @@ final class PlotInteractionView: NSView {
         switch activeDrag {
         case let .guide(guide, _):
             onGuide(guide, .cancelled)
-        case let .selection(start, end, edge): onSelection(start, end, edge, .cancelled)
+        case let .selection(start, end, edge): onSelection(start, end, edge, false, .cancelled)
         case .pan: onPan(.zero, .cancelled)
         }
         self.activeDrag = nil
@@ -252,10 +265,16 @@ final class PlotInteractionView: NSView {
 
     private func edgeGuideOrientation(at point: CGPoint) -> GuideOrientation? {
         let edgeInset: CGFloat = 15
-        if point.x <= bounds.minX + edgeInset || point.x >= bounds.maxX - edgeInset { return .horizontalValue }
-        if point.y <= bounds.minY + edgeInset || point.y >= bounds.maxY - edgeInset { return .verticalTime }
+        // Keep pulls in axis gutters, outside the plot. In particular, points
+        // within the 18 pt Now-snap zone at the right edge remain selectable.
+        if point.x <= plotBounds.minX, point.x >= plotBounds.minX - edgeInset { return .horizontalValue }
+        if point.x >= plotBounds.maxX, point.x <= plotBounds.maxX + edgeInset { return .horizontalValue }
+        if point.y <= plotBounds.minY, point.y >= plotBounds.minY - edgeInset { return .verticalTime }
+        if point.y >= plotBounds.maxY, point.y <= plotBounds.maxY + edgeInset { return .verticalTime }
         return nil
     }
+
+    private func isNearNow(_ screenX: CGFloat) -> Bool { abs(screenX - xAtTime(now)) <= 18 }
 
     private func guideValue(_ orientation: GuideOrientation, at point: CGPoint) -> Double {
         switch orientation {
