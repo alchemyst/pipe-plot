@@ -126,6 +126,16 @@ struct PlotCanvas: View {
                 }
                 context.stroke(path, with: .color(color.opacity(0.85)), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
             }
+            if chart.settings.linesVisible && !chart.settings.dotsVisible {
+                for (pointIndex, sample) in data.enumerated() {
+                    let hasSameSegmentNeighbor = (pointIndex > 0 && data[pointIndex - 1].segmentID == sample.segmentID)
+                        || (pointIndex + 1 < data.count && data[pointIndex + 1].segmentID == sample.segmentID)
+                    guard !hasSameSegmentNeighbor else { continue }
+                    let point = CGPoint(x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
+                    let marker = CGRect(x: point.x - 3.2, y: point.y - 3.2, width: 6.4, height: 6.4)
+                    context.fill(Path(ellipseIn: marker), with: .color(color))
+                }
+            }
             if chart.settings.dotsVisible {
                 for sample in data {
                     let point = CGPoint(x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
