@@ -10,6 +10,7 @@ private struct Options {
     var sourceLabel: String? = nil
     var fresh = false
     var listing = false
+    var testColumns: Int?
 }
 
 private enum CLIError: Error, LocalizedError {
@@ -45,6 +46,14 @@ private func parseOptions(_ arguments: [String]) throws -> Options {
             index += 1
             guard index < arguments.count else { throw CLIError.usage("--label needs a source label\n\(usage)") }
             options.sourceLabel = arguments[index]
+        case "--test":
+            var columns = 1
+            if index + 1 < arguments.count, let parsed = Int(arguments[index + 1]) {
+                columns = parsed
+                index += 1
+            }
+            guard (1...32).contains(columns) else { throw CLIError.usage("--test column count must be between 1 and 32\n\(usage)") }
+            options.testColumns = columns
         default:
             if argument == "ls" && arguments.count == 1 { options.listing = true }
             else if argument.hasPrefix("-") { throw CLIError.usage("unknown option: \(argument)\n\(usage)") }
@@ -70,8 +79,53 @@ Usage:
   sampler | pp -s                      create and target a session
   sampler | pp 2 memory [free ...]     attach named lines in session 2
   pp ls                                list sessions, charts and lines
+  pp --test [columns]                  generate one sine sample per second (default 1)
   Options: --fresh starts a new group; --label LABEL describes the sampler.
 """
+
+private struct SineSampler {
+    let columns: Int
+    let start = Date()
+
+    func row() -> String {
+        let elapsed = Date().timeIntervalSince(start)
+        let values = (0..<columns).map { index -> String in
+            let period = 18.0 + Double(index) * 7.0
+            let phase = Double(index) * .pi / 4
+            let offset = Double(index) * 1.5
+            let value = offset + sin(2 * .pi * elapsed / period + phase)
+            return String(format: "%.8f", locale: Locale(identifier: "en_US_POSIX"), value)
+        }
+        return values.joined(separator: " ") + "\n"
+    }
+}
+
+private final class InterruptMonitor {
+    private let lock = NSLock()
+    private var didInterrupt = false
+    private let source: DispatchSourceSignal
+
+    init() {
+        _ = Darwin.signal(SIGINT, SIG_IGN)
+        let signalSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global(qos: .userInitiated))
+        source = signalSource
+        signalSource.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.lock.lock(); self.didInterrupt = true; self.lock.unlock()
+        }
+        signalSource.resume()
+    }
+
+    var interrupted: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return didInterrupt
+    }
+
+    deinit {
+        source.cancel()
+        _ = Darwin.signal(SIGINT, SIG_DFL)
+    }
+}
 
 private func connectOrLaunch() throws -> SocketConnection {
     do { return try PipePlotLocations.connect(timeout: 0.35) }
@@ -138,6 +192,8 @@ private func printSnapshot(_ session: SessionSnapshot) {
 private func runSampler(_ options: Options) throws {
     if options.listing { try sendCommand(.list); return }
     let parser = InputParser()
+    let interrupt = InterruptMonitor()
+    let sine = options.testColumns.map(SineSampler.init(columns:))
     var readyConnection: SocketConnection? = nil
     var columnCount: Int? = nil
     var messageCount = 0
@@ -213,18 +269,31 @@ private func runSampler(_ options: Options) throws {
 
     let inputDescriptor = FileHandle.standardInput.fileDescriptor
     var inputEnded = false
-    while !inputEnded {
-        var descriptors = [pollfd(fd: inputDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)]
-        if let connection = readyConnection {
-            descriptors.append(pollfd(fd: connection.fileDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0))
+    var nextTestSample = Date()
+    while !inputEnded && !interrupt.interrupted {
+        if let sine, Date() >= nextTestSample {
+            try consume(parser.append(Data(sine.row().utf8)))
+            nextTestSample = Date().addingTimeInterval(1)
+            continue
         }
-        let result = Darwin.poll(&descriptors, nfds_t(descriptors.count), readyConnection == nil ? -1 : 250)
+        var descriptors: [pollfd] = []
+        let inputIndex: Int? = sine == nil ? descriptors.count : nil
+        if inputIndex != nil { descriptors.append(pollfd(fd: inputDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)) }
+        let socketIndex: Int?
+        if let connection = readyConnection {
+            socketIndex = descriptors.count
+            descriptors.append(pollfd(fd: connection.fileDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0))
+        } else {
+            socketIndex = nil
+        }
+        let timeout: Int32 = sine != nil ? 100 : (readyConnection == nil ? -1 : 250)
+        let result = Darwin.poll(&descriptors, nfds_t(descriptors.count), timeout)
         if result < 0 {
             if errno == EINTR { continue }
             throw SocketError.system("poll", errno)
         }
-        if descriptors.count > 1 {
-            let socketEvents = descriptors[1].revents
+        if let socketIndex {
+            let socketEvents = descriptors[socketIndex].revents
             if socketEvents & Int16(POLLIN | POLLHUP | POLLERR | POLLNVAL) != 0 {
                 guard let connection = readyConnection else { continue }
                 let message = try readServerMessage(connection)
@@ -239,7 +308,7 @@ private func runSampler(_ options: Options) throws {
                 }
             }
         }
-        if descriptors[0].revents & Int16(POLLIN | POLLHUP | POLLERR) != 0 {
+        if let inputIndex, descriptors[inputIndex].revents & Int16(POLLIN | POLLHUP | POLLERR) != 0 {
             var buffer = [UInt8](repeating: 0, count: 16 * 1024)
             let count = Darwin.read(inputDescriptor, &buffer, buffer.count)
             if count < 0 {
@@ -253,7 +322,7 @@ private func runSampler(_ options: Options) throws {
     try consume(parser.finish())
     guard let connection = readyConnection else { return }
     defer { connection.close() }
-    try connection.send(ClientMessage.finish(.eof))
+    try connection.send(ClientMessage.finish(interrupt.interrupted ? .interrupted : .eof))
     while true {
         switch try readServerMessage(connection) {
         case .closed: return

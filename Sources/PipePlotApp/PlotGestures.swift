@@ -35,7 +35,7 @@ struct PlotInteractionOverlay: NSViewRepresentable {
     }
 }
 
-enum PlotGesturePhase { case began, changed, ended, cancelled }
+enum PlotGesturePhase: Equatable { case began, changed, ended, cancelled }
 enum PlotSelectionEdge { case start, end }
 
 @MainActor
