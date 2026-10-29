@@ -15,7 +15,7 @@ struct PlotInteractionOverlay: NSViewRepresentable {
     let onGuide: (Guide, PlotGesturePhase) -> Void
     let onSelection: (Date, Date, PlotSelectionEdge?, PlotGesturePhase) -> Void
     let onPan: (CGSize, PlotGesturePhase) -> Void
-    let onZoom: (Double, Date) -> Void
+    let onZoom: (Double, Date, PlotGesturePhase) -> Void
     let onHover: (Date?) -> Void
 
     func makeNSView(context: Context) -> PlotInteractionView {
@@ -53,7 +53,7 @@ final class PlotInteractionView: NSView {
     private var onGuide: (Guide, PlotGesturePhase) -> Void = { _, _ in }
     private var onSelection: (Date, Date, PlotSelectionEdge?, PlotGesturePhase) -> Void = { _, _, _, _ in }
     private var onPan: (CGSize, PlotGesturePhase) -> Void = { _, _ in }
-    private var onZoom: (Double, Date) -> Void = { _, _ in }
+    private var onZoom: (Double, Date, PlotGesturePhase) -> Void = { _, _, _ in }
     private var onHover: (Date?) -> Void = { _ in }
     private var activeDrag: Drag?
     private var dragOrigin = CGPoint.zero
@@ -71,7 +71,7 @@ final class PlotInteractionView: NSView {
                 onGuide: @escaping (Guide, PlotGesturePhase) -> Void,
                 onSelection: @escaping (Date, Date, PlotSelectionEdge?, PlotGesturePhase) -> Void,
                 onPan: @escaping (CGSize, PlotGesturePhase) -> Void,
-                onZoom: @escaping (Double, Date) -> Void,
+                onZoom: @escaping (Double, Date, PlotGesturePhase) -> Void,
                 onHover: @escaping (Date?) -> Void) {
         self.guides = guides
         self.selectionRange = selectionRange
@@ -181,16 +181,24 @@ final class PlotInteractionView: NSView {
     override func magnify(with event: NSEvent) {
         let point = localPoint(event)
         let factor = exp(Double(event.magnification))
-        onZoom(factor, timeAtX(point.x))
+        onZoom(factor, timeAtX(point.x), gesturePhase(event.phase, default: .changed))
     }
 
     override func scrollWheel(with event: NSEvent) {
         if event.modifierFlags.contains(.shift) || abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) {
-            onPan(CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY), .changed)
+            onPan(CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY), gesturePhase(event.phase, default: .ended))
         } else if event.scrollingDeltaY != 0 {
             let point = localPoint(event)
-            onZoom(exp(Double(event.scrollingDeltaY) / 120), timeAtX(point.x))
+            onZoom(exp(Double(event.scrollingDeltaY) / 120), timeAtX(point.x), gesturePhase(event.phase, default: .ended))
         }
+    }
+
+    private func gesturePhase(_ phase: NSEvent.Phase, default fallback: PlotGesturePhase) -> PlotGesturePhase {
+        if phase.contains(.cancelled) { return .cancelled }
+        if phase.contains(.ended) { return .ended }
+        if phase.contains(.began) { return .began }
+        if phase.contains(.changed) { return .changed }
+        return fallback
     }
 
     override func cancelOperation(_ sender: Any?) {
