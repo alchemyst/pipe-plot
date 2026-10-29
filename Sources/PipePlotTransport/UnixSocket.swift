@@ -19,6 +19,9 @@ public final class SocketConnection {
         _ = setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
     }
 
+    /// Native descriptor for integrating socket readiness into `poll(2)` loops.
+    public var fileDescriptor: Int32 { descriptor }
+
     public func send<T: Encodable>(_ value: T, encoder: JSONEncoder = SocketConnection.makeEncoder()) throws {
         var frame = try encoder.encode(value)
         guard frame.count <= Self.maximumFrameBytes else { throw SocketError.frameTooLarge }
@@ -128,6 +131,7 @@ public final class UnixSocketServer {
     private var listener: Int32 = -1
     private var stopped = false
     private var clients: [ObjectIdentifier: SocketConnection] = [:]
+    private var ownsSocketPath = false
 
     public init(socketURL: URL = PipePlotLocations.socketURL, handler: @escaping (SocketConnection) -> Void) {
         self.socketURL = socketURL
@@ -146,7 +150,7 @@ public final class UnixSocketServer {
         if lstat(path, &previous) == 0 {
             // Do not unlink a live server's endpoint. A socket left by a crash
             // refuses connections and can safely be replaced.
-            if let active = try? PipePlotLocations.connect(timeout: 0.12) {
+            if let active = try? PipePlotLocations.connect(socketURL: socketURL, timeout: 0.12) {
                 active.close()
                 throw SocketError.system("bind (another PipePlot app is already listening)", EADDRINUSE)
             }
@@ -156,6 +160,7 @@ public final class UnixSocketServer {
         guard fd >= 0 else { throw SocketError.system("socket", errno) }
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
         path.withCString { source in
             withUnsafeMutablePointer(to: &address.sun_path) { target in
                 target.withMemoryRebound(to: CChar.self, capacity: pathCapacity) { dest in
@@ -163,7 +168,7 @@ public final class UnixSocketServer {
                 }
             }
         }
-        let length = socklen_t(MemoryLayout<sa_family_t>.size + path.utf8.count + 1)
+        let length = socklen_t(MemoryLayout<sockaddr_un>.size)
         let bindResult = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, length) }
         }
@@ -172,6 +177,7 @@ public final class UnixSocketServer {
         guard Darwin.listen(fd, 32) == 0 else { let code = errno; Darwin.close(fd); unlink(path); throw SocketError.system("listen", code) }
         listener = fd
         stopped = false
+        ownsSocketPath = true
         queue.async { [weak self] in self?.acceptLoop(fd) }
     }
 
@@ -180,12 +186,14 @@ public final class UnixSocketServer {
         let fd = listener
         listener = -1
         stopped = true
+        let removeSocketPath = ownsSocketPath
+        ownsSocketPath = false
         let activeClients = Array(clients.values)
         clients.removeAll()
         lock.unlock()
         if fd >= 0 { _ = shutdown(fd, SHUT_RDWR); _ = Darwin.close(fd) }
         activeClients.forEach { $0.close() }
-        _ = unlink(socketURL.path)
+        if removeSocketPath { _ = unlink(socketURL.path) }
     }
 
     private func acceptLoop(_ fd: Int32) {
@@ -256,6 +264,10 @@ public enum PipePlotLocations {
 
     /// Wait briefly for a launched or already-running app to create its socket.
     public static func connect(timeout: TimeInterval = 12) throws -> SocketConnection {
+        try connect(socketURL: socketURL, timeout: timeout)
+    }
+
+    public static func connect(socketURL: URL, timeout: TimeInterval = 12) throws -> SocketConnection {
         let deadline = Date().addingTimeInterval(timeout)
         var lastError: Int32 = 0
         while Date() < deadline {
@@ -263,6 +275,7 @@ public enum PipePlotLocations {
             guard fd >= 0 else { throw SocketError.system("socket", errno) }
             var address = sockaddr_un()
             address.sun_family = sa_family_t(AF_UNIX)
+            address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
             let path = socketURL.path
             let pathCapacity = MemoryLayout.size(ofValue: sockaddr_un().sun_path)
             guard path.utf8.count < pathCapacity else { Darwin.close(fd); throw SocketError.pathTooLong }
@@ -271,7 +284,7 @@ public enum PipePlotLocations {
                     target.withMemoryRebound(to: CChar.self, capacity: pathCapacity) { _ = strlcpy($0, source, pathCapacity) }
                 }
             }
-            let result = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sa_family_t>.size + path.utf8.count + 1)) } }
+            let result = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
             if result == 0 { return SocketConnection(descriptor: fd) }
             lastError = errno
             Darwin.close(fd)

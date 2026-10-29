@@ -112,6 +112,7 @@ final class UnixSocketTests: XCTestCase {
         guard fd >= 0 else { throw SocketError.system("test socket", errno) }
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
         let path = url.path
         let capacity = MemoryLayout.size(ofValue: sockaddr_un().sun_path)
         guard path.utf8.count < capacity else { throw SocketError.pathTooLong }
@@ -122,7 +123,7 @@ final class UnixSocketTests: XCTestCase {
         }
         let result = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sa_family_t>.size + path.utf8.count + 1))
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
         guard result == 0 else { let code = errno; Darwin.close(fd); throw SocketError.system("test connect", code) }

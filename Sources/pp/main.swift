@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import PipePlotCore
 import PipePlotTransport
 
@@ -183,6 +184,11 @@ private func runSampler(_ options: Options) throws {
         }
         guard row.values.count == columnCount else {
             reportBounded(message: "expected \(columnCount!) columns, got \(row.values.count)", lineNumber: row.sequence)
+            if let connection = readyConnection {
+                try connection.send(ClientMessage.rejected(InputRejection(kind: .wrongColumnCount,
+                                                                            lineNumber: row.sequence,
+                                                                            message: "expected \(columnCount!) columns, got \(row.values.count)")))
+            }
             return
         }
         guard let connection = readyConnection else { return }
@@ -198,14 +204,51 @@ private func runSampler(_ options: Options) throws {
         for event in events {
             switch event {
             case .row(let row): try sendRow(row)
-            case .rejected(let issue): reportBounded(issue)
+            case .rejected(let issue):
+                reportBounded(issue)
+                if let connection = readyConnection { try connection.send(ClientMessage.rejected(InputRejection(issue))) }
             }
         }
     }
 
-    let input = FileHandle.standardInput
-    while let chunk = try input.read(upToCount: 16 * 1024), !chunk.isEmpty {
-        try consume(parser.append(chunk))
+    let inputDescriptor = FileHandle.standardInput.fileDescriptor
+    var inputEnded = false
+    while !inputEnded {
+        var descriptors = [pollfd(fd: inputDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)]
+        if let connection = readyConnection {
+            descriptors.append(pollfd(fd: connection.fileDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0))
+        }
+        let result = Darwin.poll(&descriptors, nfds_t(descriptors.count), readyConnection == nil ? -1 : 250)
+        if result < 0 {
+            if errno == EINTR { continue }
+            throw SocketError.system("poll", errno)
+        }
+        if descriptors.count > 1 {
+            let socketEvents = descriptors[1].revents
+            if socketEvents & Int16(POLLIN | POLLHUP | POLLERR | POLLNVAL) != 0 {
+                guard let connection = readyConnection else { continue }
+                let message = try readServerMessage(connection)
+                switch message {
+                case .accepted: break // no row is currently awaiting an acknowledgement
+                case .closed: throw CLIError.protocolFailure("PipePlot disconnected while waiting for input")
+                case .hello, .ready: break
+                default: throw CLIError.protocolFailure("Unexpected PipePlot message while waiting for input")
+                }
+                if socketEvents & Int16(POLLHUP | POLLERR | POLLNVAL) != 0 {
+                    throw CLIError.protocolFailure("PipePlot disconnected while waiting for input")
+                }
+            }
+        }
+        if descriptors[0].revents & Int16(POLLIN | POLLHUP | POLLERR) != 0 {
+            var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+            let count = Darwin.read(inputDescriptor, &buffer, buffer.count)
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw SocketError.system("read stdin", errno)
+            }
+            if count == 0 { inputEnded = true }
+            else { try consume(parser.append(Data(buffer[..<count]))) }
+        }
     }
     try consume(parser.finish())
     guard let connection = readyConnection else { return }
