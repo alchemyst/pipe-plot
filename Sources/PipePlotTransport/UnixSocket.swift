@@ -1,0 +1,262 @@
+import Foundation
+import Darwin
+
+/// A bounded, newline-delimited JSON stream over a local Unix domain socket.
+/// The connection owns its descriptor and is safe to close from another thread.
+public final class SocketConnection {
+    public static let maximumFrameBytes = 1_048_576
+
+    private let descriptor: Int32
+    private let readLock = NSLock()
+    private let writeLock = NSLock()
+    private let stateLock = NSLock()
+    private var pending = Data()
+    private var isClosed = false
+
+    fileprivate init(descriptor: Int32) {
+        self.descriptor = descriptor
+        var noSigPipe: Int32 = 1
+        _ = setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+    }
+
+    public func send<T: Encodable>(_ value: T, encoder: JSONEncoder = SocketConnection.makeEncoder()) throws {
+        var frame = try encoder.encode(value)
+        guard frame.count <= Self.maximumFrameBytes else { throw SocketError.frameTooLarge }
+        frame.append(0x0a)
+        try send(bytes: frame)
+    }
+
+    public func send(bytes: Data) throws {
+        writeLock.lock(); defer { writeLock.unlock() }
+        guard !closed else { throw SocketError.closed }
+        var offset = 0
+        try bytes.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            while offset < bytes.count {
+                let n = Darwin.send(descriptor, base.advanced(by: offset), bytes.count - offset, 0)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    throw SocketError.system("send", errno)
+                }
+                if n == 0 { throw SocketError.closed }
+                offset += n
+            }
+        }
+    }
+
+    /// Returns nil on clean peer EOF. A frame without its terminating newline is rejected.
+    public func receiveFrame() throws -> Data? {
+        readLock.lock(); defer { readLock.unlock() }
+        while true {
+            if let newline = pending.firstIndex(of: 0x0a) {
+                let frame = Data(pending[..<newline])
+                pending.removeSubrange(...newline)
+                guard frame.count <= Self.maximumFrameBytes else { throw SocketError.frameTooLarge }
+                return frame
+            }
+            guard pending.count <= Self.maximumFrameBytes else { throw SocketError.frameTooLarge }
+            var scratch = [UInt8](repeating: 0, count: 16 * 1024)
+            let n = Darwin.recv(descriptor, &scratch, scratch.count, 0)
+            if n == 0 {
+                if pending.isEmpty { return nil }
+                throw SocketError.truncatedFrame
+            }
+            if n < 0 {
+                if errno == EINTR { continue }
+                if closed { return nil }
+                throw SocketError.system("recv", errno)
+            }
+            pending.append(contentsOf: scratch[..<n])
+        }
+    }
+
+    public func receive<T: Decodable>(_ type: T.Type, decoder: JSONDecoder = JSONDecoder()) throws -> T? {
+        guard let frame = try receiveFrame() else { return nil }
+        return try decoder.decode(type, from: frame)
+    }
+
+    public func close() {
+        stateLock.lock()
+        let shouldClose = !isClosed
+        isClosed = true
+        stateLock.unlock()
+        if shouldClose {
+            _ = shutdown(descriptor, SHUT_RDWR)
+            _ = Darwin.close(descriptor)
+        }
+    }
+
+    private var closed: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return isClosed
+    }
+
+    deinit { close() }
+
+    public static func makeEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
+}
+
+public enum SocketError: Error, LocalizedError {
+    case pathTooLong
+    case frameTooLarge
+    case truncatedFrame
+    case closed
+    case system(String, Int32)
+
+    public var errorDescription: String? {
+        switch self {
+        case .pathTooLong: return "PipePlot socket path is too long"
+        case .frameTooLarge: return "PipePlot IPC frame exceeds 1 MiB"
+        case .truncatedFrame: return "PipePlot IPC connection ended in the middle of a frame"
+        case .closed: return "PipePlot IPC connection is closed"
+        case let .system(operation, code): return "Unix socket \(operation) failed: \(String(cString: strerror(code)))"
+        }
+    }
+}
+
+/// Accepts connections on a per-client queue. The handler owns the accepted
+/// connection and normally runs a receive loop until EOF or a protocol error.
+public final class UnixSocketServer {
+    public let socketURL: URL
+    private let handler: (SocketConnection) -> Void
+    private let queue = DispatchQueue(label: "PipePlot.UnixSocketServer", qos: .utility)
+    private let lock = NSLock()
+    private var listener: Int32 = -1
+    private var stopped = false
+
+    public init(socketURL: URL = PipePlotLocations.socketURL, handler: @escaping (SocketConnection) -> Void) {
+        self.socketURL = socketURL
+        self.handler = handler
+    }
+
+    public func start() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard listener < 0 else { return }
+        try FileManager.default.createDirectory(at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let path = socketURL.path
+        let pathCapacity = MemoryLayout.size(ofValue: sockaddr_un().sun_path)
+        guard path.utf8.count < pathCapacity else { throw SocketError.pathTooLong }
+        var previous = stat()
+        if lstat(path, &previous) == 0 {
+            // Do not unlink a live server's endpoint. A socket left by a crash
+            // refuses connections and can safely be replaced.
+            if let active = try? PipePlotLocations.connect(timeout: 0.12) {
+                active.close()
+                throw SocketError.system("bind (another PipePlot app is already listening)", EADDRINUSE)
+            }
+            _ = unlink(path)
+        }
+        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw SocketError.system("socket", errno) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        path.withCString { source in
+            withUnsafeMutablePointer(to: &address.sun_path) { target in
+                target.withMemoryRebound(to: CChar.self, capacity: pathCapacity) { dest in
+                    _ = strlcpy(dest, source, pathCapacity)
+                }
+            }
+        }
+        let length = socklen_t(MemoryLayout<sa_family_t>.size + path.utf8.count + 1)
+        let bindResult = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, length) }
+        }
+        guard bindResult == 0 else { let code = errno; Darwin.close(fd); throw SocketError.system("bind", code) }
+        _ = chmod(path, mode_t(S_IRUSR | S_IWUSR))
+        guard Darwin.listen(fd, 32) == 0 else { let code = errno; Darwin.close(fd); unlink(path); throw SocketError.system("listen", code) }
+        listener = fd
+        stopped = false
+        queue.async { [weak self] in self?.acceptLoop(fd) }
+    }
+
+    public func stop() {
+        lock.lock()
+        let fd = listener
+        listener = -1
+        stopped = true
+        lock.unlock()
+        if fd >= 0 { _ = shutdown(fd, SHUT_RDWR); _ = Darwin.close(fd) }
+        _ = unlink(socketURL.path)
+    }
+
+    private func acceptLoop(_ fd: Int32) {
+        while true {
+            let client = Darwin.accept(fd, nil, nil)
+            if client < 0 {
+                if errno == EINTR { continue }
+                lock.lock(); let shouldStop = stopped || listener != fd; lock.unlock()
+                if shouldStop { return }
+                continue
+            }
+            let connection = SocketConnection(descriptor: client)
+            DispatchQueue.global(qos: .utility).async { [handler] in handler(connection) }
+        }
+    }
+
+    deinit { stop() }
+}
+
+public enum PipePlotLocations {
+    public static var supportDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("PipePlot", isDirectory: true)
+    }
+    public static var socketURL: URL { supportDirectory.appendingPathComponent("pipeplot.sock") }
+    public static var lockURL: URL { supportDirectory.appendingPathComponent("app.lock") }
+    public static var appURL: URL {
+        let fm = FileManager.default
+        let candidates = [
+            fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications/PipePlot.app"),
+            URL(fileURLWithPath: "/Applications/PipePlot.app"),
+            URL(fileURLWithPath: "/System/Applications/PipePlot.app")
+        ]
+        return candidates.first(where: { fm.fileExists(atPath: $0.path) }) ?? candidates[0]
+    }
+
+    /// Launch the locally installed app without activating its windows.
+    public static func launchInstalledApp() throws {
+        let app = appURL
+        guard FileManager.default.fileExists(atPath: app.path) else {
+            throw NSError(domain: "PipePlot", code: 1, userInfo: [NSLocalizedDescriptionKey: "PipePlot.app is not installed. Run the repository install script first."])
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-gj", app.path, "--args", "--pipeplot-launched-by-cli"]
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "PipePlot", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "Could not launch PipePlot.app"])
+        }
+    }
+
+    /// Wait briefly for a launched or already-running app to create its socket.
+    public static func connect(timeout: TimeInterval = 12) throws -> SocketConnection {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastError: Int32 = 0
+        while Date() < deadline {
+            let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+            guard fd >= 0 else { throw SocketError.system("socket", errno) }
+            var address = sockaddr_un()
+            address.sun_family = sa_family_t(AF_UNIX)
+            let path = socketURL.path
+            let pathCapacity = MemoryLayout.size(ofValue: sockaddr_un().sun_path)
+            guard path.utf8.count < pathCapacity else { Darwin.close(fd); throw SocketError.pathTooLong }
+            path.withCString { source in
+                withUnsafeMutablePointer(to: &address.sun_path) { target in
+                    target.withMemoryRebound(to: CChar.self, capacity: pathCapacity) { _ = strlcpy($0, source, pathCapacity) }
+                }
+            }
+            let result = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sa_family_t>.size + path.utf8.count + 1)) } }
+            if result == 0 { return SocketConnection(descriptor: fd) }
+            lastError = errno
+            Darwin.close(fd)
+            Thread.sleep(forTimeInterval: 0.08)
+        }
+        throw SocketError.system("connect", lastError)
+    }
+}
