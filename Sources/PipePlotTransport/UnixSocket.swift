@@ -127,6 +127,7 @@ public final class UnixSocketServer {
     private let lock = NSLock()
     private var listener: Int32 = -1
     private var stopped = false
+    private var clients: [ObjectIdentifier: SocketConnection] = [:]
 
     public init(socketURL: URL = PipePlotLocations.socketURL, handler: @escaping (SocketConnection) -> Void) {
         self.socketURL = socketURL
@@ -179,8 +180,11 @@ public final class UnixSocketServer {
         let fd = listener
         listener = -1
         stopped = true
+        let activeClients = Array(clients.values)
+        clients.removeAll()
         lock.unlock()
         if fd >= 0 { _ = shutdown(fd, SHUT_RDWR); _ = Darwin.close(fd) }
+        activeClients.forEach { $0.close() }
         _ = unlink(socketURL.path)
     }
 
@@ -191,10 +195,26 @@ public final class UnixSocketServer {
                 if errno == EINTR { continue }
                 lock.lock(); let shouldStop = stopped || listener != fd; lock.unlock()
                 if shouldStop { return }
+                Thread.sleep(forTimeInterval: 0.05)
                 continue
             }
             let connection = SocketConnection(descriptor: client)
-            DispatchQueue.global(qos: .utility).async { [handler] in handler(connection) }
+            lock.lock()
+            let acceptClient = !stopped && listener == fd
+            if acceptClient { clients[ObjectIdentifier(connection)] = connection }
+            lock.unlock()
+            guard acceptClient else { connection.close(); return }
+            DispatchQueue.global(qos: .utility).async { [weak self, handler] in
+                defer {
+                    connection.close()
+                    if let self {
+                        self.lock.lock()
+                        self.clients.removeValue(forKey: ObjectIdentifier(connection))
+                        self.lock.unlock()
+                    }
+                }
+                handler(connection)
+            }
         }
     }
 
