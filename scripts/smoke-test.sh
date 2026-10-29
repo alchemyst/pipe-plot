@@ -1,0 +1,38 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ -n "${PIPEPLOT_PP_BIN:-}" ]]; then
+  pp_bin="$PIPEPLOT_PP_BIN"
+elif [[ -x "$HOME/.local/bin/pp" ]]; then
+  pp_bin="$HOME/.local/bin/pp"
+else
+  pp_bin="$(command -v pp || true)"
+fi
+if [[ -z "$pp_bin" || ! -x "$pp_bin" ]]; then
+  echo "Could not find installed pp. Set PIPEPLOT_PP_BIN or install to ~/.local/bin/pp." >&2
+  exit 1
+fi
+
+line_name="pp-smoke-$(date +%s)-$$"
+printf '1\n2\n' | "$pp_bin" --new-session -n "$line_name"
+listing="$("$pp_bin" ls)"
+session_number="$(printf '%s\n' "$listing" | awk -v stream="$line_name" '
+  /^Session [0-9]+:/ { session=$2; sub(":$", "", session) }
+  /^    / && index($0, stream) { print session; exit }
+')"
+if [[ -z "$session_number" ]]; then
+  echo "Smoke stream $line_name was not found in pp ls output:" >&2
+  printf '%s\n' "$listing" >&2
+  exit 1
+fi
+
+# Reattach by public session number and exact stream name; this only changes
+# the newly created smoke-test session and leaves existing sessions untouched.
+printf '3\n4\n' | "$pp_bin" "$session_number" "$line_name"
+listing="$("$pp_bin" ls)"
+if ! printf '%s\n' "$listing" | grep -F "    $line_name  4 samples  ended" >/dev/null; then
+  echo "Expected four samples on $line_name after explicit attachment:" >&2
+  printf '%s\n' "$listing" >&2
+  exit 1
+fi
+printf 'PipePlot smoke test passed in new session %s (stream %s).\n' "$session_number" "$line_name"

@@ -104,12 +104,14 @@ final class UnixSocketTests: XCTestCase {
     }
 
     private func temporarySocketPath() -> URL {
-        URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("pipeplot-\(UUID().uuidString).sock")
+        URL(fileURLWithPath: "/tmp/pp-\(UUID().uuidString).sock")
     }
 
     private func connect(_ url: URL) throws -> Int32 {
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw SocketError.system("test socket", errno) }
+        var noSigPipe: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)

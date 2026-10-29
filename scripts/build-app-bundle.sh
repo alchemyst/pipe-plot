@@ -5,11 +5,12 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
 swift build -c release
+bin_dir="$(swift build -c release --show-bin-path)"
 stage="$repo_root/.build/pipeplot-stage"
 app="$stage/PipePlot.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
-cp "$repo_root/.build/release/PipePlotApp" "$app/Contents/MacOS/PipePlot"
+cp "$bin_dir/PipePlotApp" "$app/Contents/MacOS/PipePlot"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -28,4 +29,4 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 codesign --force --deep --sign - "$app"
-printf 'App bundle: %s\nCLI: %s/.build/release/pp\n' "$app" "$repo_root"
+printf 'App bundle: %s\nCLI: %s/pp\n' "$app" "$bin_dir"
