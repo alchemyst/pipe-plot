@@ -1,15 +1,33 @@
 import Foundation
 import CSQLite
 
+public struct SegmentTransfer {
+    public let segmentIDs: [String]
+    public let from: StreamID
+    public let to: StreamID
+    public init(segmentIDs: [String], from: StreamID, to: StreamID) { self.segmentIDs=segmentIDs; self.from=from; self.to=to }
+}
+
 extension SampleStore {
     /// Remaps whole acquisition segments without copying observations into undo history.
     /// Undo calls the same operation with reversed endpoints; rows arriving after the
     /// edit carry the same segment ID, so they move back with their original producer.
     public func reassignSegments(_ segmentIDs: [String], from source: StreamID, to destination: StreamID) throws {
-        guard source != destination, !segmentIDs.isEmpty else { return }
+        try reassignSegments([SegmentTransfer(segmentIDs: segmentIDs, from: source, to: destination)])
+    }
+
+    public func reassignSegments(_ mappings: [SegmentTransfer]) throws {
         lock.lock(); defer { lock.unlock() }
         try sql("BEGIN IMMEDIATE")
         do {
+            for mapping in mappings { try transfer(mapping) }
+            try sql("COMMIT")
+        } catch { try? sql("ROLLBACK"); throw error }
+    }
+
+    private func transfer(_ mapping: SegmentTransfer) throws {
+        let source=mapping.from, destination=mapping.to, segmentIDs=mapping.segmentIDs
+        guard source != destination, !segmentIDs.isEmpty else { return }
             var offsetStatement: OpaquePointer?
             try prepare("SELECT COALESCE(MAX(sequence)+1,0) FROM samples WHERE stream_id=?", &offsetStatement)
             bindText(offsetStatement, 1, destination.uuidString.lowercased())
@@ -31,8 +49,6 @@ extension SampleStore {
                 let result = sqlite3_step(refresh); sqlite3_finalize(refresh)
                 guard result == SQLITE_DONE else { throw SampleStoreError.sql(String(cString: sqlite3_errmsg(db))) }
             }
-            try sql("COMMIT")
-        } catch { try? sql("ROLLBACK"); throw error }
     }
 
     public func segmentIDs(streamID: StreamID) throws -> [String] {
