@@ -89,12 +89,30 @@ private func readServerMessage(_ connection: SocketConnection) throws -> ServerM
 private func sendCommand(_ command: AppCommand) throws {
     let connection = try connectOrLaunch()
     defer { connection.close() }
+    try connection.send(ClientMessage.hello(HelloRequest(clientLabel: "pp")))
     try connection.send(ClientMessage.command(command))
-    switch try readServerMessage(connection) {
-    case .listing(let listing): printListing(listing)
-    case .snapshot(let snapshot): printSnapshot(snapshot)
-    case .closed: return
-    default: throw CLIError.protocolFailure("Unexpected response to command")
+    while true {
+        switch try readServerMessage(connection) {
+        case .hello: continue
+        case .listing(let listing): printListing(listing); return
+        case .snapshot(let snapshot): printSnapshot(snapshot); return
+        case .closed: return
+        default: throw CLIError.protocolFailure("Unexpected response to command")
+        }
+    }
+}
+
+private func fetchListing() throws -> Listing {
+    let connection = try connectOrLaunch()
+    defer { connection.close() }
+    try connection.send(ClientMessage.hello(HelloRequest(clientLabel: "pp")))
+    try connection.send(ClientMessage.command(.list))
+    while true {
+        switch try readServerMessage(connection) {
+        case .hello: continue
+        case .listing(let listing): return listing
+        default: throw CLIError.protocolFailure("Unexpected response to list command")
+        }
     }
 }
 
@@ -222,14 +240,11 @@ do {
     if arguments.contains("--help") || arguments.contains("-h") { print(usage); exit(EXIT_SUCCESS) }
     let options = try parseOptions(arguments)
     if case .sessionNumber(let number, let names) = options.sink {
-        let connection = try connectOrLaunch()
-        defer { connection.close() }
-        try connection.send(ClientMessage.command(.list))
-        guard case .listing(let listing) = try readServerMessage(connection), let session = listing.sessions.first(where: { $0.number == number }) else {
+        let listing = try fetchListing()
+        guard let session = listing.sessions.first(where: { $0.number == number }) else {
             throw CLIError.protocolFailure("unknown session \(number)")
         }
         // Resolve the public small integer to its stable UUID before registration.
-        connection.close()
         var explicit = options
         explicit.sink = .explicitSession(session.id, lineNames: names)
         try runSampler(explicit)

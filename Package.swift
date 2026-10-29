@@ -17,6 +17,7 @@ let package = Package(
         .executableTarget(name: "PipePlotApp", dependencies: ["PipePlotCore", "PipePlotTransport"], path: "Sources/PipePlotApp"),
         .executableTarget(name: "pp", dependencies: ["PipePlotCore", "PipePlotTransport"], path: "Sources/pp"),
         .testTarget(name: "PipePlotCoreTests", dependencies: ["PipePlotCore"], path: "Tests/PipePlotCoreTests"),
+        .testTarget(name: "PipePlotTransportTests", dependencies: ["PipePlotTransport"], path: "Tests/PipePlotTransportTests"),
     ],
     swiftLanguageModes: [.v5]
 )
