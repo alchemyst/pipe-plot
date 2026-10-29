@@ -52,6 +52,7 @@ Local resource use matters: the user already watches laptop memory closely. Pref
 ## Implementation feedback (2026-10-29)
 
 - Lines replace dots as the default representation; existing explicit mark settings remain intact.
+- `pp --test` generates a sine stream at one row per second; `pp --test 2` generates two columns. It uses normal routing and runs until interrupted.
 - Selection snapping must use the same session clock and screen coordinates as the visible now marker, with an explicit linked boundary mode on release.
 - Hover readouts reserve their layout space so entering/leaving the plot does not resize its chart.
 - The session clock stops when its final producer disconnects, including terminal-side pipe breaks. A silent connected producer keeps time advancing.

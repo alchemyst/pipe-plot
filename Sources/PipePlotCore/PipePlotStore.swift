@@ -203,7 +203,7 @@ public final class PipePlotStore {
         for (source,dest) in zip(sourceStreamIDs,destinationStreamIDs) {
             guard let (si,ci)=streamIndices(source),let (di,dj)=streamIndices(dest),si==di,
                   let sourceIndex=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==source}),
-                  let destIndex=sessions[di].charts[dj].streams.firstIndex(where:{$0.id==dest}) else { throw DomainError.unknownStream }
+                  let _=sessions[di].charts[dj].streams.firstIndex(where:{$0.id==dest}) else { throw DomainError.unknownStream }
             var segmentIDs=try samples.segmentIDs(streamID:source)
             let liveSegment=aid.uuidString.lowercased()
             if !segmentIDs.contains(liveSegment) { segmentIDs.append(liveSegment) }
@@ -242,7 +242,7 @@ public final class PipePlotStore {
     public func removeGuide(_ guideID:UUID,chartID:ChartID) throws {
         lock.lock();defer{lock.unlock()};guard let(si,ci)=findChartIndices(chartID) else{throw DomainError.unknownChart}
         if let i=sessions[si].charts[ci].guides.firstIndex(where:{$0.id==guideID}) {let old=sessions[si].charts[ci].guides.remove(at:i);record(.guide(chartID,id:guideID,old:old,new:nil),in:sessions[si].id);try persist();return}
-        if let guide=sessions[si].timeGuides.first(where:{$0.id==guideID}) {try removeTimeGuide(guideID,sessionID:sessions[si].id)}
+        if sessions[si].timeGuides.contains(where:{$0.id==guideID}) {try removeTimeGuide(guideID,sessionID:sessions[si].id)}
     }
     public func removeTimeGuide(_ guideID:UUID,sessionID:SessionID) throws {
         lock.lock();defer{lock.unlock()};guard let si=sessionIndex(sessionID) else{throw DomainError.unknownSession};guard let i=sessions[si].timeGuides.firstIndex(where:{$0.id==guideID}) else{return};let old=sessions[si].timeGuides.remove(at:i);record(.timeGuide(sessionID,id:guideID,old:old,new:nil),in:sessionID);try persist()
@@ -251,6 +251,15 @@ public final class PipePlotStore {
     public func setSelection(_ selection:TimeSelection?,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID) else{throw DomainError.unknownSession};if let s=selection { if s.start>s.end {throw DomainError.invalidSelection};if case .bothFollowNow(let duration)=s.mode,(!duration.isFinite || duration<=0){throw DomainError.invalidSelection} };let old=sessions[i].timeline.selection;guard old != selection else{return};sessions[i].timeline.selection=selection;record(.selection(sessionID,old:old,new:selection),in:sessionID);try persist() }
     public func setForecast(_ forecast:ForecastConfiguration?,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID) else{throw DomainError.unknownSession};if let f=forecast {guard f.selection.start<=f.selection.end, sessions[i].charts.flatMap(\.streams).contains(where:{$0.id==f.streamID}),sessions[i].charts.contains(where:{$0.guides.contains(where:{$0.id==f.guideID && $0.orientation == .horizontalValue})}) else {throw DomainError.invalidSelection}};let old=sessions[i].timeline.forecast;guard old != forecast else{return};sessions[i].timeline.forecast=forecast;record(.forecast(sessionID,old:old,new:forecast),in:sessionID);try persist() }
     public func setSessionOpen(_ open:Bool,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID) else{throw DomainError.unknownSession};sessions[i].isOpen=open;if !open { let active=attachments.values.filter{$0.sessionID==sessionID && $0.active};for a in active { try finishAttachment(a.id,reason:.sessionClosed) }; if let t=targetChartID, sessions[i].charts.contains(where:{$0.id==t}) { targetChartID=nil; fallbackTarget() } };try persist() }
+
+    public func undoActionName(sessionID: SessionID) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return undoStacks[sessionID]?.last?.title
+    }
+    public func redoActionName(sessionID: SessionID) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return redoStacks[sessionID]?.last?.title
+    }
 
     public func undo(sessionID:SessionID) throws -> Bool { try replay(sessionID:sessionID,undo:true) }
     public func redo(sessionID:SessionID) throws -> Bool { try replay(sessionID:sessionID,undo:false) }
@@ -387,5 +396,21 @@ private extension SessionRecord {
         timeline = try c.decode(TimelineState.self, forKey: .timeline)
         isOpen = try c.decode(Bool.self, forKey: .isOpen)
         rejectedLineCount = try c.decodeIfPresent(Int.self, forKey: .rejectedLineCount) ?? 0
+    }
+}
+
+private extension UndoRecord {
+    var title: String {
+        switch self {
+        case .createdChart, .restoredChart: return "Create Chart"
+        case .movedStream: return "Move Stream"
+        case .renamedStream: return "Rename Stream"
+        case .sessionTitle: return "Rename Session"
+        case .settings: return "Axis Settings"
+        case .guide, .timeGuide: return "Guide Edit"
+        case .selection: return "Selection"
+        case .forecast: return "Linear Forecast"
+        case .reassociation: return "Reassociate Streams"
+        }
     }
 }

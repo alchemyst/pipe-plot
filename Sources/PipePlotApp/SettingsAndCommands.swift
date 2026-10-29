@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import PipePlotCore
 
 struct SessionPicker: View {
@@ -80,16 +81,32 @@ struct SettingsView: View {
 
 struct PipePlotCommands: Commands {
     @Bindable var model: PipePlotAppModel
+    private var textUndo: UndoManager? {
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isEditable else { return nil }
+        return editor.undoManager
+    }
+    private var undoName: String? { model.activeSessionID.flatMap { model.store.undoActionName(sessionID: $0) } }
+    private var redoName: String? { model.activeSessionID.flatMap { model.store.redoActionName(sessionID: $0) } }
+    private var canUndo: Bool { textUndo?.canUndo ?? (undoName != nil) }
+    private var canRedo: Bool { textUndo?.canRedo ?? (redoName != nil) }
+    private var undoTitle: String { textUndo?.undoMenuItemTitle ?? undoName.map { "Undo \($0)" } ?? "Undo" }
+    private var redoTitle: String { textUndo?.redoMenuItemTitle ?? redoName.map { "Redo \($0)" } ?? "Redo" }
+    private func performUndo(redo: Bool) {
+        if let manager = textUndo {
+            if redo { manager.redo() } else { manager.undo() }
+        } else if let session = model.activeSessionID {
+            if redo { model.redo(session) } else { model.undo(session) }
+        }
+    }
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Session") { model.createSessionWindow() }.keyboardShortcut("n", modifiers: [.command])
         }
-        CommandGroup(after: .undoRedo) {
-            Divider()
-            Button("Undo Session Edit") { if let id = model.activeSessionID { model.undo(id) } }
-                .keyboardShortcut("z", modifiers: [.command]).disabled(model.activeSessionID == nil)
-            Button("Redo Session Edit") { if let id = model.activeSessionID { model.redo(id) } }
-                .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(model.activeSessionID == nil)
+        CommandGroup(replacing: .undoRedo) {
+            Button(undoTitle) { performUndo(redo: false) }
+                .keyboardShortcut("z", modifiers: [.command]).disabled(!canUndo)
+            Button(redoTitle) { performUndo(redo: true) }
+                .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!canRedo)
         }
         CommandMenu("Session") {
             Button("New Chart Below") { if let id = model.activeSessionID { model.createChart(in: id, after: model.sessions[id]?.charts.last?.id) } }
