@@ -38,6 +38,25 @@ extension SampleStore {
         }
     }
 
+    /// Exact nearest observation for hover; display reduction never supplies readout values.
+    public func nearestSample(streamID: StreamID, at time: Date) throws -> StoredSample? {
+        lock.lock(); defer { lock.unlock() }
+        var choices: [StoredSample] = []
+        for (comparison, order) in [("<=", "DESC"), (">=", "ASC")] {
+            var statement: OpaquePointer?
+            try prepare("SELECT timestamp,sequence,value,segment_id FROM samples WHERE stream_id=? AND timestamp \(comparison) ? ORDER BY timestamp \(order),sequence \(order) LIMIT 1", &statement)
+            defer { sqlite3_finalize(statement) }
+            bindText(statement, 1, streamID.uuidString.lowercased()); sqlite3_bind_double(statement, 2, time.timeIntervalSince1970)
+            let code = sqlite3_step(statement)
+            if code == SQLITE_ROW {
+                choices.append(StoredSample(timestamp: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0)),
+                    sequence: UInt64(sqlite3_column_int64(statement, 1)), value: sqlite3_column_double(statement, 2),
+                    segmentID: sqlite3_column_text(statement, 3).map { String(cString: $0) }))
+            } else if code != SQLITE_DONE { throw SampleStoreError.sql(String(cString: sqlite3_errmsg(db))) }
+        }
+        return choices.min { abs($0.timestamp.timeIntervalSince(time)) < abs($1.timestamp.timeIntervalSince(time)) }
+    }
+
     public func statistics(streamID: StreamID, from: Date, to: Date) throws -> SelectionStatistics? {
         lock.lock(); defer { lock.unlock() }
         var n = 0, mean = 0.0, m2 = 0.0
