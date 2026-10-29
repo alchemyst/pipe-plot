@@ -15,7 +15,7 @@ struct PipePlotApplication: App {
                     SessionWindow(sessionID: sessionID, model: model)
                         .frame(minWidth: 850, minHeight: 580)
                 } else {
-                    SessionPicker(model: model) { id in sessionID = id }
+                    SessionPicker(model: model) { id in model.openSession(id); sessionID = id }
                         .frame(minWidth: 520, minHeight: 400)
                 }
             }
@@ -23,6 +23,7 @@ struct PipePlotApplication: App {
             .onAppear {
                 model.installOpenWindow { id in openWindow(value: id) }
                 model.installOpenSessionPicker { openWindow(id: "sessions") }
+                appDelegate.installTerminationHandler { model.prepareForTermination() }
                 if sessionID == nil, let id = model.bootstrap() { sessionID = id }
             }
         }
@@ -30,7 +31,7 @@ struct PipePlotApplication: App {
             PipePlotCommands(model: model)
         }
         WindowGroup("Saved Sessions", id: "sessions") {
-            SessionPicker(model: model) { id in openWindow(value: id) }
+            SessionPicker(model: model) { id in model.openSession(id); openWindow(value: id) }
                 .frame(minWidth: 520, minHeight: 400)
         }
         Settings {
@@ -41,7 +42,13 @@ struct PipePlotApplication: App {
 
 @MainActor
 final class PipePlotAppDelegate: NSObject, NSApplicationDelegate {
+    private var terminationHandler: (() -> Void)?
+    func installTerminationHandler(_ handler: @escaping () -> Void) { terminationHandler = handler }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        terminationHandler?()
+        return .terminateNow
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if !hasVisibleWindows { NotificationCenter.default.post(name: .pipePlotReopen, object: nil) }
         return true

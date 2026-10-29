@@ -6,55 +6,87 @@ struct PlotCanvas: View {
     let session: SessionSnapshot
     let samples: [StreamID: [StoredSample]]
     let domain: ClosedRange<Date>
+    let now: Date
     @Binding var hoverDate: Date?
     @Binding var selectionStart: Date?
     @Binding var selectionPreview: Date?
-    let onSelectionCommit: (Date, Date) -> Void
+    let selection: TimeSelection?
+    let forecast: ForecastDrawing?
+    let onSelectionCommit: (Date?, Date?, SelectionMode?) -> Void
+    let onGuide: (Guide, PlotGesturePhase) -> Void
+    let onPan: (CGSize, PlotGesturePhase, CGFloat) -> Void
+    let onZoom: (Double, Date, PlotGesturePhase) -> Void
+    @State private var selectionLinkedPreview = false
 
     private var timeSpan: TimeInterval { max(0.001, domain.upperBound.timeIntervalSince(domain.lowerBound)) }
 
     var body: some View {
         GeometryReader { geometry in
-            Canvas(opaque: false, colorMode: .linear) { context, size in
-                draw(in: context, size: size)
+            let plot = plotRect(for: geometry.size)
+            ZStack(alignment: .topLeading) {
+                Canvas(opaque: false, colorMode: .linear) { context, size in
+                    draw(in: context, size: size)
+                }
+                PlotInteractionOverlay(
+                    guides: chart.guides + session.timeGuides,
+                    selectionRange: currentSelectionRange,
+                    now: now,
+                    plotBounds: plot,
+                    timeAtX: { date(at: $0, width: geometry.size.width, plot: plot) },
+                    valueAtY: { value(at: $0, height: geometry.size.height, plot: plot) },
+                    xAtTime: { x($0, in: plot) },
+                    yAtValue: { y($0, range: yRange, in: plot) },
+                    onGuide: onGuide,
+                    onSelection: { start, end, edge, endFollowsNow, phase in
+                        switch phase {
+                        case .began, .changed:
+                            selectionStart = start; selectionPreview = end
+                            selectionLinkedPreview = endFollowsNow || (edge == .start && selection?.mode == .endFollowsNow)
+                        case .ended:
+                            selectionStart = nil; selectionPreview = nil; selectionLinkedPreview = false
+                            if abs(end.timeIntervalSince(start)) > 0.5 {
+                                var mode: SelectionMode = .fixed
+                                if edge == .start, selection?.mode == .endFollowsNow { mode = .endFollowsNow }
+                                else if endFollowsNow { mode = .endFollowsNow }
+                                onSelectionCommit(start, mode == .endFollowsNow ? now : end, mode)
+                            }
+                        case .cancelled:
+                            selectionStart = nil; selectionPreview = nil; selectionLinkedPreview = false
+                        }
+                    },
+                    onPan: { delta, phase in onPan(delta, phase, geometry.size.width) },
+                    onZoom: onZoom,
+                    onHover: { hoverDate = $0 }
+                )
             }
-            .contentShape(Rectangle())
-            .onContinuousHover { phase in
-                switch phase {
-                case .active(let point): hoverDate = date(at: point.x, width: geometry.size.width)
-                case .ended: hoverDate = nil
-                }
-            }
-            .gesture(DragGesture(minimumDistance: 4)
-                .onChanged { value in
-                    if selectionStart == nil { selectionStart = date(at: value.startLocation.x, width: geometry.size.width) }
-                    selectionPreview = date(at: value.location.x, width: geometry.size.width)
-                    hoverDate = selectionPreview
-                }
-                .onEnded { value in
-                    let start = date(at: value.startLocation.x, width: geometry.size.width), end = date(at: value.location.x, width: geometry.size.width)
-                    if abs(end.timeIntervalSince(start)) > 0.5 {
-                        let lower = min(start, end), upper = max(start, end)
-                        selectionStart = lower; selectionPreview = upper
-                        onSelectionCommit(lower, upper)
-                    } else {
-                        selectionStart = nil; selectionPreview = nil
-                        onSelectionCommit(Date.distantPast, Date.distantPast)
-                    }
-                }
-            )
-            .accessibilityLabel("Coordinated timeline plot. Drag to select a time interval.")
         }
     }
 
-    private func date(at x: CGFloat, width: CGFloat) -> Date {
-        let width = max(width, 1)
-        return domain.lowerBound.addingTimeInterval(timeSpan * Double(min(max(x, 0), width)) / Double(width))
+    private var currentSelectionRange: ClosedRange<Date>? {
+        selection.map { item in
+            let start: Date, end: Date
+            switch item.mode {
+            case .fixed: start = item.start; end = item.end
+            case .endFollowsNow: start = item.start; end = now
+            case .bothFollowNow(let duration): start = now.addingTimeInterval(-duration); end = now
+            }
+            return min(start, end)...max(start, end)
+        }
+    }
+    private func plotRect(for size: CGSize) -> CGRect { CGRect(x: 56, y: 4, width: max(1, size.width - 56), height: max(1, size.height - 22)) }
+    private func date(at x: CGFloat, width: CGFloat, plot: CGRect) -> Date {
+        let fraction = min(1, max(0, (x - plot.minX) / max(plot.width, 1)))
+        return domain.lowerBound.addingTimeInterval(timeSpan * Double(fraction))
+    }
+    private func value(at y: CGFloat, height: CGFloat, plot: CGRect) -> Double {
+        let range = yRange
+        let fraction = min(1, max(0, 1 - (y - plot.minY) / max(plot.height, 1)))
+        return range.lowerBound + (range.upperBound - range.lowerBound) * Double(fraction)
     }
 
     private func draw(in context: GraphicsContext, size: CGSize) {
         guard size.width > 1, size.height > 1 else { return }
-        let plot = CGRect(x: 0, y: 4, width: size.width, height: size.height - 22)
+        let plot = plotRect(for: size)
         let valueRange = yRange
         var grid = Path()
         for fraction in 0...4 {
@@ -68,8 +100,15 @@ struct PlotCanvas: View {
             let fraction = Double(index) / Double(tickCount)
             let date = domain.lowerBound.addingTimeInterval(timeSpan * fraction)
             let x = plot.minX + plot.width * CGFloat(fraction)
-            let label = date.formatted(date: .omitted, time: .shortened)
+            let label = date.formatted(date: .omitted, time: timeSpan < 120 ? .standard : .shortened)
             context.draw(Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary), at: CGPoint(x: x, y: plot.maxY + 12), anchor: index == 0 ? .leading : (index == tickCount ? .trailing : .center))
+        }
+        for index in 0...4 {
+            let fraction = Double(index) / 4
+            let value = valueRange.upperBound - (valueRange.upperBound - valueRange.lowerBound) * fraction
+            let label = value.formatted(.number.precision(.significantDigits(4)))
+            let yPosition = plot.minY + plot.height * CGFloat(fraction)
+            context.draw(Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary), at: CGPoint(x: plot.minX - 7, y: yPosition), anchor: .trailing)
         }
 
         for (index, stream) in chart.streams.enumerated() {
@@ -78,9 +117,12 @@ struct PlotCanvas: View {
             let color = Self.color(index)
             if chart.settings.linesVisible && data.count > 1 {
                 var path = Path()
+                var previousSegment: String?
                 for (pointIndex, sample) in data.enumerated() {
                     let position = CGPoint(x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
-                    if pointIndex == 0 { path.move(to: position) } else { path.addLine(to: position) }
+                    if pointIndex == 0 || sample.segmentID != previousSegment { path.move(to: position) }
+                    else { path.addLine(to: position) }
+                    previousSegment = sample.segmentID
                 }
                 context.stroke(path, with: .color(color.opacity(0.85)), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
             }
@@ -94,7 +136,7 @@ struct PlotCanvas: View {
             }
         }
 
-        for guide in chart.guides {
+        for guide in chart.guides + session.timeGuides {
             let color = Color(hex: guide.color)
             if guide.orientation == .horizontalValue {
                 let yPos = y(guide.value, range: valueRange, in: plot)
@@ -108,17 +150,47 @@ struct PlotCanvas: View {
                 context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
             }
         }
+        if let forecast {
+            let forecastColor: Color = chart.streams.firstIndex(where: { $0.id == forecast.streamID }).map(Self.color) ?? .orange
+            let start = min(max(forecast.range.upperBound, domain.lowerBound), now)
+            if forecast.crossing > start {
+                var path = Path()
+                path.move(to: CGPoint(x: x(start, in: plot), y: y(forecast.fit.value(at: start), range: valueRange, in: plot)))
+                path.addLine(to: CGPoint(x: x(forecast.crossing, in: plot), y: y(forecast.value, range: valueRange, in: plot)))
+                context.stroke(path, with: .color(forecastColor), style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
+            }
+        }
+        let savedSelection: (Date, Date)? = selection.map { item in
+            switch item.mode {
+            case .fixed: return (item.start, item.end)
+            case .endFollowsNow: return (item.start, now)
+            case .bothFollowNow(let duration): return (now.addingTimeInterval(-duration), now)
+            }
+        }
         if let selectionStart, let selectionPreview {
-            let a = x(selectionStart, in: plot), b = x(selectionPreview, in: plot)
-            let rect = CGRect(x: min(a,b), y: plot.minY, width: abs(b-a), height: plot.height)
-            context.fill(Path(rect), with: .color(.accentColor.opacity(0.13)))
-            context.stroke(Path(rect), with: .color(.accentColor.opacity(0.8)), lineWidth: 1)
+            drawSelection(from: selectionStart, to: selectionPreview, linked: selectionLinkedPreview, in: plot, context: context)
+        } else if let (start, end) = savedSelection {
+            drawSelection(from: start, to: end, linked: selection?.mode != .fixed, in: plot, context: context)
+        }
+        if domain.contains(now) {
+            let nowX = x(now, in: plot)
+            var path = Path(); path.move(to: CGPoint(x: nowX, y: plot.minY)); path.addLine(to: CGPoint(x: nowX, y: plot.maxY))
+            context.stroke(path, with: .color(.orange.opacity(0.8)), style: StrokeStyle(lineWidth: 1.2, dash: [2, 3]))
+            context.draw(Text("NOW").font(.system(size: 9, weight: .bold)).foregroundColor(.orange), at: CGPoint(x: min(plot.maxX - 4, nowX - 4), y: plot.minY + 8), anchor: .trailing)
         }
         if let hoverDate {
             let xPos = x(hoverDate, in: plot)
             var path = Path(); path.move(to: CGPoint(x: xPos, y: plot.minY)); path.addLine(to: CGPoint(x: xPos, y: plot.maxY))
             context.stroke(path, with: .color(.primary.opacity(0.6)), style: StrokeStyle(lineWidth: 1, dash: [3,3]))
         }
+    }
+
+    private func drawSelection(from start: Date, to end: Date, linked: Bool, in plot: CGRect, context: GraphicsContext) {
+            let a = x(start, in: plot), b = x(end, in: plot)
+            let rect = CGRect(x: min(a,b), y: plot.minY, width: abs(b-a), height: plot.height)
+            let color: Color = linked ? .green : .accentColor
+            context.fill(Path(rect), with: .color(color.opacity(0.13)))
+            context.stroke(Path(rect), with: .color(color.opacity(0.8)), lineWidth: 1)
     }
 
     private var yRange: ClosedRange<Double> {

@@ -21,7 +21,7 @@ struct SessionWindow: View {
                     ScrollView {
                         LazyVStack(spacing: 12) {
                             ForEach(session.charts.filter(\.isVisible)) { chart in
-                                ChartRow(chart: chart, session: session, samples: model.visibleSamples(for: chart, session: session), hoverDate: $hoverDate,
+                                ChartRow(chart: chart, session: session, samples: model.visibleSamples(for: chart, session: session), now: model.sessionNow(session), hoverDate: $hoverDate,
                                          model: model,
                                          onTarget: { model.setTarget(chart.id) },
                                          onToggleDots: { model.toggleDots(chart) },
@@ -49,9 +49,14 @@ struct SessionWindow: View {
         .navigationTitle(session.map { "\($0.number) · \($0.title)" } ?? "PipePlot")
         .onAppear { model.refresh(sessionID) }
         .onAppear { model.becameActive(sessionID) }
-        .onReceive(model.refreshTimer) { _ in model.refresh(sessionID) }
+        .onReceive(model.refreshTimer) { _ in model.tick(sessionID) }
         .onReceive(NotificationCenter.default.publisher(for: .pipePlotReopen)) { _ in model.openSession(sessionID) }
+        .onReceive(NotificationCenter.default.publisher(for: .pipePlotWillTerminate)) { _ in model.prepareForTermination() }
         .onDisappear { model.windowClosed(sessionID) }
+        .background(WindowFocusObserver { model.becameActive(sessionID) }.frame(width: 0, height: 0))
+        .alert("PipePlot", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.clearError() } })) {
+            Button("OK") { model.clearError() }
+        } message: { Text(model.errorMessage ?? "") }
         .background {
             Button("New Chart") { createChart() }.keyboardShortcut("d", modifiers: [.command, .shift]).hidden()
         }
@@ -83,7 +88,11 @@ struct SessionWindow: View {
             if let date = hoverDate {
                 Text(date.formatted(date: .abbreviated, time: .standard)).monospacedDigit().font(.caption)
             }
-            Text("Now  \(Date.now.formatted(date: .omitted, time: .standard))")
+            Button { model.navigateBack(session) } label: { Image(systemName: "chevron.left") }
+                .disabled(!model.canNavigateBack(session.id)).help("Back in time navigation")
+            Button { model.navigateForward(session) } label: { Image(systemName: "chevron.right") }
+                .disabled(!model.canNavigateForward(session.id)).help("Forward in time navigation")
+            Text("Now  \(model.sessionNow(session).formatted(date: .omitted, time: .standard))")
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             Button { model.followNow(session) } label: { Label("Follow Now", systemImage: "dot.scope") }
                 .buttonStyle(.borderedProminent).tint(session.timeline.followNow ? .accentColor : .gray)
@@ -109,6 +118,7 @@ private struct ChartRow: View {
     let chart: ChartSnapshot
     let session: SessionSnapshot
     let samples: [StreamID: [StoredSample]]
+    let now: Date
     @Binding var hoverDate: Date?
     let model: PipePlotAppModel
     let onTarget: () -> Void
@@ -130,23 +140,48 @@ private struct ChartRow: View {
     @State private var renameStream: StreamDescriptor?
     @State private var renameText = ""
     @State private var showingMove = false
+    @State private var panPixels: CGFloat = 0
+    @State private var zoomFactor = 1.0
+    @State private var zoomAnchor: Date?
 
     private var domain: ClosedRange<Date> {
-        let now = Date()
-        let start = session.timeline.visibleStart ?? now.addingTimeInterval(-15 * 60)
-        let end = session.timeline.visibleEnd ?? now
-        return start < end ? start...end : now.addingTimeInterval(-60)...now
+        model.domain(for: session)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             ZStack(alignment: .topLeading) {
-                PlotCanvas(chart: chart, session: session, samples: samples, domain: domain, hoverDate: $hoverDate, selectionStart: $selectionStart, selectionPreview: $selectionPreview,
-                           forecast: model.forecastDrawing(for: chart, session: session)) { start, end in
-                    if start == .distantPast { onSelection(nil) }
-                    else { onSelection(TimeSelection(start: start, end: end, selectedStreamIDs: Set(chart.streams.map(\.id)))) }
-                }
+                PlotCanvas(chart: chart, session: session, samples: samples, domain: domain, now: now, hoverDate: $hoverDate, selectionStart: $selectionStart, selectionPreview: $selectionPreview,
+                           selection: session.timeline.selection,
+                           forecast: model.forecastDrawing(for: chart, session: session),
+                           onSelectionCommit: { start, end, mode in
+                                guard let start, let end else { onSelection(nil); return }
+                                onSelection(TimeSelection(start: start, end: end, mode: mode ?? .fixed, selectedStreamIDs: Set(chart.streams.map(\.id))))
+                           },
+                           onGuide: { guide, phase in if phase == .ended { model.updateGuide(guide, chartID: chart.id, sessionID: session.id) } },
+                           onPan: { delta, phase, width in
+                                switch phase {
+                                case .began: panPixels = 0
+                                case .changed: panPixels += delta.width
+                                case .ended:
+                                    panPixels += delta.width
+                                    model.pan(panPixels, width: width, session: session)
+                                    panPixels = 0
+                                case .cancelled: panPixels = 0
+                                }
+                           },
+                           onZoom: { factor, anchor, phase in
+                                switch phase {
+                                case .began: zoomFactor = 1; zoomAnchor = anchor
+                                case .changed: zoomFactor *= factor; zoomAnchor = anchor
+                                case .ended:
+                                    zoomFactor *= factor
+                                    model.zoom(zoomFactor, anchor: anchor, session: session)
+                                    zoomFactor = 1; zoomAnchor = nil
+                                case .cancelled: zoomFactor = 1; zoomAnchor = nil
+                                }
+                           })
                     .frame(height: 210)
                     .padding(.horizontal, 12)
                     .padding(.top, 6)
@@ -158,14 +193,32 @@ private struct ChartRow: View {
                 }
             }
             streamLegend
+            Group {
+            if let hoverDate {
+                    ScrollView(.horizontal) {
+                    HStack(spacing: 12) {
+                        ForEach(chart.streams) { stream in
+                            if let sample = model.nearestSample(stream.id, at: hoverDate) {
+                                let offset = sample.timestamp.timeIntervalSince(hoverDate)
+                                Text("\(stream.name)  \(format(sample.value))\(chart.settings.unit.map { " \($0)" } ?? "")  \(offset >= 0 ? "+" : "")\(String(format: "%.1f", offset))s")
+                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        }
+                    }.padding(.horizontal, 15)
+                    }.scrollIndicators(.hidden)
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(height: 25)
             if let selection = session.timeline.selection { selectionSummary(selection) }
             if let status = model.forecastStatuses[session.id], chart.streams.contains(where: { $0.id == status.configuration.streamID }) {
                 HStack(spacing: 8) {
                     Label("Linear forecast", systemImage: "arrow.up.right")
                     Text(status.message).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     Spacer()
-                    if let crossing = status.crossing, crossing > Date() {
-                        Text("in \(max(0, Int(crossing.timeIntervalSinceNow)) / 60)m").font(.caption.monospacedDigit()).foregroundStyle(.tint)
+                    if let crossing = status.crossing, crossing > now {
+                        Text("in \(max(0, Int(crossing.timeIntervalSince(now))) / 60)m").font(.caption.monospacedDigit()).foregroundStyle(.tint)
                     }
                     Button("Disable") { model.setForecast(nil, session: session) }.buttonStyle(.borderless).font(.caption)
                 }.padding(.horizontal, 15).padding(.bottom, 10)
@@ -257,7 +310,7 @@ private struct ChartRow: View {
                 Button("Fix interval") { var value = selection; value.mode = .fixed; onSelection(value) }
                 Button("Link end to now") { var value = selection; value.mode = .endFollowsNow; onSelection(value) }
                 Button("Follow now at fixed duration") {
-                    let duration = max(0.5, selection.end.timeIntervalSince(selection.start)); let now = Date()
+                    let duration = max(0.5, selection.end.timeIntervalSince(selection.start)); let now = model.sessionNow(session)
                     onSelection(TimeSelection(start: now.addingTimeInterval(-duration), end: now, mode: .bothFollowNow(duration: duration), selectedStreamIDs: selection.selectedStreamIDs))
                 }
                 Divider()
@@ -314,3 +367,23 @@ private struct ChartRow: View {
 }
 
 extension StreamDescriptor: Identifiable {}
+
+private struct WindowFocusObserver: NSViewRepresentable {
+    let onFocus: () -> Void
+    func makeNSView(context: Context) -> FocusView { let view = FocusView(); view.onFocus = onFocus; return view }
+    func updateNSView(_ nsView: FocusView, context: Context) { nsView.onFocus = onFocus; nsView.observeWindow() }
+    static func dismantleNSView(_ nsView: FocusView, coordinator: ()) { nsView.stopObserving() }
+
+    final class FocusView: NSView {
+        var onFocus: (() -> Void)?
+        private var token: NSObjectProtocol?
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); observeWindow() }
+        func observeWindow() {
+            guard let window, token == nil else { return }
+            token = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in self?.onFocus?() }
+            if window.isKeyWindow { onFocus?() }
+        }
+        func stopObserving() { if let token { NotificationCenter.default.removeObserver(token) }; token = nil }
+        deinit { stopObserving() }
+    }
+}

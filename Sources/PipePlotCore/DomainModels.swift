@@ -48,8 +48,9 @@ public struct TimelineState: Codable, Equatable, Sendable {
     public var forecast: ForecastConfiguration?
     /// Frozen when the final attachment ends; nil while capture is live.
     public var clockStoppedAt: Date?
-    public init(visibleStart: Date? = nil, visibleEnd: Date? = nil, followNow: Bool = true, selection: TimeSelection? = nil, forecast: ForecastConfiguration? = nil, clockStoppedAt: Date? = nil) {
-        self.visibleStart=visibleStart; self.visibleEnd=visibleEnd; self.followNow=followNow; self.selection=selection; self.forecast=forecast; self.clockStoppedAt=clockStoppedAt
+    public var historySpan: TimeInterval?
+    public init(visibleStart: Date? = nil, visibleEnd: Date? = nil, followNow: Bool = true, selection: TimeSelection? = nil, forecast: ForecastConfiguration? = nil, clockStoppedAt: Date? = nil, historySpan: TimeInterval? = nil) {
+        self.visibleStart=visibleStart; self.visibleEnd=visibleEnd; self.followNow=followNow; self.selection=selection; self.forecast=forecast; self.clockStoppedAt=clockStoppedAt; self.historySpan=historySpan
     }
 }
 public struct ChartSnapshot: Codable, Equatable, Identifiable, Sendable {
