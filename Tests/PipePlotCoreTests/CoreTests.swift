@@ -17,9 +17,9 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(events[0],.row(SampleRow(timestamp:fixedTime,values:[1,2],sequence:1)))
         XCTAssertEqual(events[1],.rejected(ParseIssue(kind:.wrongColumnCount,lineNumber:2,message:"expected 2 columns, got 1")))
         XCTAssertEqual(events[2],.rejected(ParseIssue(kind:.nonFinite,lineNumber:3,message:"NaN and infinity are not accepted")))
-        XCTAssertEqual(p.append(Data([49,0,50,10])).first.map { if case .rejected(let issue)=$0{return issue.kind};return nil },.nulByte)
+        if case .rejected(let issue)?=p.append(Data([49,0,50,10])).first { XCTAssertEqual(issue.kind,.nulByte) } else { XCTFail("expected NUL rejection") }
         let oversized=InputParser().append(Data(repeating:65,count:InputParser.maximumLineBytes+1)+Data([10]))
-        XCTAssertEqual(oversized.first.map { if case .rejected(let issue)=$0{return issue.kind};return nil },.tooLong)
+        if case .rejected(let issue)?=oversized.first { XCTAssertEqual(issue.kind,.tooLong) } else { XCTFail("expected oversized row rejection") }
     }
     func testSQLiteStoresRowsAndBoundsQueries() throws {
         let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
@@ -113,6 +113,11 @@ final class CoreTests: XCTestCase {
         let guide=Guide(orientation:.horizontalValue,value:8,label:"limit")
         try store.upsertGuide(guide,chartID:chart);XCTAssertTrue(try store.undo(sessionID:session.id));XCTAssertTrue(try store.snapshot(sessionID:session.id)?.charts[0].guides.isEmpty == true)
         XCTAssertTrue(try store.redo(sessionID:session.id));XCTAssertEqual(try store.snapshot(sessionID:session.id)?.charts[0].guides,[guide])
+        let timeGuide=Guide(orientation:.verticalTime,value:15,label:"deploy")
+        try store.upsertGuide(timeGuide,chartID:chart)
+        XCTAssertEqual(try store.snapshot(sessionID:session.id)?.timeGuides,[timeGuide])
+        XCTAssertTrue(try store.undo(sessionID:session.id));XCTAssertTrue(try store.snapshot(sessionID:session.id)?.timeGuides.isEmpty == true)
+        XCTAssertTrue(try store.redo(sessionID:session.id));XCTAssertEqual(try store.snapshot(sessionID:session.id)?.timeGuides,[timeGuide])
 
         let start=Date(timeIntervalSince1970:10),end=Date(timeIntervalSince1970:20)
         let selection=TimeSelection(start:start,end:end,mode:.endFollowsNow,selectedStreamIDs:[stream])
@@ -159,5 +164,52 @@ final class CoreTests: XCTestCase {
         XCTAssertThrowsError(try store.reassociateStreams(second.streams.map(\.id),to:first.streams.map(\.id)))
         XCTAssertEqual(try store.samples.count(streamID:first.streams[0].id),0)
         XCTAssertEqual(try store.samples.count(streamID:second.streams[0].id),0)
+    }
+}
+
+extension CoreTests {
+    func testLinesDefaultAndClockStopsOnlyAfterFinalAttachment() throws {
+        XCTAssertTrue(AxisSettings().linesVisible)
+        XCTAssertFalse(AxisSettings().dotsVisible)
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:dir) }
+        let db=dir.appendingPathComponent("state.sqlite")
+        let store=try PipePlotStore(databaseURL:db)
+        let first=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1))
+        let second=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1))
+        try store.finishAttachment(first.attachmentID,reason:.clientDisconnected)
+        XCTAssertNil(try store.snapshot(sessionID:first.sessionID)?.timeline.clockStoppedAt)
+        let before=Date()
+        try store.finishAttachment(second.attachmentID,reason:.clientDisconnected)
+        let stopped=try XCTUnwrap(store.snapshot(sessionID:first.sessionID)?.timeline.clockStoppedAt)
+        XCTAssertGreaterThanOrEqual(stopped,before)
+        try store.finishAttachment(second.attachmentID,reason:.error)
+        XCTAssertEqual(try store.snapshot(sessionID:first.sessionID)?.timeline.clockStoppedAt,stopped)
+        var timeline=try XCTUnwrap(store.snapshot(sessionID:first.sessionID)).timeline
+        timeline.clockStoppedAt=nil;timeline.followNow=false
+        try store.updateTimeline(timeline,sessionID:first.sessionID)
+        XCTAssertEqual(try store.snapshot(sessionID:first.sessionID)?.timeline.clockStoppedAt,stopped)
+        let restored=try PipePlotStore(databaseURL:db)
+        XCTAssertEqual(try restored.snapshot(sessionID:first.sessionID)?.timeline.clockStoppedAt,stopped)
+        _=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1))
+        XCTAssertNil(try store.snapshot(sessionID:first.sessionID)?.timeline.clockStoppedAt)
+    }
+
+    func testMetadataUpgradePreservesExistingSessions() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:dir) }
+        let db=dir.appendingPathComponent("state.sqlite")
+        let store=try PipePlotStore(databaseURL:db)
+        let session=try store.createSession(title:"Existing capture")
+        let metadata=db.appendingPathExtension("metadata.json")
+        var json=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(contentsOf:metadata)) as? [String:Any])
+        var sessions=try XCTUnwrap(json["sessions"] as? [[String:Any]])
+        sessions[0].removeValue(forKey:"timeGuides")
+        json["sessions"]=sessions
+        try JSONSerialization.data(withJSONObject:json).write(to:metadata)
+        let upgraded=try PipePlotStore(databaseURL:db)
+        XCTAssertEqual(try upgraded.snapshot(sessionID:session.id)?.title,"Existing capture")
+        try Data("broken".utf8).write(to:metadata)
+        XCTAssertThrowsError(try PipePlotStore(databaseURL:db), "Corrupt metadata must never silently create an empty store")
     }
 }

@@ -17,7 +17,7 @@ public struct AxisSettings: Codable, Equatable, Sendable {
     public var yScale: YScale
     public var dotsVisible: Bool
     public var linesVisible: Bool
-    public init(unit: String? = nil, yScale: YScale = .automatic, dotsVisible: Bool = true, linesVisible: Bool = false) {
+    public init(unit: String? = nil, yScale: YScale = .automatic, dotsVisible: Bool = false, linesVisible: Bool = true) {
         self.unit=unit; self.yScale=yScale; self.dotsVisible=dotsVisible; self.linesVisible=linesVisible
     }
 }
@@ -46,8 +46,10 @@ public struct TimelineState: Codable, Equatable, Sendable {
     public var followNow: Bool
     public var selection: TimeSelection?
     public var forecast: ForecastConfiguration?
-    public init(visibleStart: Date? = nil, visibleEnd: Date? = nil, followNow: Bool = true, selection: TimeSelection? = nil, forecast: ForecastConfiguration? = nil) {
-        self.visibleStart=visibleStart; self.visibleEnd=visibleEnd; self.followNow=followNow; self.selection=selection; self.forecast=forecast
+    /// Frozen when the final attachment ends; nil while capture is live.
+    public var clockStoppedAt: Date?
+    public init(visibleStart: Date? = nil, visibleEnd: Date? = nil, followNow: Bool = true, selection: TimeSelection? = nil, forecast: ForecastConfiguration? = nil, clockStoppedAt: Date? = nil) {
+        self.visibleStart=visibleStart; self.visibleEnd=visibleEnd; self.followNow=followNow; self.selection=selection; self.forecast=forecast; self.clockStoppedAt=clockStoppedAt
     }
 }
 public struct ChartSnapshot: Codable, Equatable, Identifiable, Sendable {
@@ -67,11 +69,12 @@ public struct SessionSnapshot: Codable, Equatable, Identifiable, Sendable {
     public var number: Int
     public var title: String
     public var charts: [ChartSnapshot]
+    public var timeGuides: [Guide]
     public var timeline: TimelineState
     public var isOpen: Bool
     public var rejectedLineCount: Int
-    public init(id: SessionID, number: Int, title: String, charts: [ChartSnapshot], timeline: TimelineState = TimelineState(), isOpen: Bool = true, rejectedLineCount: Int = 0) {
-        self.id=id; self.number=number; self.title=title; self.charts=charts; self.timeline=timeline; self.isOpen=isOpen; self.rejectedLineCount=rejectedLineCount
+    public init(id: SessionID, number: Int, title: String, charts: [ChartSnapshot], timeGuides:[Guide] = [], timeline: TimelineState = TimelineState(), isOpen: Bool = true, rejectedLineCount: Int = 0) {
+        self.id=id; self.number=number; self.title=title; self.charts=charts; self.timeGuides=timeGuides; self.timeline=timeline; self.isOpen=isOpen; self.rejectedLineCount=rejectedLineCount
     }
 }
 public struct SampleBounds: Codable, Equatable, Sendable { public var first: Date?; public var last: Date?; public init(first:Date?,last:Date?){self.first=first;self.last=last} }

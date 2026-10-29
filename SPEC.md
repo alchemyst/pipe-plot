@@ -26,13 +26,13 @@ Local resource use matters: the user already watches laptop memory closely. Pref
 - Existing producers remain attached to their streams/session when the target sink changes. Multiple windows continue receiving data simultaneously; explicit layout moves can change which chart displays a stream.
 - If PipePlot is not running, `pp` launches it and transparently creates a session. The basic pipeline must be especially fast and require no intervening interaction.
 - First-round input consists of floating-point measurements over time. Sampling intervals may be irregular.
-- Default representation is dots. Users can enable connecting lines and hide dots.
+- Default representation is connecting lines, with dots off. Users can toggle lines and dots independently.
 - Multiple charts use a stacked layout. Creating a chart is explicit through the UI or CLI, rather than automatic for every stream. Moving a stream into another chart must be trivial; removing the last stream from a source axis automatically collapses that empty axis.
 - The stack shares a single time context: coordinated hover time, time guides spanning all axes, and coordinated horizontal zoom/navigation.
 - Datadog's coordinated hover and Perfetto's fluid timeline navigation are interaction references.
 - Units, Y-scale configuration, and value annotations belong to the chart/axis, not to individual streams. Moving a stream does not carry its source chart's annotations into the destination chart.
 - Robust undo/redo is a foundational interaction and architecture requirement, designed before editing features are implemented. Persistence remains required, but its detailed implementation is not a priority for these exploration rounds.
-- Charts track current time and incoming data. Slow and temporarily silent producers are normal.
+- Charts track current time and incoming data while at least one producer remains connected. Slow and temporarily silent producers are normal. Once the final producer disconnects, the session clock stops at disconnect time; a subsequent connection resumes it.
 - Guides are draggable line annotations pulled from chart edges, analogous to guides in presentation software.
 - Standard interactions include bounds, annotations, navigation, interval selection, and analysis. First-release analysis is specified below; forecast interaction details remain to be refined.
 - First-release analysis includes selection statistics and an optional linear forecast. Periodicity/period estimation is deferred.
@@ -48,6 +48,13 @@ Local resource use matters: the user already watches laptop memory closely. Pref
 - Manual app launch restores the previously open sessions/windows. Previously disconnected samplers are not restarted by restoring windows.
 - Closing a session window disconnects its samplers and retains all captured data; it does not continue hidden/background capture for that session.
 - Prefer SwiftUI and native charting support where suitable; no embedded browser is required.
+
+## Implementation feedback (2026-10-29)
+
+- Lines replace dots as the default representation; existing explicit mark settings remain intact.
+- Selection snapping must use the same session clock and screen coordinates as the visible now marker, with an explicit linked boundary mode on release.
+- Hover readouts reserve their layout space so entering/leaving the plot does not resize its chart.
+- The session clock stops when its final producer disconnects, including terminal-side pipe breaks. A silent connected producer keeps time advancing.
 
 ## Core workflows
 
@@ -170,7 +177,7 @@ An upstream program may buffer its own stdout. PipePlot cannot recover timestamp
 
 ### Follow Now
 
-Confirmed: a live chart must advance with wall-clock time, including when no new sample arrives. Without a forecast, its right edge ends at now rather than the last sample timestamp. With a forecast, the shared timeline extends beyond now to the predicted guide crossing; a visible now marker separates observed and future time.
+Confirmed: a live chart must advance with wall-clock time while a producer remains connected, including when no new sample arrives. When the final pipe disconnects, the session clock freezes at that disconnect instant and resumes upon a new attachment. Without a forecast, its right edge ends at now rather than the last sample timestamp. With a forecast, the shared timeline extends beyond now to the predicted guide crossing; a visible now marker separates observed and future time.
 
 Proposed:
 
@@ -190,7 +197,7 @@ Proposed:
 
 ### Marks and scales
 
-- Dots on, lines off by default. Dots and connecting lines are independent switches, yielding dots-only, lines-only, or both. If both are off, keep acquisition active and make the hidden state obvious.
+- Lines on, dots off by default. Dots and connecting lines are independent switches, yielding dots-only, lines-only, or both. If both are off, keep acquisition active and make the hidden state obvious.
 - Connecting lines use actual timestamps and straight segments; no smoothing by default.
 - EOF/reconnection boundaries, including automatic continuation and UI reassociation, must not be connected as if sampling were continuous. Whether to break lines across long time gaps needs a rule that does not assume a fixed cadence.
 - Provide automatic and explicit Y limits. Zero, negative-only, mixed-sign, constant-value, single-point, and empty streams must all render sensibly.
