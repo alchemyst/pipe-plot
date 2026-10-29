@@ -40,3 +40,23 @@ final class RangeQueryTests: XCTestCase {
         XCTAssertEqual(try store.statistics(streamID: stream, from: start, to: end)?.mean, -2)
     }
 }
+
+extension RangeQueryTests {
+    func testSegmentRemapUndoIncludesLaterArrivals() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try SampleStore(databaseURL: directory.appendingPathComponent("history.sqlite"))
+        let old = UUID(), new = UUID(), now = Date()
+        try store.append(values: [1], timestamp: now, to: [old], segmentID: "original")
+        try store.append(values: [2], timestamp: now, to: [new], segmentID: "resumed")
+        try store.reassignSegments(["resumed"], from: new, to: old)
+        try store.append(values: [3], timestamp: now, to: [old], segmentID: "resumed")
+        try store.append(values: [9], timestamp: now, to: [old], segmentID: "unrelated")
+        try store.reassignSegments(["resumed"], from: old, to: new)
+        XCTAssertEqual(try store.query(streamID: old).map(\.value), [1, 9])
+        XCTAssertEqual(try store.query(streamID: new).map(\.value), [2, 3])
+        try store.reassignSegments(["resumed"], from: new, to: old)
+        XCTAssertEqual(try store.count(streamID: old), 4)
+        XCTAssertEqual(try store.count(streamID: new), 0)
+    }
+}
