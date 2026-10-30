@@ -69,6 +69,13 @@ final class PlotInteractionView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Tracking areas do not deliver mouseMoved unless the window requests it.
+        window?.acceptsMouseMovedEvents = true
+        updateTrackingAreas()
+    }
+
     func update(guides: [Guide], selectionRange: ClosedRange<Date>?, now: Date, plotBounds: CGRect,
                 timeAtX: @escaping (CGFloat) -> Date, valueAtY: @escaping (CGFloat) -> Double,
                 xAtTime: @escaping (Date) -> CGFloat, yAtValue: @escaping (Double) -> CGFloat,
@@ -97,7 +104,7 @@ final class PlotInteractionView: NSView {
         super.updateTrackingAreas()
         for area in trackingAreas { removeTrackingArea(area) }
         let area = NSTrackingArea(rect: .zero,
-                                  options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
                                   owner: self, userInfo: nil)
         addTrackingArea(area)
     }
@@ -110,6 +117,7 @@ final class PlotInteractionView: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let point = localPoint(event)
+        onHover(timeAtX(point.x))
         dragOrigin = point
         lastPoint = point
         dragMoved = false
@@ -135,6 +143,7 @@ final class PlotInteractionView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let activeDrag else { return }
         let point = localPoint(event)
+        onHover(timeAtX(point.x))
         let movement = CGSize(width: point.x - lastPoint.x, height: point.y - lastPoint.y)
         if hypot(point.x - dragOrigin.x, point.y - dragOrigin.y) >= 3 { dragMoved = true }
         switch activeDrag {
@@ -165,6 +174,7 @@ final class PlotInteractionView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard let activeDrag else { return }
         let point = localPoint(event)
+        onHover(timeAtX(point.x))
         switch activeDrag {
         case let .guide(guide, isNew):
             if isNew && !dragMoved { onGuide(guide, .cancelled) }
