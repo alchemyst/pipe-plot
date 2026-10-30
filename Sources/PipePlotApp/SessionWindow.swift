@@ -13,6 +13,7 @@ struct SessionWindow: View {
     @State private var previewSelectionEnd: Date?
     @State private var previewSelectionLinked = false
     @State private var previewGuide: Guide?
+    @State private var previewGuideChartID: ChartID?
 
     private var session: SessionSnapshot? { model.sessions[sessionID] }
 
@@ -53,16 +54,25 @@ struct SessionWindow: View {
         .alert("PipePlot", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.clearError() } })) {
             Button("OK") { model.clearError() }
         } message: { Text(model.errorMessage ?? "") }
-        .onKeyPress(keys: [.escape, .leftArrow, .rightArrow, .upArrow, .downArrow, .a, .d, .f, .w, .s]) { press in
+        .onKeyPress(keys: [.escape, .a, .d, .f, .w, .s]) { press in
             guard !isEditingText, let session else { return .ignored }
             switch press.key {
             case .escape:
                 if session.timeline.selection != nil { model.setSelection(nil, session: session); return .handled }
-            case .leftArrow, .a: model.navigateBack(session); return .handled
-            case .rightArrow, .d: model.navigateForward(session); return .handled
-            case .f: model.followNow(session); return .handled
-            case .upArrow, .w: selectAdjacentChart(-1, in: session); return .handled
-            case .downArrow, .s: selectAdjacentChart(1, in: session); return .handled
+            case .a: model.pan(80, width: 800, session: session); return .handled
+            case .d: model.pan(-80, width: 800, session: session); return .handled
+            case .w, .s:
+                let range = model.domain(for: session)
+                let anchor = range.lowerBound.addingTimeInterval(range.upperBound.timeIntervalSince(range.lowerBound) / 2)
+                model.zoom(press.key == .w ? 1.25 : 0.8, anchor: anchor, session: session)
+                return .handled
+            case .f:
+                guard let selection = session.timeline.selection else { return .ignored }
+                let bounds = model.resolvedSelectionBounds(selection, session: session)
+                var timeline = session.timeline; timeline.followNow = false
+                timeline.visibleStart = bounds.lowerBound; timeline.visibleEnd = bounds.upperBound
+                model.navigate(timeline, session: session)
+                return .handled
             default: break
             }
             return .ignored
@@ -80,7 +90,6 @@ struct SessionWindow: View {
             Button { model.createSessionWindow() } label: { Label("New Session", systemImage: "plus.rectangle.on.folder") }
                 .help("Create a session in a new window (⌘N)")
             Button { createChart() } label: { Label("Add Chart", systemImage: "chart.bar.xaxis") }
-                .keyboardShortcut("d", modifiers: [.command, .shift])
                 .help("Create a chart below and make it the target sink (⌘⇧D)")
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
@@ -140,21 +149,12 @@ struct SessionWindow: View {
         return responder is NSTextView || responder is NSTextField
     }
 
-    private func selectAdjacentChart(_ offset: Int, in session: SessionSnapshot) {
-        let charts = session.charts.filter(\.isVisible)
-        guard !charts.isEmpty else { return }
-        let current = charts.firstIndex(where: { $0.id == selectedChartID }) ?? 0
-        let next = min(charts.count - 1, max(0, current + offset))
-        selectedChartID = charts[next].id
-        model.selectChart(charts[next].id, sessionID: session.id)
-    }
-
     private func chartRow(_ chart: ChartSnapshot, session: SessionSnapshot) -> some View {
         ChartRow(chart: chart, session: session,
                  samples: model.visibleSamples(for: chart, session: session), now: model.sessionNow(session), hoverDate: $hoverDate,
                  sharedGestureDomain: $gestureDomain, sharedSelectionStart: $previewSelectionStart,
                  sharedSelectionEnd: $previewSelectionEnd, sharedSelectionLinked: $previewSelectionLinked,
-                 sharedGuidePreview: $previewGuide, model: model,
+                 sharedGuidePreview: $previewGuide, sharedGuideChartID: $previewGuideChartID, model: model,
                  onTarget: { model.setTarget(chart.id) },
                  onToggleDots: { model.toggleDots(chart) }, onToggleLines: { model.toggleLines(chart) },
                  onAddGuide: { value, label in model.addGuide(value: value, chart: chart, session: session, label: label) },
@@ -178,6 +178,7 @@ private struct ChartRow: View {
     @Binding var sharedSelectionEnd: Date?
     @Binding var sharedSelectionLinked: Bool
     @Binding var sharedGuidePreview: Guide?
+    @Binding var sharedGuideChartID: ChartID?
     let model: PipePlotAppModel
     let onTarget: () -> Void
     let onToggleDots: () -> Void
@@ -206,7 +207,7 @@ private struct ChartRow: View {
     }
     private var plotDomain: ClosedRange<Date> { sharedGestureDomain ?? domain }
     private var plotChart: ChartSnapshot {
-        guard let guidePreview = sharedGuidePreview, guidePreview.orientation == .horizontalValue, chart.guides.contains(where: { $0.id == guidePreview.id }) || guidePreview.id == sharedGuidePreview?.id else { return chart }
+        guard let guidePreview = sharedGuidePreview, sharedGuideChartID == chart.id, guidePreview.orientation == .horizontalValue else { return chart }
         var value = chart
         if let index = value.guides.firstIndex(where: { $0.id == guidePreview.id }) { value.guides[index] = guidePreview }
         else { value.guides.append(guidePreview) }
@@ -250,12 +251,12 @@ private struct ChartRow: View {
                            },
                            onGuide: { guide, phase in
                                 switch phase {
-                                case .began, .changed: sharedGuidePreview = guide
+                                case .began, .changed: sharedGuidePreview = guide; sharedGuideChartID = chart.id
                                 case .ended:
-                                    sharedGuidePreview = nil
+                                    sharedGuidePreview = nil; sharedGuideChartID = nil
                                     if guide.orientation == .verticalTime { model.updateTimeGuide(guide, sessionID: session.id) }
                                     else { model.updateGuide(guide, chartID: chart.id, sessionID: session.id) }
-                                case .cancelled: sharedGuidePreview = nil
+                                case .cancelled: sharedGuidePreview = nil; sharedGuideChartID = nil
                                 }
                            },
                            onPan: { delta, phase, width in

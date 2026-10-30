@@ -171,6 +171,9 @@ struct PlotCanvas: View {
                 let xPos = x(date, in: plot)
                 var path = Path(); path.move(to: CGPoint(x: xPos, y: plot.minY)); path.addLine(to: CGPoint(x: xPos, y: plot.maxY))
                 context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
+                if let label = guide.label, !label.isEmpty {
+                    context.draw(Text(label).font(.system(size: 10, weight: .medium)).foregroundColor(color), at: CGPoint(x: min(plot.maxX - 5, xPos + 5), y: plot.minY + 8), anchor: .leading)
+                }
             }
         }
         if let forecast {
