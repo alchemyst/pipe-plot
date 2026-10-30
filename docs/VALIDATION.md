@@ -43,3 +43,17 @@ Automated test results do not substitute for visual interaction, sleep/wake, or 
 - Metadata migration preserves earlier sessions, and corrupt metadata fails instead of silently replacing the session index.
 
 After unlocking the Mac, visual checks confirmed line rendering, axis labels, the now marker, and a drag-to-now selection labelled “End follows now” with updating statistics. A mouse-event delivery defect found during this check was fixed in `009266b`; the rebuilt installed app shows the crosshair and exact observation readouts without changing chart height compared with the empty readout state. Ending the demo froze the visible clock, selection and statistics; manually restarting restored that frozen state. Sustained interaction-latency, sleep/wake, disk-full and week-scale resource checks remain unmeasured; no performance budget is claimed.
+
+## Audit follow-up — 2026-10-30
+
+The implementation and evidence following the specification audit are tracked in
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). The final suite passed 44
+XCTest cases, and the release app/CLI were installed. The controlled simultaneous
+cold-pipeline check is available as `scripts/check-cold-pipelines.py`; quit PipePlot
+first, and expect it to create one retained test session. It caught a continuation
+race that the earlier core-only concurrency tests did not cover.
+
+Final native checks verified a visible cold-start window, ruler alignment,
+snap-to-now selection, the shared inspector and the left-edge duration-follow
+button. Further interactive checks were stopped after the user noticed menus
+opening; do not report the entire manual acceptance matrix as passed.

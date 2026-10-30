@@ -1,5 +1,7 @@
 # Specification audit — 2026-10-30
 
+Follow-up implementation and current validation evidence: [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). This file retains the original audit findings.
+
 Audited application revision: `54c29f7`. Baseline: original `251e8f0:SPEC.md`, compared with current `SPEC.md` and the user's subsequent requests. **The implementation is not yet fully compliant.** Passing existing tests and the recent visual checks do not establish completion of the specification.
 
 ## Scope and evidence
