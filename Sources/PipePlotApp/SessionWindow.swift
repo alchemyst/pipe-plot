@@ -23,8 +23,10 @@ struct SessionWindow: View {
         .navigationTitle(session.map { "\($0.number) · \($0.title)" } ?? "PipePlot")
         .onAppear { model.refresh(sessionID) }
         .onAppear { model.becameActive(sessionID) }
+        .onChange(of: model.selectedChartIDs[sessionID]) { _, chartID in
+            if let chartID { selectedChartID = chartID }
+        }
         .onReceive(model.refreshTimer) { _ in model.tick(sessionID) }
-        .onReceive(NotificationCenter.default.publisher(for: .pipePlotReopen)) { _ in model.openSession(sessionID) }
         .onReceive(NotificationCenter.default.publisher(for: .pipePlotWillTerminate)) { _ in model.prepareForTermination() }
         .onDisappear { model.windowClosed(sessionID) }
         .background(WindowFocusObserver { model.becameActive(sessionID) }.frame(width: 0, height: 0))
@@ -69,6 +71,9 @@ struct SessionWindow: View {
             } else {
                 sharedRuler(session)
                 chartRows(session)
+                if let selection = session.timeline.selection {
+                    SelectionInspector(session: session, selection: selection, model: model) { model.setSelection($0, session: session) }
+                }
             }
             timelineBar(session)
         } else {
@@ -88,6 +93,11 @@ struct SessionWindow: View {
                 .help("Create a session in a new window (⌘N)")
             Button { createChart() } label: { Label("Add Chart", systemImage: "chart.bar.xaxis") }
                 .help("Create a chart below and make it the target sink (⌘⇧D)")
+                .dropDestination(for: String.self) { items, _ in
+                    guard let rawID = items.first, let id = UUID(uuidString: rawID) else { return false }
+                    model.moveToNewChart(id, sessionID: sessionID, after: selectedChartID)
+                    return true
+                }
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
         .background(.bar)
@@ -182,6 +192,145 @@ private struct SharedTimeRuler: View {
     }
 }
 
+private struct SelectionInspector: View {
+    let session: SessionSnapshot
+    let selection: TimeSelection
+    let model: PipePlotAppModel
+    let onSelection: (TimeSelection?) -> Void
+
+    private var charts: [ChartSnapshot] { session.charts }
+    private var streams: [StreamDescriptor] { charts.flatMap(\.streams) }
+    private var streamIDs: Set<StreamID> { Set(streams.map(\.id)) }
+    private var bounds: ClosedRange<Date> { model.resolvedSelectionBounds(selection, session: session) }
+    private var includedIDs: Set<StreamID> { selection.selectedStreamIDs.isEmpty ? streamIDs : selection.selectedStreamIDs.intersection(streamIDs) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Label("Selection", systemImage: "selection.pin.in.out").font(.caption.weight(.semibold))
+                Text("\(bounds.lowerBound.formatted(date: .omitted, time: .shortened)) – \(bounds.upperBound.formatted(date: .omitted, time: .shortened))")
+                    .font(.caption.monospacedDigit())
+                Text("duration \(duration(bounds.upperBound.timeIntervalSince(bounds.lowerBound)) )")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Text(modeLabel).font(.caption).foregroundStyle(.secondary)
+                selectionMenu
+                inclusionMenu
+                forecastMenu
+                Spacer(minLength: 0)
+                Button("Clear") { onSelection(nil) }.buttonStyle(.borderless)
+            }
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(streams.filter { includedIDs.contains($0.id) }) { stream in
+                        statisticCard(stream)
+                    }
+                    if streams.isEmpty { Text("No visible streams").foregroundStyle(.secondary).font(.caption) }
+                }
+            }.scrollIndicators(.hidden)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .frame(height: 108)
+        .background(.regularMaterial)
+        .overlay(alignment: .top) { Rectangle().fill(.separator).frame(height: 0.5) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Selection inspector")
+    }
+
+    private var modeLabel: String {
+        switch selection.mode {
+        case .fixed: "Fixed interval"
+        case .endFollowsNow: "End follows now"
+        case .bothFollowNow: "Fixed duration follows now"
+        }
+    }
+
+    private var selectionMenu: some View {
+        Menu("Boundary") {
+            Button("Fix interval") { updateMode(.fixed) }
+            Button("Link end to now") { updateMode(.endFollowsNow) }
+            Button("Follow now at fixed duration") {
+                let duration = max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound))
+                updateMode(.bothFollowNow(duration: duration))
+            }
+        }
+    }
+
+    private var inclusionMenu: some View {
+        Menu("Streams · \(includedIDs.count)/\(streams.count)") {
+            ForEach(streams) { stream in
+                let included = includedIDs.contains(stream.id)
+                Button {
+                    var ids = includedIDs
+                    if included { ids.remove(stream.id) } else { ids.insert(stream.id) }
+                    var value = selection
+                    value.selectedStreamIDs = ids.count == streamIDs.count ? [] : ids
+                    onSelection(value)
+                    } label: {
+                        let chart = charts.first(where: { $0.streams.contains(where: { $0.id == stream.id }) })
+                        let suffix = chart.map { " · \($0.title)\($0.isVisible ? "" : " (hidden)")" } ?? ""
+                        Label(stream.name + suffix, systemImage: included ? "checkmark" : "")
+                    }
+                    .disabled(included && includedIDs.count == 1)
+            }
+            Button("Include all") { var value = selection; value.selectedStreamIDs = []; onSelection(value) }
+        }
+    }
+
+    private var forecastMenu: some View {
+        Menu {
+            ForEach(charts) { chart in
+                ForEach(chart.streams) { stream in
+                    Menu("\(stream.name) · \(chart.title)") {
+                        ForEach(chart.guides.filter { $0.orientation == .horizontalValue }) { guide in
+                            Button(guide.label?.isEmpty == false ? guide.label! : "Guide at \(guide.value.formatted(.number.precision(.significantDigits(4))))") {
+                                model.setForecast(ForecastConfiguration(streamID: stream.id, guideID: guide.id, selection: selection), session: session)
+                            }
+                        }
+                    }
+                }
+            }
+        } label: { Label("Forecast", systemImage: "chart.xyaxis.line") }
+            .disabled(charts.allSatisfy { $0.guides.allSatisfy { $0.orientation != .horizontalValue } })
+            .help("Fit selected observations to a value guide")
+    }
+
+    private func updateMode(_ mode: SelectionMode) {
+        let now = model.sessionNow(session)
+        var value = selection
+        value.mode = mode
+        switch mode {
+        case .fixed: value.start = bounds.lowerBound; value.end = bounds.upperBound
+        case .endFollowsNow: value.start = bounds.lowerBound; value.end = now
+        case .bothFollowNow(let duration): value.start = now.addingTimeInterval(-duration); value.end = now
+        }
+        onSelection(value)
+    }
+
+    private func statisticCard(_ stream: StreamDescriptor) -> some View {
+        let stats = model.stats(for: stream.id, in: selection)
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(stream.name).font(.caption.weight(.semibold)).lineLimit(1)
+            if let stats {
+                Text("n \(stats.count) · \(duration(stats.lastSampleAt.timeIntervalSince(stats.firstSampleAt))): \(format(stats.firstValue)) → \(format(stats.lastValue))")
+                Text("min \(format(stats.minimum)) · max \(format(stats.maximum)) · sample-weighted mean \(format(stats.mean)) · Δ \(format(stats.change))")
+            } else {
+                Text(model.isCalculatingStats(stream.id) ? "Calculating…" : "No samples in range").foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption2.monospacedDigit())
+        .frame(minWidth: 245, alignment: .leading)
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private func format(_ value: Double) -> String { String(format: "%.4g", value) }
+    private func duration(_ seconds: TimeInterval) -> String {
+        if seconds < 60 { return String(format: "%.1fs", seconds) }
+        if seconds < 3600 { return String(format: "%.1fm", seconds / 60) }
+        return String(format: "%.1fh", seconds / 3600)
+    }
+}
+
 private struct ChartRowHost: View {
     let chart: ChartSnapshot
     let session: SessionSnapshot
@@ -249,6 +398,8 @@ private struct ChartRow: View {
     @State private var showGuideEditor = false
     @State private var guideValue = ""
     @State private var guideLabel = ""
+    @State private var guideDate = Date()
+    @State private var guideSecond = "0"
     @State private var editingGuide: Guide?
     @State private var renameStream: StreamDescriptor?
     @State private var renameText = ""
@@ -365,7 +516,7 @@ private struct ChartRow: View {
                         ForEach(chart.streams) { stream in
                             if let sample = model.nearestSample(stream.id, at: hoverDate) {
                                 let offset = sample.timestamp.timeIntervalSince(hoverDate)
-                                Text("\(stream.name)  \(format(sample.value))\(chart.settings.unit.map { " \($0)" } ?? "")  \(offset >= 0 ? "+" : "")\(String(format: "%.1f", offset))s")
+                                Text(hoverReadout(stream: stream, sample: sample, offset: offset))
                                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                             }
                         }
@@ -376,7 +527,6 @@ private struct ChartRow: View {
                 }
             }
             .frame(height: 25)
-            if let selection = session.timeline.selection { selectionSummary(selection) }
             ForEach(model.allForecastStatuses[session.id, default: []].filter { status in chart.streams.contains(where: { $0.id == status.configuration.streamID }) }, id: \.configuration.id) { status in
                 HStack(spacing: 8) {
                     Label("Linear forecast", systemImage: "arrow.up.right")
@@ -424,17 +574,23 @@ private struct ChartRow: View {
             Spacer()
             Menu {
                 Button("Add horizontal value guide…", action: onAddGuideFromCurrentScale)
+                    .keyboardShortcut("g", modifiers: [.command, .option])
+                Button("Add time guide at Now") {
+                    model.addTimeGuide(at: now, sessionID: session.id)
+                }.keyboardShortcut("t", modifiers: [.command, .option])
                 ForEach(chart.guides) { guide in
                     Menu("\(guide.label?.isEmpty == false ? guide.label! : guide.orientation == .horizontalValue ? "Value guide" : "Time guide") · \(guide.value.formatted(.number.precision(.significantDigits(4))))") {
-                        Button("Edit exact value…") { editingGuide = guide; guideValue = "\(guide.value)"; guideLabel = guide.label ?? ""; showGuideEditor = true }
+                        Button(guide.orientation == .verticalTime ? "Edit date and label…" : "Edit exact value…") { beginEditingGuide(guide) }
                         Button("Delete guide", role: .destructive) { onRemoveGuide(guide) }
+                        guideColorMenu(guide)
                     }
                 }
                 if !session.timeGuides.isEmpty { Divider(); Text("Session time guides") }
                 ForEach(session.timeGuides) { guide in
                     Menu("\(guide.label?.isEmpty == false ? guide.label! : "Time guide") · \(Date(timeIntervalSince1970: guide.value).formatted(date: .omitted, time: .shortened))") {
-                        Button("Edit time and label…") { editingGuide = guide; guideValue = "\(guide.value)"; guideLabel = guide.label ?? ""; showGuideEditor = true }
+                        Button("Edit date and label…") { beginEditingGuide(guide) }
                         Button("Delete guide", role: .destructive) { model.removeTimeGuide(guide, sessionID: session.id) }
+                        guideColorMenu(guide)
                     }
                 }
             } label: { Label("Guides", systemImage: "line.3.horizontal") }.help("Create and edit chart guides")
@@ -491,6 +647,7 @@ private struct ChartRow: View {
                     }
                     .padding(.leading, 8).padding(.trailing, 4).padding(.vertical, 5)
                     .background(.quaternary.opacity(0.6), in: Capsule())
+                    .draggable(stream.id.uuidString)
                     .contextMenu {
                         streamActions(stream)
                     }
@@ -498,81 +655,29 @@ private struct ChartRow: View {
                 if chart.streams.isEmpty { Text("No streams").font(.caption).foregroundStyle(.tertiary) }
             }.padding(.horizontal, 14).padding(.vertical, 9)
         }.scrollIndicators(.hidden)
+            .dropDestination(for: String.self) { items, _ in
+                guard let rawID = items.first, let id = UUID(uuidString: rawID) else { return false }
+                onMove(id, chart.id)
+                return true
+            }
+            .help("Drop a stream here to move it to this chart")
     }
 
-    @ViewBuilder private func selectionSummary(_ selection: TimeSelection) -> some View {
-        let bounds = model.resolvedSelectionBounds(selection, session: session)
-        HStack(spacing: 12) {
-            Label("Selection", systemImage: "selection.pin.in.out")
-                .font(.caption.weight(.semibold))
-            Text("\(bounds.lowerBound.formatted(date: .omitted, time: .shortened)) – \(bounds.upperBound.formatted(date: .omitted, time: .shortened))")
-                .font(.caption.monospacedDigit())
-            Text(selection.mode == .fixed ? "Fixed interval" : (selection.mode == .endFollowsNow ? "End follows now" : "Fixed duration follows now"))
-                .font(.caption).foregroundStyle(.secondary)
-            Menu("Selection") {
-                Button("Fix interval") {
-                    var value = selection; value.start = bounds.lowerBound; value.end = bounds.upperBound; value.mode = .fixed
-                    onSelection(value)
-                }
-                Button("Link end to now") {
-                    var value = selection; value.start = bounds.lowerBound; value.end = model.sessionNow(session); value.mode = .endFollowsNow
-                    onSelection(value)
-                }
-                Button("Follow now at fixed duration") {
-                    let duration = max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound)); let now = model.sessionNow(session)
-                    onSelection(TimeSelection(start: now.addingTimeInterval(-duration), end: now, mode: .bothFollowNow(duration: duration), selectedStreamIDs: selection.selectedStreamIDs))
-                }
-                Divider()
-                Button("Clear selection", role: .destructive) { onSelection(nil) }
-            }
-            Menu("Included streams") {
-                ForEach(chart.streams) { stream in
-                    let included = selection.selectedStreamIDs.isEmpty || selection.selectedStreamIDs.contains(stream.id)
-                    Button {
-                        var value = selection
-                        var ids = value.selectedStreamIDs.isEmpty ? Set(chart.streams.map(\.id)) : value.selectedStreamIDs
-                        if included { ids.remove(stream.id) } else { ids.insert(stream.id) }
-                        value.selectedStreamIDs = ids
-                        onSelection(value)
-                    } label: { Label(stream.name, systemImage: included ? "checkmark" : "") }
-                }
-                Button("Include all") { var value = selection; value.selectedStreamIDs = Set(chart.streams.map(\.id)); onSelection(value) }
-            }
-            Spacer()
-            ForEach(chart.streams) { stream in
-                if selection.selectedStreamIDs.isEmpty || selection.selectedStreamIDs.contains(stream.id) {
-                    let stats = modelStatistics(stream.id, selection)
-                    if let stats {
-                        Text("\(stream.name): n \(stats.count) · \(duration(stats.lastSampleAt.timeIntervalSince(stats.firstSampleAt)) ) · first \(format(stats.firstValue)) · last \(format(stats.lastValue)) · min \(format(stats.minimum)) · max \(format(stats.maximum)) · sample mean \(format(stats.mean)) · Δ \(format(stats.change))")
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            Menu { forecastMenu(selection) } label: { Label("Forecast", systemImage: "chart.xyaxis.line") }
-                .disabled(chart.guides.filter { $0.orientation == .horizontalValue }.isEmpty)
-                .help("Fit selected observations to a guide")
-        }.padding(.horizontal, 15).padding(.bottom, 11)
-    }
-
-    @ViewBuilder private func forecastMenu(_ selection: TimeSelection) -> some View {
-        ForEach(chart.streams) { stream in
-            Menu(stream.name) {
-                ForEach(chart.guides.filter { $0.orientation == .horizontalValue }) { guide in
-                    Button(guide.label?.isEmpty == false ? guide.label! : "Guide at \(guide.value.formatted(.number.precision(.significantDigits(4))))") {
-                        model.setForecast(ForecastConfiguration(streamID: stream.id, guideID: guide.id, selection: selection), session: session)
-                    }
+    @ViewBuilder private func guideColorMenu(_ guide: Guide) -> some View {
+        Menu("Guide Color") {
+            ForEach(0..<9, id: \.self) { index in
+                Button {
+                    var value = guide
+                    value.color = PlotCanvas.paletteHex(index)
+                    if value.orientation == .verticalTime { model.updateTimeGuide(value, sessionID: session.id) }
+                    else { onEditGuide(value) }
+                } label: {
+                    Label("Color \(index + 1)", systemImage: "circle.fill")
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(PlotCanvas.paletteColor(index))
                 }
             }
         }
-        if session.timeline.forecast != nil { Divider(); Button("Disable forecast", role: .destructive) { model.setForecast(nil, session: session) } }
-    }
-
-    private func modelStatistics(_ streamID: StreamID, _ selection: TimeSelection) -> SelectionStatistics? { model.stats(for: streamID, in: selection) }
-    private func format(_ value: Double) -> String { String(format: "%.3g", value) }
-    private func duration(_ seconds: TimeInterval) -> String {
-        if seconds < 60 { return String(format: "%.1fs", seconds) }
-        if seconds < 3600 { return String(format: "%.1fm", seconds / 60) }
-        return String(format: "%.1fh", seconds / 3600)
     }
 
     @ViewBuilder private func streamActions(_ stream: StreamDescriptor) -> some View {
@@ -589,10 +694,16 @@ private struct ChartRow: View {
     private var guideSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(editingGuide == nil ? "Add value guide" : (editingGuide?.orientation == .verticalTime ? "Edit time guide" : "Edit value guide")).font(.title3.weight(.semibold))
-            TextField(editingGuide?.orientation == .verticalTime ? "Unix time (seconds)" : "Value", text: $guideValue).textFieldStyle(.roundedBorder)
+            if editingGuide?.orientation == .verticalTime {
+                DatePicker("Local date and time", selection: $guideDate, displayedComponents: [.date, .hourAndMinute])
+                TextField("Seconds (0–59.999)", text: $guideSecond).textFieldStyle(.roundedBorder)
+            } else {
+                TextField("Value", text: $guideValue).textFieldStyle(.roundedBorder)
+            }
             TextField("Label (optional)", text: $guideLabel).textFieldStyle(.roundedBorder)
             HStack { Spacer(); Button("Cancel") { showGuideEditor = false; editingGuide = nil }; Button(editingGuide == nil ? "Add Guide" : "Save Guide") {
-                if let value = Double(guideValue), value.isFinite {
+                let enteredValue = editingGuide?.orientation == .verticalTime ? editedGuideTimestamp() : Double(guideValue)
+                if let value = enteredValue, value.isFinite {
                     if var guide = editingGuide { guide.value = value; guide.label = guideLabel.isEmpty ? nil : guideLabel; if guide.orientation == .verticalTime { model.updateTimeGuide(guide, sessionID: session.id) } else { onEditGuide(guide) } }
                     else { onAddGuide(value, guideLabel.isEmpty ? nil : guideLabel) }
                 }
@@ -602,6 +713,29 @@ private struct ChartRow: View {
     }
 
     private func onAddGuideFromCurrentScale() { editingGuide = nil; guideValue = ""; guideLabel = ""; showGuideEditor = true }
+    private func hoverReadout(stream: StreamDescriptor, sample: StoredSample, offset: TimeInterval) -> String {
+        let value = String(format: "%.3g", sample.value)
+        let unit = chart.settings.unit.map { " \($0)" } ?? ""
+        let signedOffset = String(format: "%+.1fs", offset)
+        return "\(stream.name)  \(value)\(unit)  \(signedOffset)"
+    }
+    private func beginEditingGuide(_ guide: Guide) {
+        editingGuide = guide
+        guideLabel = guide.label ?? ""
+        if guide.orientation == .verticalTime {
+            guideDate = Date(timeIntervalSince1970: guide.value)
+            let seconds = Double(Calendar.current.component(.second, from: guideDate)) + guide.value.truncatingRemainder(dividingBy: 1)
+            guideSecond = String(format: "%.3f", seconds)
+        } else { guideValue = "\(guide.value)" }
+        showGuideEditor = true
+    }
+    private func editedGuideTimestamp() -> Double? {
+        guard let seconds = Double(guideSecond), seconds >= 0, seconds < 60 else { return nil }
+        var components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: guideDate)
+        components.second = Int(seconds)
+        guard let date = Calendar.current.date(from: components) else { return nil }
+        return date.timeIntervalSince1970 + seconds.truncatingRemainder(dividingBy: 1)
+    }
 }
 
 extension StreamDescriptor: Identifiable {}

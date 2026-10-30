@@ -94,11 +94,12 @@ struct PlotCanvas: View {
     private func value(at y: CGFloat, height: CGFloat, plot: CGRect) -> Double {
         let range = yRange
         let fraction = min(1, max(0, 1 - (y - plot.minY) / max(plot.height, 1)))
-        return range.lowerBound + (range.upperBound - range.lowerBound) * Double(fraction)
+        return interpolatedValue(in: range, fraction: Double(fraction))
     }
 
-    private func draw(in context: GraphicsContext, size: CGSize) {
+    private func draw(in graphicsContext: GraphicsContext, size: CGSize) {
         guard size.width > 1, size.height > 1 else { return }
+        var context = graphicsContext
         let plot = plotRect(for: size)
         let valueRange = yRange
         var grid = Path()
@@ -118,12 +119,13 @@ struct PlotCanvas: View {
         }
         for index in 0...4 {
             let fraction = Double(index) / 4
-            let value = valueRange.upperBound - (valueRange.upperBound - valueRange.lowerBound) * fraction
+            let value = interpolatedValue(in: valueRange, fraction: 1 - fraction)
             let label = value.formatted(.number.precision(.significantDigits(4)))
             let yPosition = plot.minY + plot.height * CGFloat(fraction)
             context.draw(Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary), at: CGPoint(x: plot.minX - 7, y: yPosition), anchor: .trailing)
         }
 
+        context.clip(to: Path(plot))
         for (index, stream) in chart.streams.enumerated() {
             let data = samples[stream.id] ?? []
             guard !data.isEmpty else { continue }
@@ -224,17 +226,47 @@ struct PlotCanvas: View {
     private var yRange: ClosedRange<Double> {
         if case let .fixed(minimum, maximum) = chart.settings.yScale, minimum < maximum { return minimum...maximum }
         var values = chart.streams.flatMap { samples[$0.id, default: []].map(\.value) }
-        values.append(contentsOf: forecasts.filter { forecast in chart.streams.contains(where: { $0.id == forecast.streamID }) }.map(\.value))
+        values.append(contentsOf: forecasts.filter { forecast in
+            forecast.value.isFinite && chart.streams.contains(where: { $0.id == forecast.streamID })
+        }.map(\.value))
         guard let minimum = values.min(), let maximum = values.max() else { return 0...1 }
-        if minimum == maximum {
-            let delta = max(abs(minimum) * 0.08, 1)
-            return (minimum - delta)...(maximum + delta)
+        let scale = max(abs(minimum), abs(maximum), 1)
+        let lower = minimum / scale
+        let upper = maximum / scale
+        var paddedLower: Double
+        var paddedUpper: Double
+        if upper > lower {
+            let padding = (upper - lower) * 0.08
+            paddedLower = max(-1, lower - padding)
+            paddedUpper = min(1, upper + padding)
+        } else if upper >= 1 {
+            paddedLower = 0.92; paddedUpper = 1
+        } else if lower <= -1 {
+            paddedLower = -1; paddedUpper = -0.92
+        } else {
+            let delta = max(abs(lower) * 0.08, 0.02)
+            paddedLower = max(-1, lower - delta); paddedUpper = min(1, upper + delta)
         }
-        let padding = (maximum - minimum) * 0.08
-        return (minimum - padding)...(maximum + padding)
+        if paddedLower >= paddedUpper { return -1...1 }
+        return (paddedLower * scale)...(paddedUpper * scale)
     }
     private func x(_ date: Date, in rect: CGRect) -> CGFloat { rect.minX + rect.width * CGFloat(date.timeIntervalSince(domain.lowerBound) / timeSpan) }
-    private func y(_ value: Double, range: ClosedRange<Double>, in rect: CGRect) -> CGFloat { rect.maxY - rect.height * CGFloat((value - range.lowerBound) / max(range.upperBound - range.lowerBound, 0.000001)) }
+    private func y(_ value: Double, range: ClosedRange<Double>, in rect: CGRect) -> CGFloat {
+        let scale = max(abs(range.lowerBound), abs(range.upperBound), abs(value.isFinite ? value : 0), 1)
+        let low = range.lowerBound / scale
+        let high = range.upperBound / scale
+        let normalized = value.isFinite ? value / scale : (value.sign == .minus ? low : high)
+        let rawFraction = (normalized - low) / max(high - low, Double.leastNonzeroMagnitude)
+        let safeFraction = rawFraction.isFinite ? min(16, max(-16, rawFraction)) : (rawFraction.sign == .minus ? -16 : 16)
+        return rect.maxY - rect.height * CGFloat(safeFraction)
+    }
+
+    private func interpolatedValue(in range: ClosedRange<Double>, fraction: Double) -> Double {
+        let scale = max(abs(range.lowerBound), abs(range.upperBound), 1)
+        let low = range.lowerBound / scale
+        let high = range.upperBound / scale
+        return (low + (high - low) * fraction) * scale
+    }
 
     static func color(_ index: Int) -> Color {
         color(hex: paletteHex(index))
@@ -250,6 +282,8 @@ struct PlotCanvas: View {
     static func paletteHex(_ index: Int) -> String {
         ["#38bdf8", "#fb923c", "#c084fc", "#4ade80", "#f472b6", "#facc15", "#60a5fa", "#2dd4bf", "#f87171"][index % 9]
     }
+
+    static func paletteColor(_ index: Int) -> Color { color(hex: paletteHex(index)) }
 
     private static func color(hex: String) -> Color {
         Color(hex: hex)
