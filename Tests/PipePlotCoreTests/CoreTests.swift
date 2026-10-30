@@ -62,6 +62,66 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(third.streams.map(\.id),fourth.streams.map(\.id))
         XCTAssertTrue(fourth.continued)
     }
+    func testTargetTouchAndExplicitChartCreationRetainUnambiguousContinuations() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        let first=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1))
+        try store.finishAttachment(first.attachmentID,reason:.interrupted)
+        _=try store.setTarget(first.chartID)
+        let resumed=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1))
+        XCTAssertTrue(resumed.continued)
+        try store.finishAttachment(resumed.attachmentID,reason:.interrupted)
+        let created=try store.registerSampler(intent:.newChart,sampler:SamplerIntent(columnCount:1))
+        try store.finishAttachment(created.attachmentID,reason:.interrupted)
+        let again=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1))
+        XCTAssertTrue(again.continued)
+        XCTAssertEqual(again.chartID,created.chartID)
+    }
+    func testUnitHintInitializesUnsetChartButNeverOverwritesConfiguredUnit() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        let first=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1,unitHint:"MiB"))
+        XCTAssertEqual(try store.snapshot(sessionID:first.sessionID)?.charts[0].settings.unit,"MiB")
+        let custom=AxisSettings(unit:"GiB")
+        try store.updateSettings(custom,chartID:first.chartID)
+        try store.finishAttachment(first.attachmentID,reason:.eof)
+        _=try store.registerSampler(intent:.chart(chartID:first.chartID,lineNames:[first.streams[0].name]),sampler:SamplerIntent(columnCount:1,unitHint:"bytes"))
+        XCTAssertEqual(try store.snapshot(sessionID:first.sessionID)?.charts[0].settings.unit,"GiB")
+    }
+    func testFinishedAttachmentRetentionIsBoundedWhileSampleHistoryRemains() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        var all:[StreamID]=[]
+        for i in 0..<30 {
+            let a=try store.registerSampler(intent:.fresh,sampler:SamplerIntent(columnCount:1))
+            all.append(a.streams[0].id)
+            _=try store.append(SampleRow(values:[Double(i)]),to:a.attachmentID)
+            try store.finishAttachment(a.attachmentID,reason:.eof)
+        }
+        XCTAssertLessThanOrEqual(store.retainedAttachmentCount,1)
+        XCTAssertEqual(try all.map{try store.samples.count(streamID:$0)}.reduce(0,+),30)
+        XCTAssertEqual(store.samplerGroup(containing:all.last!),[all.last!])
+    }
+    func testLatestEndedGroupRemainsRepairableAndUndoableAfterPruning() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        let session=try store.createSession()
+        let old=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:2,requestedNames:["a","b"]))
+        _=try store.append(SampleRow(values:[1,2]),to:old.attachmentID);try store.finishAttachment(old.attachmentID,reason:.eof)
+        let fresh=try store.registerSampler(intent:.fresh,sampler:SamplerIntent(columnCount:2))
+        _=try store.append(SampleRow(values:[3,4]),to:fresh.attachmentID);try store.finishAttachment(fresh.attachmentID,reason:.eof)
+        XCTAssertEqual(store.samplerGroup(containing:fresh.streams[0].id),fresh.streams.map(\.id))
+        try store.reassociateStreams(fresh.streams.map(\.id),to:old.streams.map(\.id))
+        XCTAssertEqual(try store.samples.count(streamID:old.streams[0].id),2)
+        XCTAssertTrue(try store.undo(sessionID:session.id))
+        XCTAssertEqual(try store.samples.count(streamID:fresh.streams[0].id),1)
+        XCTAssertEqual(try store.redo(sessionID:session.id),true)
+        XCTAssertEqual(try store.samples.count(streamID:old.streams[0].id),2)
+    }
 
     func testExplicitRegistrationUsesSessionMRUAndRejectsAtomically() throws {
         let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
@@ -109,10 +169,9 @@ final class CoreTests: XCTestCase {
         defer{try? FileManager.default.removeItem(at:dir)}
         let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
         let session=try store.createSession(), previous=session.charts[0].id
-        let middle=try store.createChart(in:session.id,after:previous)
+        _ = try store.createChart(in:session.id,after:previous)
         try store.deleteChart(previous)
-        let made=try store.createChart(in:session.id,after:previous)
-        _=middle
+        _ = try store.createChart(in:session.id,after:previous)
         XCTAssertFalse(try XCTUnwrap(store.snapshot(sessionID:session.id)?.charts.first{$0.id==previous}).isVisible)
         XCTAssertTrue(try store.undo(sessionID:session.id))
         XCTAssertTrue(try XCTUnwrap(store.snapshot(sessionID:session.id)?.charts.first{$0.id==previous}).isVisible)
