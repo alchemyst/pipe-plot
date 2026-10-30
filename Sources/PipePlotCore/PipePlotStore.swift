@@ -483,8 +483,11 @@ public final class PipePlotStore {
     private func pruneAttachments(){
         var keep=Set(attachments.values.filter(\.active).map(\.id))
         if let continuation=lastContinuation,let id=attachmentOrder.reversed().first(where:{attachments[$0]?.streamIDs==continuation.streamIDs}){keep.insert(id)}
-        var latestBySession=Set<SessionID>()
-        for id in attachmentOrder.reversed(){guard let attachment=attachments[id]else{continue};if latestBySession.insert(attachment.sessionID).inserted{keep.insert(id)}}
+        // Keep the newest producer record touching each stream. That retains the latest
+        // ended group for every line, while repeated continuations over the same lines
+        // collapse to one record. Raw samples and segment identities remain in SQLite.
+        var seenStreams=Set<StreamID>()
+        for id in attachmentOrder.reversed(){guard let attachment=attachments[id]else{continue};let newlyLatest=attachment.streamIDs.contains{seenStreams.insert($0).inserted};if newlyLatest{keep.insert(id)}}
         for stack in Array(undoStacks.values)+Array(redoStacks.values){for action in stack{if case .reassociation(let association)=action{keep.insert(association.attachmentID)}}}
         attachments=attachments.filter{keep.contains($0.key)}
         attachmentOrder.removeAll{!keep.contains($0)}

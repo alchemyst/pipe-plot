@@ -90,7 +90,7 @@ final class CoreTests: XCTestCase {
         _=try store.registerSampler(intent:.chart(chartID:first.chartID,lineNames:[first.streams[0].name]),sampler:SamplerIntent(columnCount:1,unitHint:"bytes"))
         XCTAssertEqual(try store.snapshot(sessionID:first.sessionID)?.charts[0].settings.unit,"GiB")
     }
-    func testFinishedAttachmentRetentionIsBoundedWhileSampleHistoryRemains() throws {
+    func testLatestEndedGroupPerStreamRemainsRepairableAndHistoryIsRetained() throws {
         let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
         defer{try? FileManager.default.removeItem(at:dir)}
         let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
@@ -101,9 +101,24 @@ final class CoreTests: XCTestCase {
             _=try store.append(SampleRow(values:[Double(i)]),to:a.attachmentID)
             try store.finishAttachment(a.attachmentID,reason:.eof)
         }
-        XCTAssertLessThanOrEqual(store.retainedAttachmentCount,1)
+        XCTAssertEqual(store.retainedAttachmentCount,30)
         XCTAssertEqual(try all.map{try store.samples.count(streamID:$0)}.reduce(0,+),30)
-        XCTAssertEqual(store.samplerGroup(containing:all.last!),[all.last!])
+        for id in all { XCTAssertEqual(store.samplerGroup(containing:id),[id]) }
+    }
+    func testRepeatedContinuationsOfOneStreamKeepOnlyLatestAttachmentRecord() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        var latest:ReadyReply?
+        for i in 0..<30 {
+            let attachment=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1))
+            if let prior=latest { XCTAssertEqual(attachment.streams.map(\.id),prior.streams.map(\.id)) }
+            _=try store.append(SampleRow(values:[Double(i)]),to:attachment.attachmentID)
+            try store.finishAttachment(attachment.attachmentID,reason:.eof)
+            latest=attachment
+        }
+        XCTAssertEqual(store.retainedAttachmentCount,1)
+        XCTAssertEqual(try store.samples.count(streamID:try XCTUnwrap(latest?.streams[0].id)),30)
     }
     func testLatestEndedGroupRemainsRepairableAndUndoableAfterPruning() throws {
         let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
