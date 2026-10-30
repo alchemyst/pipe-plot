@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 import Observation
 import PipePlotCore
 import PipePlotTransport
@@ -8,6 +9,7 @@ import PipePlotTransport
 @Observable
 final class PipePlotAppModel {
     let store: PipePlotStore
+    private let queryStore: SampleStore
     private var server: UnixSocketServer?
     private let connectionRegistry = ConnectionRegistry()
     private let appInstanceID = UUID()
@@ -18,21 +20,28 @@ final class PipePlotAppModel {
     private(set) var sessions: [SessionID: SessionSnapshot] = [:]
     private(set) var errorMessage: String?
     private(set) var activeSessionID: SessionID?
+    private(set) var selectedChartIDs: [SessionID: ChartID] = [:]
     private(set) var forecastStatuses: [SessionID: ForecastStatus] = [:]
+    private(set) var allForecastStatuses: [SessionID: [ForecastStatus]] = [:]
     private(set) var openedSessionIDs: Set<SessionID> = []
     private(set) var clockPulse = Date()
     private var terminating = false
     private var navigationBack: [SessionID: [TimelineState]] = [:]
     private var navigationForward: [SessionID: [TimelineState]] = [:]
-    @ObservationIgnored private var displayCache: [StreamID: (key: DisplayCacheKey, rows: [StoredSample])] = [:]
+    let queries = BackgroundQueries()
     let refreshTimer = Timer.publish(every: 0.75, on: .main, in: .common).autoconnect()
 
-    init() {
+    init(databaseURL: URL? = nil) {
         do {
-            let database = PipePlotLocations.supportDirectory.appendingPathComponent("pipeplot.sqlite")
+            let database = databaseURL ?? PipePlotLocations.supportDirectory.appendingPathComponent("pipeplot.sqlite")
             store = try PipePlotStore(databaseURL: database)
+            queryStore = try SampleStore(readOnlyDatabaseURL: database)
         } catch {
-            fatalError("Could not open PipePlot's local store: \(error.localizedDescription)")
+            let alert = NSAlert(error: error)
+            alert.messageText = "PipePlot could not open its saved data"
+            alert.informativeText = "\(error.localizedDescription)\nYour saved files have not been replaced. Check available disk space and access to Application Support/PipePlot, then reopen the app."
+            alert.runModal()
+            exit(EXIT_FAILURE)
         }
         let listener = UnixSocketServer { [weak self] connection in self?.handle(connection) }
         server = listener
@@ -53,10 +62,10 @@ final class PipePlotAppModel {
             for session in all { sessions[session.id] = session }
             let cliLaunch = ProcessInfo.processInfo.arguments.contains("--pipeplot-launched-by-cli")
             if cliLaunch {
-                let fresh = try store.createSession()
-                refresh(fresh.id)
+                // Registration atomically creates the requested destination. Listing and
+                // explicit-session lookup must not create an empty bootstrap session.
                 startServer()
-                return fresh.id
+                return nil
             }
             let prior = store.previouslyOpenSessionIDs
             if !prior.isEmpty {
@@ -81,12 +90,23 @@ final class PipePlotAppModel {
     }
 
     func createSessionWindow() {
-        do { let session = try store.createSession(); refresh(session.id); openWindowAction?(session.id) }
+        do { let session = try store.createSession(); refreshAll(); openWindowAction?(session.id) }
         catch { errorMessage = error.localizedDescription }
     }
 
     func createChart(in sessionID: SessionID, after chartID: ChartID?) {
-        do { _ = try store.createChart(in: sessionID, after: chartID); refresh(sessionID) }
+        do { let chart = try store.createChart(in: sessionID, after: chartID); selectedChartIDs[sessionID] = chart.id; refreshAll() }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    func selectChart(_ chartID: ChartID, sessionID: SessionID) { selectedChartIDs[sessionID] = chartID }
+
+    func updateTimeGuide(_ guide: Guide, sessionID: SessionID) {
+        do { try store.upsertTimeGuide(guide, sessionID: sessionID); refresh(sessionID) }
+        catch { errorMessage = error.localizedDescription }
+    }
+    func removeTimeGuide(_ guide: Guide, sessionID: SessionID) {
+        do { try store.removeTimeGuide(guide.id, sessionID: sessionID); refresh(sessionID) }
         catch { errorMessage = error.localizedDescription }
     }
 
@@ -131,17 +151,36 @@ final class PipePlotAppModel {
     }
     func moveToNewChart(_ stream: StreamID, sessionID: SessionID, after chartID: ChartID?) {
         do {
-            let chart = try store.createChart(in: sessionID, after: chartID)
-            try store.moveStream(stream, to: chart.id)
+            _ = try store.moveStreamToNewChart(stream, after: chartID)
             refreshAll()
         } catch { errorMessage = error.localizedDescription; refresh(sessionID) }
+    }
+    func renameSession(_ id: SessionID, to title: String) { perform { try store.renameSession(id, to: title) } }
+    func renameChart(_ id: ChartID, to title: String) { perform { try store.renameChart(id, to: title) } }
+    func reorderChart(_ id: ChartID, to index: Int) { perform { try store.reorderChart(id, to: index) } }
+    func deleteChart(_ id: ChartID) { perform { try store.deleteChart(id) } }
+    func restoreChart(_ id: ChartID) { perform { try store.restoreChart(id) } }
+    func deleteSession(_ id: SessionID) {
+        connectionRegistry.closeConnections(for: id)
+        perform { try store.deleteSession(sessionID: id) }
+    }
+    func restoreSession(_ id: SessionID) { perform { try store.restoreSession(sessionID: id) } }
+    func updateStreamStyle(_ id: StreamID, colorHex: String?, dotsVisible: Bool?, linesVisible: Bool?) {
+        perform { try store.updateStreamStyle(id, colorHex: colorHex, dotsVisible: dotsVisible, linesVisible: linesVisible) }
+    }
+    private func perform(_ action: () throws -> Void) {
+        do { try action(); refreshAll() } catch { errorMessage = error.localizedDescription }
+    }
+    func samplerGroup(containing stream: StreamID, sessionID: SessionID) -> [StreamID] { store.samplerGroup(containing: stream) ?? [stream] }
+    func reassociate(_ sources: [StreamID], with destinations: [StreamID], sessionID: SessionID) {
+        perform { try store.reassociateStreams(sources, to: destinations) }
     }
     func reassociate(_ source: StreamID, with destination: StreamID, sessionID: SessionID) {
         do { try store.reassociateStreams([source], to: [destination]); refresh(sessionID) }
         catch { errorMessage = error.localizedDescription }
     }
-    func undo(_ sessionID: SessionID) { do { _ = try store.undo(sessionID: sessionID); refresh(sessionID) } catch { errorMessage = error.localizedDescription } }
-    func redo(_ sessionID: SessionID) { do { _ = try store.redo(sessionID: sessionID); refresh(sessionID) } catch { errorMessage = error.localizedDescription } }
+    func undo(_ sessionID: SessionID) { do { _ = try store.undo(sessionID: sessionID); refreshAll() } catch { errorMessage = error.localizedDescription } }
+    func redo(_ sessionID: SessionID) { do { _ = try store.redo(sessionID: sessionID); refreshAll() } catch { errorMessage = error.localizedDescription } }
 
     func refresh(_ id: SessionID) {
         do {
@@ -160,35 +199,31 @@ final class PipePlotAppModel {
     private func sessionNow(for streamID: StreamID) -> Date {
         sessions.values.first(where: { $0.charts.contains(where: { $0.streams.contains(where: { $0.id == streamID }) }) }).map(sessionNow) ?? clockPulse
     }
-    func refreshAll() { do { for session in try store.listSessions() { sessions[session.id] = session; refreshForecast(session) } } catch { errorMessage = error.localizedDescription } }
+    func refreshAll() {
+        do {
+            let all = try store.listSessions() + store.listDeletedSessions()
+            sessions = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
+            for session in all { refreshForecast(session) }
+            queries.retain(Set(all.filter { $0.isOpen && !$0.isDeleted }.flatMap(\.charts).flatMap(\.streams).map(\.id)))
+        } catch { errorMessage = error.localizedDescription }
+    }
 
-    func visibleSamples(for chart: ChartSnapshot, session: SessionSnapshot) -> [StreamID: [StoredSample]] {
-        let range = domain(for: session)
-        let start = range.lowerBound
-        let end = range.upperBound
-        var result: [StreamID: [StoredSample]] = [:]
-        for stream in chart.streams {
-            let endBucket = Date(timeIntervalSince1970: floor(end.timeIntervalSince1970))
-            let key = DisplayCacheKey(start: start, end: endBucket, sampleCount: stream.sampleCount, lastSampleAt: stream.lastSampleAt, bucketCount: 800)
-            if let cached = displayCache[stream.id], cached.key == key { result[stream.id] = cached.rows; continue }
-            do {
-                let rows = try store.samples.displaySamples(streamID: stream.id, from: start, to: end, bucketCount: 800)
-                displayCache[stream.id] = (key, rows)
-                result[stream.id] = rows
-            }
-            catch { errorMessage = error.localizedDescription }
-        }
-        if displayCache.count > 256 {
-            let active = Set(session.charts.flatMap(\.streams).map(\.id))
-            displayCache = displayCache.filter { active.contains($0.key) }
-        }
-        return result
+    func visibleSamples(for chart: ChartSnapshot, session: SessionSnapshot, range requestedRange: ClosedRange<Date>? = nil) -> [StreamID: [StoredSample]] {
+        let range = requestedRange ?? domain(for: session)
+        return Dictionary(uniqueKeysWithValues: chart.streams.map { stream in
+            let key = BackgroundQueries.QueryKey(start: range.lowerBound, end: range.upperBound, count: stream.sampleCount, last: stream.lastSampleAt)
+            return (stream.id, queries.display(stream.id, key: key, store: queryStore) { [weak self] in self?.errorMessage = $0.localizedDescription })
+        })
+    }
+    private func queryKey(_ stream: StreamID, range: ClosedRange<Date>) -> BackgroundQueries.QueryKey {
+        let descriptor = sessions.values.lazy.flatMap(\.charts).flatMap(\.streams).first { $0.id == stream }
+        return .init(start: range.lowerBound, end: range.upperBound, count: descriptor?.sampleCount ?? 0, last: descriptor?.lastSampleAt)
     }
     func domain(for session: SessionSnapshot) -> ClosedRange<Date> {
         let now = sessionNow(session)
         let start = session.timeline.visibleStart ?? defaultStart(session, now: now)
         var end = session.timeline.followNow ? max(now, session.timeline.visibleEnd ?? now) : (session.timeline.visibleEnd ?? now)
-        if session.timeline.followNow, let crossing = forecastStatuses[session.id]?.crossing, crossing > now {
+        if session.timeline.followNow, let crossing = allForecastStatuses[session.id]?.compactMap(\.crossing).max(), crossing > now {
             end = max(end, crossing.addingTimeInterval(max(15, crossing.timeIntervalSince(now) * 0.05)))
         }
         return start < end ? start...end : now.addingTimeInterval(-60)...now
@@ -214,8 +249,7 @@ final class PipePlotAppModel {
 
     func stats(for stream: StreamID, in selection: TimeSelection) -> SelectionStatistics? {
         let range = resolvedRange(selection, now: sessionNow(for: stream))
-        do { return try store.samples.statistics(streamID: stream, from: range.lowerBound, to: range.upperBound) }
-        catch { errorMessage = error.localizedDescription; return nil }
+        return queries.stats(stream, key: queryKey(stream, range: range), store: queryStore) { [weak self] in self?.errorMessage = $0.localizedDescription }
     }
     func resolvedSelectionBounds(_ selection: TimeSelection, session: SessionSnapshot) -> ClosedRange<Date> {
         switch selection.mode {
@@ -230,13 +264,16 @@ final class PipePlotAppModel {
         }
     }
     func nearestSample(_ stream: StreamID, at date: Date) -> StoredSample? {
-        do { return try store.samples.nearestSample(streamID: stream, at: date) }
-        catch { errorMessage = error.localizedDescription; return nil }
+        queries.nearestSample(stream, key: queryKey(stream, range: date...date), store: queryStore)
     }
-    func fit(for stream: StreamID, selection: TimeSelection) -> LinearFit? {
+    func fit(for stream: StreamID, selection: TimeSelection, cacheID: UUID? = nil) -> LinearFit? {
         let range = resolvedRange(selection, now: sessionNow(for: stream))
-        do { return try store.samples.linearFit(streamID: stream, from: range.lowerBound, to: range.upperBound) }
-        catch { errorMessage = error.localizedDescription; return nil }
+        return queries.fit(stream, cacheID: cacheID ?? stream, key: queryKey(stream, range: range), store: queryStore, completed: { [weak self] in
+            guard let self else { return }
+            // Read current configurations, never the configuration that launched a
+            // query: Undo/removal while work is running cannot resurrect an overlay.
+            for session in self.sessions.values { self.refreshForecast(session) }
+        }, failed: { [weak self] in self?.errorMessage = $0.localizedDescription })
     }
     private func resolvedRange(_ selection: TimeSelection, now: Date? = nil) -> ClosedRange<Date> {
         let now = now ?? clockPulse
@@ -268,52 +305,64 @@ final class PipePlotAppModel {
     }
     func setForecast(_ forecast: ForecastConfiguration?, session: SessionSnapshot) {
         do {
-            try store.setForecast(forecast, sessionID: session.id)
+            var configurations = session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? []
+            if let forecast {
+                configurations.removeAll { $0.streamID == forecast.streamID && $0.guideID == forecast.guideID }
+                configurations.append(forecast)
+            } else { configurations = [] }
+            try store.setForecasts(configurations, sessionID: session.id)
             refresh(session.id)
         }
         catch { errorMessage = error.localizedDescription }
     }
+    func removeForecast(_ id: UUID, session: SessionSnapshot) {
+        let configurations = (session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? []).filter { $0.id != id }
+        perform { try store.setForecasts(configurations, sessionID: session.id) }
+    }
     func refreshForecast(_ session: SessionSnapshot) {
-        guard let configuration = session.timeline.forecast else { forecastStatuses[session.id] = nil; return }
-        guard let chart = session.charts.first(where: { $0.streams.contains(where: { $0.id == configuration.streamID }) }),
-              let guide = chart.guides.first(where: { $0.id == configuration.guideID && $0.orientation == .horizontalValue }) else {
-            forecastStatuses[session.id] = ForecastStatus(configuration: configuration, fit: nil, guide: nil, crossing: nil, message: "Target guide is missing")
-            return
+        let configurations = session.isDeleted ? [] : (session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? [])
+        let previous = allForecastStatuses[session.id] ?? []
+        let statuses = configurations.map { configuration -> ForecastStatus in
+            guard let chart = session.charts.first(where: { $0.streams.contains(where: { $0.id == configuration.streamID }) }),
+                  let guide = chart.guides.first(where: { $0.id == configuration.guideID && $0.orientation == .horizontalValue }) else {
+                return ForecastStatus(configuration: configuration, fit: nil, guide: nil, crossing: nil, message: "Target guide is missing")
+            }
+            let old = previous.first { $0.configuration.id == configuration.id }
+            let count = chart.streams.first(where: { $0.id == configuration.streamID })?.sampleCount ?? 0
+            let range = resolvedRange(configuration.selection, now: sessionNow(session))
+            let fitted: LinearFit?
+            if old?.configuration.selection == configuration.selection,
+               (configuration.selection.mode == .fixed || (old?.fitSampleCount == count && old?.fitRange == range)), let existing = old?.fit {
+                fitted = existing
+            } else { fitted = fit(for: configuration.streamID, selection: configuration.selection, cacheID: configuration.id) }
+            let crossing = fitted?.crossing(value: guide.value)
+            let now = sessionNow(session)
+            let message: String
+            if let fitted, let crossing {
+                let slope = fitted.slope.formatted(.number.precision(.significantDigits(3)))
+                let detail = "n \(fitted.count) · \(Int(range.upperBound.timeIntervalSince(range.lowerBound)))s training · slope \(slope)/s"
+                message = crossing > now ? "Crossing \(crossing.formatted(date: .abbreviated, time: .standard)) · \(detail)" : "No future crossing · \(detail)"
+            } else { message = fitted == nil ? (queries.isFitting(configuration.id) ? "Calculating…" : "Not enough distinct sample times") : "No finite crossing predicted" }
+            return ForecastStatus(configuration: configuration, fit: fitted, guide: guide, crossing: crossing, message: message, fitSampleCount: count, fitRange: range)
         }
-        let oldStatus = forecastStatuses[session.id]
-        let sampleCount = chart.streams.first(where: { $0.id == configuration.streamID })?.sampleCount ?? 0
-        let fitRange = resolvedRange(configuration.selection, now: sessionNow(session))
-        let fitted: LinearFit?
-        if oldStatus?.configuration == configuration, oldStatus?.fitSampleCount == sampleCount,
-           oldStatus?.fitRange == fitRange, let oldFit = oldStatus?.fit { fitted = oldFit }
-        else if configuration.selection.mode == .fixed,
-                oldStatus?.configuration.id == configuration.id,
-                oldStatus?.configuration.selection == configuration.selection,
-                let oldFit = oldStatus?.fit { fitted = oldFit }
-        else { fitted = fit(for: configuration.streamID, selection: configuration.selection) }
-        let crossing = fitted?.crossing(value: guide.value)
-        let message: String
-        let now = sessionNow(session)
-        if let fitted, let crossing {
-            let rate = fitted.slope.formatted(.number.precision(.significantDigits(3)))
-            message = crossing > now ? "Crossing \(crossing.formatted(date: .abbreviated, time: .shortened)) · slope \(rate)/s" : "Crossing is in the past · slope \(rate)/s"
-        } else {
-            message = fitted == nil ? "Not enough distinct sample times" : "No finite crossing predicted"
+        allForecastStatuses[session.id] = statuses
+        forecastStatuses[session.id] = statuses.first
+    }
+    func forecastDrawings(for chart: ChartSnapshot, session: SessionSnapshot) -> [ForecastDrawing] {
+        (allForecastStatuses[session.id] ?? []).compactMap { status in
+            guard chart.streams.contains(where: { $0.id == status.configuration.streamID }),
+                  let fit = status.fit, let crossing = status.crossing, crossing > sessionNow(session), let guide = status.guide else { return nil }
+            return ForecastDrawing(streamID: status.configuration.streamID, fit: fit,
+                                   range: resolvedRange(status.configuration.selection, now: sessionNow(session)), crossing: crossing, value: guide.value)
         }
-        forecastStatuses[session.id] = ForecastStatus(configuration: configuration, fit: fitted, guide: guide, crossing: crossing, message: message, fitSampleCount: sampleCount, fitRange: fitRange)
     }
-    func forecastDrawing(for chart: ChartSnapshot, session: SessionSnapshot) -> ForecastDrawing? {
-        guard let status = forecastStatuses[session.id],
-              chart.streams.contains(where: { $0.id == status.configuration.streamID }),
-              let fit = status.fit, let crossing = status.crossing, let guide = status.guide else { return nil }
-        return ForecastDrawing(streamID: status.configuration.streamID, fit: fit,
-                              range: resolvedRange(status.configuration.selection, now: sessionNow(session)), crossing: crossing, value: guide.value)
-    }
+    func forecastDrawing(for chart: ChartSnapshot, session: SessionSnapshot) -> ForecastDrawing? { forecastDrawings(for: chart, session: session).first }
     private func saveTimeline(_ timeline: TimelineState, _ id: SessionID) {
         do { try store.updateTimeline(timeline, sessionID: id); refresh(id) } catch { errorMessage = error.localizedDescription }
     }
     func navigate(_ timeline: TimelineState, session: SessionSnapshot) {
         navigationBack[session.id, default: []].append(session.timeline)
+        navigationBack[session.id] = Array(navigationBack[session.id, default: []].suffix(200))
         navigationForward[session.id] = []
         saveTimeline(timeline, session.id)
     }
@@ -346,7 +395,7 @@ final class PipePlotAppModel {
         guard !terminating else { return }
         openedSessionIDs.remove(id)
         connectionRegistry.closeConnections(for: id)
-        do { try store.setSessionOpen(false, sessionID: id); refresh(id); if activeSessionID == id { activeSessionID = nil } }
+        do { try store.setSessionOpen(false, sessionID: id); refreshAll(); if activeSessionID == id { activeSessionID = nil } }
         catch { errorMessage = error.localizedDescription }
     }
     func applicationWillTerminate() { terminating = true }
@@ -362,7 +411,7 @@ final class PipePlotAppModel {
         var attachment: AttachmentID?
         defer { connectionRegistry.remove(connectionKey); connection.close() }
         do {
-            guard let first = try connection.receive(ClientMessage.self) else { return }
+            guard let first = try connection.receive(ClientMessage.self, timeout: 5) else { return }
             guard case let .hello(request) = first else { throw protocolFailure("handshake", "Expected hello") }
             try connection.send(ServerMessage.hello(HelloReply(appInstanceID: appInstanceID)))
             guard request.protocolVersion == 1 else { throw protocolFailure("protocol_version", "Unsupported PipePlot protocol version") }
@@ -373,7 +422,7 @@ final class PipePlotAppModel {
                 try connection.send(ServerMessage.ready(ready))
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    self.refresh(ready.sessionID)
+                    self.refreshAll()
                     if !self.openedSessionIDs.contains(ready.sessionID) { self.openWindowAction?(ready.sessionID) }
                 }
             }
@@ -391,7 +440,7 @@ final class PipePlotAppModel {
                 case .finish(let reason):
                     if let attachmentID = attachment { try store.finishAttachment(attachmentID, reason: reason); attachment = nil }
                     try connection.send(ServerMessage.closed); return
-                case .command(let command): try serve(command, over: connection)
+                case .command(let command): try serve(command, over: connection); return
                 }
             }
             if let attachment { try store.finishAttachment(attachment, reason: .clientDisconnected) }
@@ -405,9 +454,9 @@ final class PipePlotAppModel {
 
     private func serve(_ command: AppCommand, over connection: SocketConnection) throws {
         switch command {
-        case .list: try connection.send(ServerMessage.listing(Listing(sessions: store.listSessions(), targetChartID: store.currentTarget())))
-        case .snapshot(let sessionID): if let snapshot = try store.snapshot(sessionID: sessionID) { try connection.send(ServerMessage.snapshot(snapshot)) } else { throw protocolFailure("unknown_session", "Unknown session") }
-        case .setTarget(let chartID): _ = try store.setTarget(chartID); try connection.send(ServerMessage.listing(Listing(sessions: store.listSessions(), targetChartID: store.currentTarget())))
+        case .list: try connection.send(ServerMessage.listing(Listing(sessions: store.listSessions(), targetChartID: store.currentTarget())), timeout: 5)
+        case .snapshot(let sessionID): if let snapshot = try store.snapshot(sessionID: sessionID) { try connection.send(ServerMessage.snapshot(snapshot), timeout: 5) } else { throw protocolFailure("unknown_session", "Unknown session") }
+        case .setTarget(let chartID): _ = try store.setTarget(chartID); try connection.send(ServerMessage.listing(Listing(sessions: store.listSessions(), targetChartID: store.currentTarget())), timeout: 5)
         case .createChartAndTarget: throw protocolFailure("unsupported", "Use the atomic --new-chart sampler request")
         }
     }
@@ -415,14 +464,6 @@ final class PipePlotAppModel {
     private func protocolFailure(_ code: String, _ message: String) -> NSError {
         NSError(domain: "PipePlotIPC.\(code)", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
-}
-
-private struct DisplayCacheKey: Equatable {
-    let start: Date
-    let end: Date
-    let sampleCount: Int64
-    let lastSampleAt: Date?
-    let bucketCount: Int
 }
 
 struct ForecastStatus {

@@ -16,6 +16,7 @@ let package = Package(
         .target(name: "PipePlotTransport", path: "Sources/PipePlotTransport"),
         .executableTarget(name: "PipePlotApp", dependencies: ["PipePlotCore", "PipePlotTransport"], path: "Sources/PipePlotApp"),
         .executableTarget(name: "pp", dependencies: ["PipePlotCore", "PipePlotTransport"], path: "Sources/pp"),
+        .testTarget(name: "PipePlotAppTests", dependencies: ["PipePlotApp", "PipePlotCore"], path: "Tests/PipePlotAppTests"),
         .testTarget(name: "PipePlotCoreTests", dependencies: ["PipePlotCore"], path: "Tests/PipePlotCoreTests"),
         .testTarget(name: "PipePlotTransportTests", dependencies: ["PipePlotTransport"], path: "Tests/PipePlotTransportTests"),
     ],

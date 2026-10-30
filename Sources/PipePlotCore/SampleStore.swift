@@ -6,7 +6,8 @@ public enum SampleStoreError: Error, LocalizedError { case open(String), sql(Str
 }
 
 /// SQLite-backed raw observations. Queries are always bounded; sample histories are never cached here.
-public final class SampleStore {
+// All access to the SQLite handle is serialized by lock (including extension queries).
+public final class SampleStore: @unchecked Sendable {
     public static let maximumQueryRows = 50_000
     var db: OpaquePointer?
     let lock = NSRecursiveLock()
@@ -20,6 +21,16 @@ public final class SampleStore {
         try execute("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS samples(stream_id TEXT NOT NULL, timestamp REAL NOT NULL, sequence INTEGER NOT NULL, value REAL NOT NULL, PRIMARY KEY(stream_id, sequence)); CREATE INDEX IF NOT EXISTS samples_by_time ON samples(stream_id,timestamp,sequence);")
         try? execute("ALTER TABLE samples ADD COLUMN segment_id TEXT")
         try execute("CREATE TABLE IF NOT EXISTS stream_meta(stream_id TEXT PRIMARY KEY, sample_count INTEGER NOT NULL DEFAULT 0, first_time REAL, last_time REAL, next_sequence INTEGER NOT NULL DEFAULT 0);")
+    }
+    /// Independent WAL reader for UI analysis. It cannot write and does not hold
+    /// the ingestion connection's lock while scanning a long historical range.
+    public init(readOnlyDatabaseURL: URL) throws {
+        guard sqlite3_open_v2(readOnlyDatabaseURL.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "could not open history reader"
+            if let db { sqlite3_close(db) }; db = nil
+            throw SampleStoreError.open(message)
+        }
+        try execute("PRAGMA query_only=ON;")
     }
     deinit { if let db { sqlite3_close(db) } }
 

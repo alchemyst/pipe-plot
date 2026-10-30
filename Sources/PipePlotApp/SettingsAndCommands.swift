@@ -5,6 +5,8 @@ import PipePlotCore
 struct SessionPicker: View {
     @Bindable var model: PipePlotAppModel
     let onSelect: (SessionID) -> Void
+    @State private var renaming: SessionSnapshot?
+    @State private var sessionTitle = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -14,7 +16,7 @@ struct SessionPicker: View {
             if model.sessions.isEmpty {
                 ContentUnavailableView("No saved sessions", systemImage: "chart.xyaxis.line", description: Text("Create a session or start a pipeline with `pp`."))
             } else {
-                List(model.sessions.values.sorted { $0.number < $1.number }) { session in
+                List(model.sessions.values.filter { !$0.isDeleted }.sorted { $0.number < $1.number }) { session in
                     Button { onSelect(session.id) } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "chart.xyaxis.line").font(.title2).foregroundStyle(.tint)
@@ -24,11 +26,30 @@ struct SessionPicker: View {
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }.padding(.vertical, 4)
                     }.buttonStyle(.plain)
+                    .contextMenu {
+                        Button("Rename…") { sessionTitle = session.title; renaming = session }
+                        Button("Move to Trash", role: .destructive) { model.deleteSession(session.id) }
+                    }
                 }.listStyle(.inset)
+            }
+            if model.sessions.values.contains(where: \.isDeleted) {
+                Menu("Recently deleted sessions") {
+                    ForEach(model.sessions.values.filter(\.isDeleted).sorted { $0.number < $1.number }) { session in
+                        Button("Restore \(session.number) · \(session.title)") { model.restoreSession(session.id) }
+                    }
+                }
             }
             HStack { Spacer(); Button { model.createSessionWindow() } label: { Label("New Session", systemImage: "plus") }.buttonStyle(.borderedProminent).keyboardShortcut("n", modifiers: [.command]) }
         }.padding(24).background(Color(nsColor: .windowBackgroundColor))
+        .sheet(item: $renaming) { session in
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Rename session").font(.headline)
+                TextField("Title", text: $sessionTitle).onSubmit { commitTitle(session.id) }
+                HStack { Button("Cancel") { renaming = nil }; Spacer(); Button("Save") { commitTitle(session.id) }.keyboardShortcut(.defaultAction) }
+            }.padding(24).frame(width: 360)
+        }
     }
+    private func commitTitle(_ id: SessionID) { model.renameSession(id, to: sessionTitle); renaming = nil }
 }
 
 struct SettingsView: View {
@@ -109,7 +130,7 @@ struct PipePlotCommands: Commands {
                 .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!canRedo)
         }
         CommandMenu("Session") {
-            Button("New Chart Below") { if let id = model.activeSessionID { model.createChart(in: id, after: model.sessions[id]?.charts.last?.id) } }
+            Button("New Chart Below") { if let id = model.activeSessionID { model.createChart(in: id, after: model.selectedChartIDs[id] ?? model.sessions[id]?.charts.last(where: { $0.isVisible })?.id) } }
                 .keyboardShortcut("d", modifiers: [.command, .shift]).disabled(model.activeSessionID == nil)
             Button("Open Saved Sessions…") { model.presentSessionPicker() }
         }

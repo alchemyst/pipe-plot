@@ -20,8 +20,11 @@ struct PipePlotApplication: App {
                 }
             }
             .environment(model)
+            .onReceive(NotificationCenter.default.publisher(for: .pipePlotReopen)) { _ in model.presentSessionPicker() }
             .onAppear {
-                model.installOpenWindow { id in openWindow(value: id) }
+                model.installOpenWindow { id in
+                    if sessionID == nil { sessionID = id } else { openWindow(value: id) }
+                }
                 model.installOpenSessionPicker { openWindow(id: "sessions") }
                 appDelegate.installTerminationHandler { model.prepareForTermination() }
                 if sessionID == nil, let id = model.bootstrap() { sessionID = id }

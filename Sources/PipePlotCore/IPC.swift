@@ -58,10 +58,14 @@ public struct StreamDescriptor: Codable, Equatable, Sendable {
     public var firstSampleAt: Date?
     public var lastSampleAt: Date?
     public var unitHint: String?
+    public var colorHex: String?
+    public var dotsVisible: Bool?
+    public var linesVisible: Bool?
     public init(id: StreamID, name: String, state: StreamState = .disconnected, sampleCount: Int64 = 0,
-                firstSampleAt: Date? = nil, lastSampleAt: Date? = nil, unitHint: String? = nil) {
+                firstSampleAt: Date? = nil, lastSampleAt: Date? = nil, unitHint: String? = nil, colorHex: String? = nil, dotsVisible: Bool? = nil, linesVisible: Bool? = nil) {
         self.id=id; self.name=name; self.state=state; self.sampleCount=sampleCount
         self.firstSampleAt=firstSampleAt; self.lastSampleAt=lastSampleAt; self.unitHint=unitHint
+        self.colorHex=colorHex; self.dotsVisible=dotsVisible; self.linesVisible=linesVisible
     }
 }
 public struct ReadyReply: Codable, Equatable, Sendable {
