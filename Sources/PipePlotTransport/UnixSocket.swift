@@ -140,6 +140,7 @@ public final class UnixSocketServer {
     /// closed immediately so an unbounded number of idle peers cannot consume
     /// one worker and descriptor each.
     public static let maximumClients = 64
+    private let clientLimit: Int
     public let socketURL: URL
     private let handler: (SocketConnection) -> Void
     private let queue = DispatchQueue(label: "PipePlot.UnixSocketServer", qos: .utility)
@@ -149,8 +150,9 @@ public final class UnixSocketServer {
     private var clients: [ObjectIdentifier: SocketConnection] = [:]
     private var ownsSocketPath = false
 
-    public init(socketURL: URL = PipePlotLocations.socketURL, handler: @escaping (SocketConnection) -> Void) {
+    public init(socketURL: URL = PipePlotLocations.socketURL, maximumClients: Int = UnixSocketServer.maximumClients, handler: @escaping (SocketConnection) -> Void) {
         self.socketURL = socketURL
+        self.clientLimit = max(1, maximumClients)
         self.handler = handler
     }
 
@@ -225,7 +227,7 @@ public final class UnixSocketServer {
             let connection = SocketConnection(descriptor: client)
             lock.lock()
             let acceptClient = !stopped && listener == fd
-            let belowClientLimit = clients.count < Self.maximumClients
+            let belowClientLimit = clients.count < clientLimit
             if acceptClient && belowClientLimit { clients[ObjectIdentifier(connection)] = connection }
             lock.unlock()
             guard acceptClient else { connection.close(); return }

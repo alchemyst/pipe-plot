@@ -11,8 +11,18 @@ public struct InputRejection: Codable, Equatable, Sendable {
     public var kind: ParseIssue.Kind
     public var lineNumber: UInt64
     public var message: String
-    public init(_ issue: ParseIssue) { kind=issue.kind; lineNumber=issue.lineNumber; message=String(issue.message.prefix(240)) }
-    public init(kind:ParseIssue.Kind,lineNumber:UInt64,message:String) { self.kind=kind;self.lineNumber=lineNumber;self.message=String(message.prefix(240)) }
+    /// Number of rejected input rows represented by this bounded diagnostic.
+    public var rejectedCount: UInt64
+    public init(_ issue: ParseIssue) { kind=issue.kind; lineNumber=issue.lineNumber; message=String(issue.message.prefix(240)); rejectedCount=1 }
+    public init(kind:ParseIssue.Kind,lineNumber:UInt64,message:String,rejectedCount:UInt64=1) { self.kind=kind;self.lineNumber=lineNumber;self.message=String(message.prefix(240));self.rejectedCount=max(1,rejectedCount) }
+    private enum CodingKeys: String, CodingKey { case kind, lineNumber, message, rejectedCount }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try values.decode(ParseIssue.Kind.self, forKey: .kind)
+        lineNumber = try values.decode(UInt64.self, forKey: .lineNumber)
+        message = String(try values.decode(String.self, forKey: .message).prefix(240))
+        rejectedCount = max(1, try values.decodeIfPresent(UInt64.self, forKey: .rejectedCount) ?? 1)
+    }
 }
 public enum ParseEvent: Equatable, Sendable { case row(SampleRow), rejected(ParseIssue) }
 

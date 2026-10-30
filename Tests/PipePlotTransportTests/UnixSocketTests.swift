@@ -71,6 +71,50 @@ final class UnixSocketTests: XCTestCase {
         wait(for: [timedOut], timeout: 3)
     }
 
+    func testReceiveDeadlineAlsoBoundsAPartialFrame() throws {
+        let path = temporarySocketPath()
+        let timedOut = expectation(description: "partial handshake timed out")
+        let server = UnixSocketServer(socketURL: path) { connection in
+            do {
+                _ = try connection.receiveFrame(timeout: 0.08)
+                XCTFail("Expected the partial-frame deadline")
+            } catch SocketError.timedOut {
+                timedOut.fulfill()
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        }
+        try server.start()
+        defer { server.stop() }
+        let fd = try connect(path)
+        defer { Darwin.close(fd) }
+        try send(Data("{\"partial\"".utf8), on: fd)
+        wait(for: [timedOut], timeout: 3)
+    }
+
+    func testServerClosesConnectionsAboveClientLimit() throws {
+        let path = temporarySocketPath()
+        let capacityReached = expectation(description: "client limit reached")
+        let clientLimit = 2
+        capacityReached.expectedFulfillmentCount = clientLimit
+        let server = UnixSocketServer(socketURL: path, maximumClients: clientLimit) { connection in
+            capacityReached.fulfill()
+            _ = try? connection.receiveFrame()
+        }
+        try server.start()
+        defer { server.stop() }
+        var clients: [Int32] = []
+        defer { clients.forEach { Darwin.close($0) } }
+        for _ in 0..<clientLimit { clients.append(try connect(path)) }
+        wait(for: [capacityReached], timeout: 5)
+
+        let overflow = try connect(path)
+        defer { Darwin.close(overflow) }
+        var byte: UInt8 = 0
+        let count = Darwin.recv(overflow, &byte, 1, 0)
+        XCTAssertEqual(count, 0, "the first client over the cap should be closed")
+    }
+
     func testConcurrentClientsAreServed() throws {
         let path = temporarySocketPath()
         let clientCount = 16

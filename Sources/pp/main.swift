@@ -201,6 +201,7 @@ private func runSampler(_ options: Options) throws {
     // Invalid input can arrive before the parser has enough information to
     // register an attachment. Retain only a small prefix until registration.
     var pendingRejections: [InputRejection] = []
+    var pendingRejectionTotals: [String: (kind: ParseIssue.Kind, count: UInt64, lastLine: UInt64)] = [:]
 
     func reportBounded(_ issue: ParseIssue) {
         reportBounded(message: issue.message, lineNumber: issue.lineNumber)
@@ -229,7 +230,15 @@ private func runSampler(_ options: Options) throws {
                 if ready.streams.count != width { throw CLIError.protocolFailure("PipePlot acknowledged \(ready.streams.count) streams for \(width) columns") }
                 if ready.continued { fputs("pp: continuing previous stream group\n", stderr) }
                 for rejection in pendingRejections { try connection.send(ClientMessage.rejected(rejection)) }
+                for total in pendingRejectionTotals.values {
+                    let summary = InputRejection(kind: total.kind,
+                                                 lineNumber: total.lastLine,
+                                                 message: "\(total.count) additional \(total.kind.rawValue) input rows rejected before registration",
+                                                 rejectedCount: total.count)
+                    try connection.send(ClientMessage.rejected(summary))
+                }
                 pendingRejections.removeAll(keepingCapacity: true)
+                pendingRejectionTotals.removeAll(keepingCapacity: true)
                 return connection
             case .closed: throw CLIError.protocolFailure("PipePlot closed during sampler registration")
             default: throw CLIError.protocolFailure("Unexpected response during sampler registration")
@@ -270,6 +279,11 @@ private func runSampler(_ options: Options) throws {
                 let rejection = InputRejection(issue)
                 if let connection = readyConnection { try connection.send(ClientMessage.rejected(rejection)) }
                 else if pendingRejections.count < 8 { pendingRejections.append(rejection) }
+                else {
+                    let key = issue.kind.rawValue
+                    let prior = pendingRejectionTotals[key]
+                    pendingRejectionTotals[key] = (issue.kind, (prior?.count ?? 0) + 1, issue.lineNumber)
+                }
             }
         }
     }
