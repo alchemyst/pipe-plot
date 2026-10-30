@@ -1,13 +1,13 @@
 import Foundation
 
 public enum DomainError: Error, LocalizedError {
-    case unknownSession, unknownChart, unknownStream, invalidColumnCount, duplicateName(String), streamBusy(String), noDestination, invalidMove, invalidAxisSettings, invalidSelection
+    case unknownSession, unknownChart, unknownStream, invalidColumnCount, duplicateName(String), streamBusy(String), noDestination, invalidMove, invalidAxisSettings, invalidSelection, invalidEvent(String)
     public var errorDescription: String? { switch self {
     case .unknownSession:return "unknown session"; case .unknownChart:return "unknown chart"; case .unknownStream:return "unknown stream"
     case .invalidColumnCount:return "sampler column count must be positive and match the provided names"
     case .duplicateName(let n):return "line name is ambiguous: \(n)"; case .streamBusy(let n):return "line is already attached: \(n)"
     case .noDestination:return "no destination chart is available"; case .invalidMove:return "cannot move a stream to its current chart"
-    case .invalidAxisSettings:return "axis limits must be finite and minimum must be less than maximum";case .invalidSelection:return "selection start must be before its end" } }
+    case .invalidAxisSettings:return "axis limits must be finite and minimum must be less than maximum";case .invalidSelection:return "selection start must be before its end";case .invalidEvent(let message):return message } }
 }
 
 /// Serialized, thread-safe domain boundary. Metadata is atomically saved beside the SQLite sample database.
@@ -96,6 +96,11 @@ public final class PipePlotStore {
     }
     public func currentTarget() -> ChartID? { lock.lock(); defer{lock.unlock()}; return targetChartID }
     public func samplerGroup(containing streamID:StreamID)->[StreamID]? {lock.lock();defer{lock.unlock()};let aid=owners[streamID] ?? attachmentOrder.reversed().first(where:{attachments[$0]?.streamIDs.contains(streamID)==true});guard let aid,let a=attachments[aid]else{return nil};return a.streamIDs}
+    public func currentAttachmentStreamIDs(_ attachmentID: AttachmentID) -> [StreamID] {
+        lock.lock(); defer { lock.unlock() }
+        guard let attachment = attachments[attachmentID], attachment.active else { return [] }
+        return attachment.streamIDs
+    }
     var retainedAttachmentCount:Int {lock.lock();defer{lock.unlock()};return attachments.count}
     public func sessionID(forNumber number:Int)->SessionID? { lock.lock(); defer{lock.unlock()}; return sessions.first{$0.number==number}?.id }
     public func snapshot(sessionID:SessionID) throws -> SessionSnapshot? { lock.lock(); defer{lock.unlock()}; guard let i=sessionIndex(sessionID) else{return nil}; return snapshotRecord(sessions[i]) }
@@ -204,6 +209,10 @@ public final class PipePlotStore {
         lock.lock(); defer { lock.unlock() }
         suppressPersistDepth += 1
         defer { suppressPersistDepth -= 1 }
+        let oldSessions = sessions, oldTarget = targetChartID, oldNext = nextNumber, oldEpoch = epoch
+        let oldContinuation = lastContinuation, oldAttachments = attachments, oldOwners = owners
+        let oldAttachmentOrder = attachmentOrder, oldUndo = undoStacks, oldRedo = redoStacks, oldRecency = recency
+        do {
         let sessionID: SessionID
         let chartID: ChartID
         switch intent {
@@ -218,8 +227,13 @@ public final class PipePlotStore {
             sessions[si].isOpen = true
             let chart = recency.first(where: { id in findChartIndices(id).map { $0.0 == si && sessions[$0.0].charts[$0.1].isVisible } ?? false })
                 ?? sessions[si].charts.first(where: \.isVisible)?.id
+                ?? sessions[si].charts.first?.id
             if let chart { sessionID = requestedID; chartID = chart }
-            else { let c = try createChart(in: requestedID); sessionID = requestedID; chartID = c.id }
+            else {
+                let id = UUID(), index = sessions[si].charts.count
+                sessions[si].charts.append(ChartRecord(id: id, title: "Chart \(index + 1)", streams: [], settings: AxisSettings(), guides: [], isVisible: true))
+                sessionID = requestedID; chartID = id
+            }
         case .chart(let requestedID, _):
             guard let (si, ci) = findChartIndices(requestedID), sessions[si].isOpen, sessions[si].charts[ci].isVisible else { throw DomainError.unknownChart }
             sessionID = sessions[si].id; chartID = requestedID
@@ -233,14 +247,24 @@ public final class PipePlotStore {
         let id = UUID()
         attachments[id] = AttachmentRecord(id: id, owner: owner, sessionID: sessionID, chartID: chartID, streamIDs: [], active: true)
         attachmentOrder.append(id)
-        try persist()
+        try persistSnapshot()
         return ReadyReply(sessionID: sessionID, chartID: chartID, attachmentID: id, streams: [], continued: false)
+        } catch {
+            sessions = oldSessions; targetChartID = oldTarget; nextNumber = oldNext; epoch = oldEpoch
+            lastContinuation = oldContinuation; attachments = oldAttachments; owners = oldOwners
+            attachmentOrder = oldAttachmentOrder; undoStacks = oldUndo; redoStacks = oldRedo; recency = oldRecency
+            try? persistSnapshot()
+            throw error
+        }
     }
 
     /// Add a session-wide vertical guide. Event arrivals are external facts and do not enter undo history.
     public func appendEvent(_ text: String, at timestamp: Date = Date(), to attachmentID: AttachmentID) throws {
         lock.lock(); defer { lock.unlock() }
-        guard let attachment = attachments[attachmentID], attachment.active,
+        guard text.utf8.count <= EventInputParser.maximumLineBytes else { throw DomainError.invalidEvent("event exceeds 65536 UTF-8 bytes") }
+        guard !text.isEmpty, !text.utf8.contains(0), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw DomainError.invalidEvent("event must contain non-whitespace text and no NUL bytes") }
+        guard timestamp.timeIntervalSince1970.isFinite else { throw DomainError.invalidEvent("event timestamp must be finite") }
+        guard let attachment = attachments[attachmentID], attachment.active, attachment.streamIDs.isEmpty,
               let si = sessionIndex(attachment.sessionID), sessions[si].isOpen else { throw DomainError.unknownStream }
         let guide = Guide(orientation: .verticalTime, value: timestamp.timeIntervalSince1970, label: text)
         sessions[si].timeGuides.append(guide)
@@ -383,7 +407,7 @@ public final class PipePlotStore {
     }
     public func updateSettings(_ settings:AxisSettings,chartID:ChartID) throws { lock.lock();defer{lock.unlock()}; guard let(si,ci)=findChartIndices(chartID) else{throw DomainError.unknownChart};if case .fixed(let min,let max)=settings.yScale,(!min.isFinite || !max.isFinite || min>=max){throw DomainError.invalidAxisSettings};let old=sessions[si].charts[ci].settings;guard old != settings else{return};let styles=sessions[si].charts[ci].streams.map{StreamStyleSnapshot(id:$0.id,color:$0.colorHex,dots:$0.dotsVisible,lines:$0.linesVisible)};sessions[si].charts[ci].settings=settings;for ix in sessions[si].charts[ci].streams.indices{sessions[si].charts[ci].streams[ix].dotsVisible=settings.dotsVisible;sessions[si].charts[ci].streams[ix].linesVisible=settings.linesVisible}; record(.settings(chartID,old:old,new:settings,oldStyles:styles),in:sessions[si].id); try persist() }
     public func upsertGuide(_ guide:Guide,chartID:ChartID) throws {
-        lock.lock();defer{lock.unlock()};guard guide.value.isFinite, guide.alert.map({$0.hysteresis.isFinite && $0.hysteresis >= 0 && $0.cooldown.isFinite && $0.cooldown >= 0 && guide.orientation == .horizontalValue}) ?? true else{throw DomainError.invalidAxisSettings};guard let(si,ci)=findChartIndices(chartID) else{throw DomainError.unknownChart}
+        lock.lock();defer{lock.unlock()};guard guide.value.isFinite, guide.alert.map({$0.hysteresis.isFinite && $0.hysteresis >= 0 && $0.cooldown.isFinite && $0.cooldown >= 0 && (guide.value + $0.hysteresis).isFinite && (guide.value - $0.hysteresis).isFinite && guide.orientation == .horizontalValue}) ?? true else{throw DomainError.invalidAxisSettings};guard let(si,ci)=findChartIndices(chartID) else{throw DomainError.unknownChart}
         if guide.orientation == .verticalTime { try upsertTimeGuide(guide,sessionID:sessions[si].id);return }
         let old=sessions[si].charts[ci].guides.first{$0.id==guide.id};guard old != guide else{return}
         if let i=sessions[si].charts[ci].guides.firstIndex(where:{$0.id==guide.id}) {sessions[si].charts[ci].guides[i]=guide} else {sessions[si].charts[ci].guides.append(guide)}

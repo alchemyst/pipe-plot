@@ -4,7 +4,7 @@ import XCTest
 final class EventInputParserTests: XCTestCase {
     func testChunkingCRLFAndFinalUnterminatedLine() {
         var parser = EventInputParser()
-        XCTAssertEqual(parser.append(Data("first\r\n  second  \n\nlast".utf8)), [.event("first"), .event("second")])
+        XCTAssertEqual(parser.append(Data("first\r\n  second  \n\nlast".utf8)), [.event("first"), .event("  second  ")])
         XCTAssertEqual(parser.finish(), [.event("last")])
     }
 
