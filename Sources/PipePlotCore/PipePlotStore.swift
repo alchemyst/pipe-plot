@@ -174,7 +174,7 @@ public final class PipePlotStore {
                 else { let id=UUID();resolved.append(StreamRecord(id:id,name:name,state:.live,unitHint:sampler.unitHint,colorHex:stableColor(id),dotsVisible:sessions[si].charts[ci].settings.dotsVisible,linesVisible:sessions[si].charts[ci].settings.linesVisible)) }
             }
             for var line in resolved { line.state = .live; if line.unitHint == nil { line.unitHint=sampler.unitHint };if line.colorHex == nil{line.colorHex=stableColor(line.id)};if line.dotsVisible == nil{line.dotsVisible=sessions[si].charts[ci].settings.dotsVisible};if line.linesVisible == nil{line.linesVisible=sessions[si].charts[ci].settings.linesVisible}; streamIDs.append(line.id); descriptors.append(descriptor(line)); if streamLocation(line.id)==nil { sessions[si].charts[ci].streams.append(line) } else if let (li,lj)=streamIndices(line.id),let ix=sessions[li].charts[lj].streams.firstIndex(where:{$0.id==line.id}) { sessions[li].charts[lj].streams[ix]=line } }
-        } else if intent == .target, let previous=lastContinuation, previous.epoch==epoch, previous.chartID==chartID, previous.streamIDs.count==sampler.columnCount, !previous.active, previous.streamIDs.allSatisfy({owners[$0] == nil && (sampler.unitHint == nil || findStream($0)?.unitHint == sampler.unitHint)}) {
+        } else if intent == .target, let previous=lastContinuation, previous.epoch==epoch, previous.chartID==chartID, previous.streamIDs.count==sampler.columnCount, !previous.active, (sampler.startedAt == nil || previous.finishedAt.map { sampler.startedAt! > $0 } == true), previous.streamIDs.allSatisfy({owners[$0] == nil && (sampler.unitHint == nil || findStream($0)?.unitHint == sampler.unitHint)}) {
             streamIDs=previous.streamIDs; continued=true
             for id in streamIDs { guard let (li,lj)=streamIndices(id),let ix=sessions[li].charts[lj].streams.firstIndex(where:{$0.id==id}) else { throw DomainError.unknownStream };if sessions[li].charts[lj].streams[ix].unitHint == nil{sessions[li].charts[lj].streams[ix].unitHint=sampler.unitHint};sessions[li].charts[lj].streams[ix].state = .live; descriptors.append(descriptor(sessions[li].charts[lj].streams[ix])) }
         } else {
@@ -184,7 +184,7 @@ public final class PipePlotStore {
         attachments[aid]=attach;attachmentOrder.append(aid); for id in streamIDs { owners[id]=aid }
         if sessions[si].charts[ci].settings.unit == nil,let unit=sampler.unitHint {sessions[si].charts[ci].settings.unit=unit}
         sessions[si].timeline.clockStoppedAt = nil
-        lastContinuation=Continuation(epoch:epoch,chartID:chartID,streamIDs:streamIDs,active:true)
+        lastContinuation=Continuation(epoch:epoch,chartID:chartID,streamIDs:streamIDs,active:true,finishedAt:nil)
         pruneAttachments()
         touch(chartID); try persistSnapshot()
         return ReadyReply(sessionID:sessions[si].id,chartID:chartID,attachmentID:aid,streams:descriptors,continued:continued)
@@ -212,7 +212,7 @@ public final class PipePlotStore {
     public func finishAttachment(_ attachmentID:AttachmentID, reason:FinishReason) throws {
         lock.lock(); defer{lock.unlock()}; guard var a=attachments[attachmentID], a.active else{return}; a.active=false; attachments[attachmentID]=a
         for id in a.streamIDs { if owners[id]==attachmentID { owners.removeValue(forKey:id) }; if let (si,ci)=streamIndices(id),let ix=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==id}) { sessions[si].charts[ci].streams[ix].state = reason == .error ? .errored : (reason == .clientDisconnected ? .disconnected : .ended) } }
-        if lastContinuation?.streamIDs == a.streamIDs { lastContinuation?.active=false }
+        if lastContinuation?.streamIDs == a.streamIDs { lastContinuation?.active=false;lastContinuation?.finishedAt=Date() }
         if !attachments.values.contains(where: { $0.sessionID == a.sessionID && $0.active }), let i = sessionIndex(a.sessionID) {
             sessions[i].timeline.clockStoppedAt = Date()
         }
@@ -520,7 +520,7 @@ public final class PipePlotStore {
     private func restoreMemoryState(_ s:MemoryState){previouslyOpenSessionIDs=s.previouslyOpenSessionIDs;sessions=s.sessions;targetChartID=s.targetChartID;nextNumber=s.nextNumber;epoch=s.epoch;lastContinuation=s.lastContinuation;attachments=s.attachments;owners=s.owners;attachmentOrder=s.attachmentOrder;undoStacks=s.undoStacks;redoStacks=s.redoStacks;recency=s.recency;restoreOpenSessionIDs=s.restoreOpenSessionIDs;terminationSnapshotTaken=s.terminationSnapshotTaken}
 }
 
-private struct Continuation {var epoch:UInt64;var chartID:ChartID;var streamIDs:[StreamID];var active:Bool}
+private struct Continuation {var epoch:UInt64;var chartID:ChartID;var streamIDs:[StreamID];var active:Bool;var finishedAt:Date?}
 private struct MemoryState {var previouslyOpenSessionIDs:Set<SessionID>;var sessions:[SessionRecord];var targetChartID:ChartID?;var nextNumber:Int;var epoch:UInt64;var lastContinuation:Continuation?;var attachments:[AttachmentID:AttachmentRecord];var owners:[StreamID:AttachmentID];var attachmentOrder:[AttachmentID];var undoStacks:[SessionID:[UndoRecord]];var redoStacks:[SessionID:[UndoRecord]];var recency:[ChartID];var restoreOpenSessionIDs:Set<SessionID>;var terminationSnapshotTaken:Bool}
 private struct AttachmentRecord {var id:AttachmentID;var owner:UUID;var sessionID:SessionID;var chartID:ChartID;var streamIDs:[StreamID];var active:Bool}
 private struct SessionRecord:Codable {var id:SessionID;var number:Int;var title:String;var charts:[ChartRecord];var timeGuides:[Guide];var timeline:TimelineState;var isOpen:Bool;var rejectedLineCount:Int;var isDeleted:Bool=false}

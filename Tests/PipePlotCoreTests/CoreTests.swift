@@ -78,6 +78,21 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(again.continued)
         XCTAssertEqual(again.chartID,created.chartID)
     }
+    func testDelayedConcurrentRegistrationDoesNotContinueProducerThatFinishedAfterItsStart() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        let invocationStart=Date().addingTimeInterval(-30)
+        let first=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1,startedAt:invocationStart))
+        try store.finishAttachment(first.attachmentID,reason:.eof)
+        let delayedConcurrent=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1,startedAt:invocationStart.addingTimeInterval(1)))
+        XCTAssertFalse(delayedConcurrent.continued)
+        XCTAssertNotEqual(delayedConcurrent.streams.map(\.id),first.streams.map(\.id))
+        try store.finishAttachment(delayedConcurrent.attachmentID,reason:.eof)
+        let laterRerun=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1,startedAt:Date().addingTimeInterval(1)))
+        XCTAssertTrue(laterRerun.continued)
+        XCTAssertEqual(laterRerun.streams.map(\.id),delayedConcurrent.streams.map(\.id))
+    }
     func testUnitHintInitializesUnsetChartButNeverOverwritesConfiguredUnit() throws {
         let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
         defer{try? FileManager.default.removeItem(at:dir)}
