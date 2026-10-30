@@ -46,11 +46,12 @@ public struct TimelineState: Codable, Equatable, Sendable {
     public var followNow: Bool
     public var selection: TimeSelection?
     public var forecast: ForecastConfiguration?
+    public var forecasts: [ForecastConfiguration]?
     /// Frozen when the final attachment ends; nil while capture is live.
     public var clockStoppedAt: Date?
     public var historySpan: TimeInterval?
-    public init(visibleStart: Date? = nil, visibleEnd: Date? = nil, followNow: Bool = true, selection: TimeSelection? = nil, forecast: ForecastConfiguration? = nil, clockStoppedAt: Date? = nil, historySpan: TimeInterval? = nil) {
-        self.visibleStart=visibleStart; self.visibleEnd=visibleEnd; self.followNow=followNow; self.selection=selection; self.forecast=forecast; self.clockStoppedAt=clockStoppedAt; self.historySpan=historySpan
+    public init(visibleStart: Date? = nil, visibleEnd: Date? = nil, followNow: Bool = true, selection: TimeSelection? = nil, forecast: ForecastConfiguration? = nil, forecasts:[ForecastConfiguration]? = nil, clockStoppedAt: Date? = nil, historySpan: TimeInterval? = nil) {
+        self.visibleStart=visibleStart; self.visibleEnd=visibleEnd; self.followNow=followNow; self.selection=selection; self.forecast=forecast; self.forecasts=forecasts; self.clockStoppedAt=clockStoppedAt; self.historySpan=historySpan
     }
 }
 public struct ChartSnapshot: Codable, Equatable, Identifiable, Sendable {
@@ -74,8 +75,11 @@ public struct SessionSnapshot: Codable, Equatable, Identifiable, Sendable {
     public var timeline: TimelineState
     public var isOpen: Bool
     public var rejectedLineCount: Int
-    public init(id: SessionID, number: Int, title: String, charts: [ChartSnapshot], timeGuides:[Guide] = [], timeline: TimelineState = TimelineState(), isOpen: Bool = true, rejectedLineCount: Int = 0) {
-        self.id=id; self.number=number; self.title=title; self.charts=charts; self.timeGuides=timeGuides; self.timeline=timeline; self.isOpen=isOpen; self.rejectedLineCount=rejectedLineCount
+    public var isDeleted: Bool
+    public init(id: SessionID, number: Int, title: String, charts: [ChartSnapshot], timeGuides:[Guide] = [], timeline: TimelineState = TimelineState(), isOpen: Bool = true, rejectedLineCount: Int = 0, isDeleted:Bool = false) {
+        self.id=id; self.number=number; self.title=title; self.charts=charts; self.timeGuides=timeGuides; self.timeline=timeline; self.isOpen=isOpen; self.rejectedLineCount=rejectedLineCount;self.isDeleted=isDeleted
     }
+    private enum CodingKeys:String,CodingKey {case id,number,title,charts,timeGuides,timeline,isOpen,rejectedLineCount,isDeleted}
+    public init(from decoder:Decoder)throws {let c=try decoder.container(keyedBy:CodingKeys.self);id=try c.decode(SessionID.self,forKey:.id);number=try c.decode(Int.self,forKey:.number);title=try c.decode(String.self,forKey:.title);charts=try c.decode([ChartSnapshot].self,forKey:.charts);timeGuides=try c.decodeIfPresent([Guide].self,forKey:.timeGuides) ?? [];timeline=try c.decode(TimelineState.self,forKey:.timeline);isOpen=try c.decode(Bool.self,forKey:.isOpen);rejectedLineCount=try c.decodeIfPresent(Int.self,forKey:.rejectedLineCount) ?? 0;isDeleted=try c.decodeIfPresent(Bool.self,forKey:.isDeleted) ?? false}
 }
 public struct SampleBounds: Codable, Equatable, Sendable { public var first: Date?; public var last: Date?; public init(first:Date?,last:Date?){self.first=first;self.last=last} }

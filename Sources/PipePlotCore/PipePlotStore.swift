@@ -22,12 +22,15 @@ public final class PipePlotStore {
     private var epoch:UInt64=0
     private var lastContinuation:Continuation?
     private var attachments:[AttachmentID:AttachmentRecord]=[:]
+    private var attachmentOrder:[AttachmentID]=[]
     private var owners:[StreamID:AttachmentID]=[:]
     private var undoStacks:[SessionID:[UndoRecord]]=[:]
     private var redoStacks:[SessionID:[UndoRecord]]=[:]
     private var recency:[ChartID]=[]
     private var restoreOpenSessionIDs:Set<SessionID>=[]
     private var terminationSnapshotTaken=false
+    private var suppressPersistDepth=0
+    private var committedState:MemoryState?
 
     public init(databaseURL:URL) throws {
         samples=try SampleStore(databaseURL:databaseURL)
@@ -37,7 +40,7 @@ public final class PipePlotStore {
             previouslyOpenSessionIDs=state.restoreOpenSessionIDs ?? Set(state.sessions.filter(\.isOpen).map(\.id))
             restoreOpenSessionIDs=previouslyOpenSessionIDs
             sessions=state.sessions; targetChartID=state.targetChartID; nextNumber=state.nextNumber; recency=state.recency
-            for i in sessions.indices { sessions[i].isOpen=false; for c in sessions[i].charts.indices { for s in sessions[i].charts[c].streams.indices { sessions[i].charts[c].streams[s].state = .disconnected } } }
+            for i in sessions.indices { sessions[i].isOpen=false; for c in sessions[i].charts.indices { for s in sessions[i].charts[c].streams.indices where sessions[i].charts[c].streams[s].state == .live || sessions[i].charts[c].streams[s].state == .quiet { sessions[i].charts[c].streams[s].state = .disconnected } } }
             for i in sessions.indices {
                 for c in sessions[i].charts.indices {
                     let moved=sessions[i].charts[c].guides.filter{$0.orientation == .verticalTime}
@@ -59,6 +62,7 @@ public final class PipePlotStore {
                 sessions[i].charts[c].streams[j].lastSampleAt=bounds.last
             } } }
         }
+        committedState=memoryState()
     }
 
     @discardableResult public func createSession(title:String?=nil) throws -> SessionSnapshot {
@@ -81,25 +85,52 @@ public final class PipePlotStore {
         setTargetInternal(id,invalidate:true); try persist()
         return chartSnapshot(chart, target:targetChartID)
     }
+    public func renameChart(_ chartID:ChartID,to title:String)throws {lock.lock();defer{lock.unlock()};guard let(si,ci)=findChartIndices(chartID)else{throw DomainError.unknownChart};let value=title.trimmingCharacters(in:.whitespacesAndNewlines);guard !value.isEmpty else{throw DomainError.invalidSelection};let old=sessions[si].charts[ci].title;guard old != value else{return};sessions[si].charts[ci].title=value;record(.chartTitle(chartID,old:old,new:value),in:sessions[si].id);try persist()}
+    public func reorderChart(_ chartID:ChartID,to index:Int)throws {lock.lock();defer{lock.unlock()};guard let(si,ci)=findChartIndices(chartID),index>=0,index<sessions[si].charts.count else{throw DomainError.unknownChart};guard ci != index else{return};let chart=sessions[si].charts.remove(at:ci);sessions[si].charts.insert(chart,at:index);record(.chartReordered(chartID,from:ci,to:index),in:sessions[si].id);try persist()}
+    public func deleteChart(_ chartID:ChartID)throws {lock.lock();defer{lock.unlock()};guard let(si,ci)=findChartIndices(chartID),sessions[si].charts.count>1,sessions[si].charts[ci].isVisible else{throw DomainError.invalidMove};sessions[si].charts[ci].isVisible=false;record(.chartVisibility(chartID,old:true,new:false),in:sessions[si].id);if targetChartID==chartID{fallbackTarget()};try persist()}
+    public func restoreChart(_ chartID:ChartID)throws {lock.lock();defer{lock.unlock()};guard let(si,ci)=findChartIndices(chartID),!sessions[si].charts[ci].isVisible else{throw DomainError.unknownChart};sessions[si].charts[ci].isVisible=true;record(.chartVisibility(chartID,old:false,new:true),in:sessions[si].id);try persist()}
     @discardableResult public func setTarget(_ chartID:ChartID) throws -> ChartID {
         lock.lock(); defer{lock.unlock()}; guard let (si,ci)=findChartIndices(chartID), sessions[si].charts[ci].isVisible, sessions[si].isOpen else { throw DomainError.unknownChart }
         setTargetInternal(chartID,invalidate:true); try persist(); return chartID
     }
     public func currentTarget() -> ChartID? { lock.lock(); defer{lock.unlock()}; return targetChartID }
+    public func samplerGroup(containing streamID:StreamID)->[StreamID]? {lock.lock();defer{lock.unlock()};let aid=owners[streamID] ?? attachmentOrder.reversed().first(where:{attachments[$0]?.streamIDs.contains(streamID)==true});guard let aid,let a=attachments[aid]else{return nil};return a.streamIDs}
     public func sessionID(forNumber number:Int)->SessionID? { lock.lock(); defer{lock.unlock()}; return sessions.first{$0.number==number}?.id }
     public func snapshot(sessionID:SessionID) throws -> SessionSnapshot? { lock.lock(); defer{lock.unlock()}; guard let i=sessionIndex(sessionID) else{return nil}; return snapshotRecord(sessions[i]) }
     public func snapshot(number:Int) throws -> SessionSnapshot? { lock.lock(); defer{lock.unlock()}; guard let s=sessions.first(where:{$0.number==number}) else{return nil}; return snapshotRecord(s) }
     public func listSessions() throws -> [SessionSnapshot] { lock.lock(); defer{lock.unlock()}; return sessions.map(snapshotRecord) }
+    public func listDeletedSessions() throws -> [SessionSnapshot] { lock.lock();defer{lock.unlock()};return sessions.filter(\.isDeleted).map(snapshotRecord) }
+    public func deleteSession(sessionID:SessionID) throws {
+        lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID),!sessions[i].isDeleted else{throw DomainError.unknownSession}
+        let wasOpen=sessions[i].isOpen,targetBefore=targetChartID
+        for (aid,var a) in attachments where a.sessionID==sessionID && a.active {
+            a.active=false;attachments[aid]=a
+            for id in a.streamIDs { owners.removeValue(forKey:id);if let(si,ci)=streamIndices(id),let ix=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==id}){sessions[si].charts[ci].streams[ix].state = .disconnected} }
+        }
+        sessions[i].isOpen=false;sessions[i].isDeleted=true
+        if sessions[i].timeline.clockStoppedAt == nil { sessions[i].timeline.clockStoppedAt=Date() }
+        if let targetChartID,findSessionIndex(forChart:targetChartID)==i{fallbackTarget()}
+        if let continuation=lastContinuation,findSessionIndex(forChart:continuation.chartID)==i {lastContinuation=nil;epoch &+= 1}
+        record(.sessionDeleted(sessionID,wasOpen:wasOpen,targetBefore:targetBefore,targetAfter:targetChartID),in:sessionID);try persist()
+    }
+    public func restoreSession(sessionID:SessionID) throws {
+        lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID),sessions[i].isDeleted else{throw DomainError.unknownSession};let targetBefore=targetChartID
+        sessions[i].isDeleted=false;sessions[i].isOpen=true
+        if let chart=sessions[i].charts.first(where:\.isVisible){setTargetInternal(chart.id,invalidate:true)}
+        record(.sessionRestored(sessionID,targetBefore:targetBefore,targetAfter:targetChartID),in:sessionID);try persist()
+    }
     public func renameSession(_ sessionID:SessionID,to title:String) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID) else{throw DomainError.unknownSession};let value=title.trimmingCharacters(in:.whitespacesAndNewlines);guard !value.isEmpty else{throw DomainError.invalidSelection};let old=sessions[i].title;guard old != value else{return};sessions[i].title=value;record(.sessionTitle(sessionID,old:old,new:value),in:sessionID);try persist() }
     /// Call from application-termination handling before per-window close callbacks run.
     public func recordTerminationOpenSessions(_ ids:Set<SessionID>) throws { lock.lock();defer{lock.unlock()};restoreOpenSessionIDs=ids;terminationSnapshotTaken=true;try persist() }
 
     @discardableResult public func registerSampler(intent:SinkIntent, sampler:SamplerIntent, owner:UUID=UUID()) throws -> ReadyReply {
         lock.lock(); defer{lock.unlock()}
+        suppressPersistDepth += 1
+        defer { suppressPersistDepth -= 1 }
         // Registration may create a session/chart before name binding completes. Keep the
         // operation atomic across validation and persistence failures.
         let oldSessions=sessions, oldTarget=targetChartID, oldNext=nextNumber, oldEpoch=epoch
-        let oldContinuation=lastContinuation, oldAttachments=attachments, oldOwners=owners
+        let oldContinuation=lastContinuation, oldAttachments=attachments, oldOwners=owners,oldAttachmentOrder=attachmentOrder
         let oldUndo=undoStacks, oldRedo=redoStacks, oldRecency=recency
         do {
         guard sampler.columnCount>0, sampler.requestedNames.map({$0.count==sampler.columnCount}) ?? true else { throw DomainError.invalidColumnCount }
@@ -108,11 +139,11 @@ public final class PipePlotStore {
         case .newSession:
             let new=try createSession(title:nil); chartID=new.charts[0].id
         case .newChart:
-            if targetChartID == nil || findChart(targetChartID!) == nil { let s=try createSession(); chartID=s.charts[0].id }
+            if !isUsableTarget(targetChartID) { let s=try createSession(); chartID=s.charts[0].id }
             else if let t=targetChartID, let si=findSessionIndex(forChart:t) { chartID=try createChart(in:sessions[si].id,after:t).id }
             else { throw DomainError.noDestination }
         case .session(let sid,let names):
-            guard let si=sessionIndex(sid) else { throw DomainError.unknownSession }
+            guard let si=sessionIndex(sid),!sessions[si].isDeleted else { throw DomainError.unknownSession }
             sessions[si].isOpen=true
             if sessions[si].charts.isEmpty { let c=ChartRecord(id:UUID(),title:"Chart 1",streams:[],settings:AxisSettings(),guides:[],isVisible:true); sessions[si].charts=[c] }
             chartID=recency.first(where:{ id in findChartIndices(id).map{$0.0==si && sessions[$0.0].charts[$0.1].isVisible} ?? false }) ?? sessions[si].charts.last!.id; if !names.isEmpty { explicitNames=names }
@@ -134,28 +165,28 @@ public final class PipePlotStore {
                 let matches=sessions[si].charts.flatMap(\.streams).filter{$0.name==name}
                 if matches.count>1 { throw DomainError.duplicateName(name) }
                 if let line=matches.first { if owners[line.id] != nil { throw DomainError.streamBusy(name) }; resolved.append(line) }
-                else { resolved.append(StreamRecord(id:UUID(),name:name,state:.live,unitHint:sampler.unitHint)) }
+                else { let id=UUID();resolved.append(StreamRecord(id:id,name:name,state:.live,unitHint:sampler.unitHint,colorHex:stableColor(id),dotsVisible:sessions[si].charts[ci].settings.dotsVisible,linesVisible:sessions[si].charts[ci].settings.linesVisible)) }
             }
             for var line in resolved { line.state = .live; if line.unitHint == nil { line.unitHint=sampler.unitHint }; streamIDs.append(line.id); descriptors.append(descriptor(line)); if streamLocation(line.id)==nil { sessions[si].charts[ci].streams.append(line) } else if let (li,lj)=streamIndices(line.id) { sessions[li].charts[lj].streams[sessions[li].charts[lj].streams.firstIndex{$0.id==line.id}!].state = .live } }
         } else if intent == .target, let previous=lastContinuation, previous.epoch==epoch, previous.chartID==chartID, previous.streamIDs.count==sampler.columnCount, !previous.active, previous.streamIDs.allSatisfy({owners[$0] == nil}) {
             streamIDs=previous.streamIDs; continued=true
             for id in streamIDs { guard let (li,lj)=streamIndices(id) else { throw DomainError.unknownStream }; sessions[li].charts[lj].streams[sessions[li].charts[lj].streams.firstIndex{$0.id==id}!].state = .live; descriptors.append(descriptor(sessions[li].charts[lj].streams.first{$0.id==id}!)) }
         } else {
-            for col in 0..<sampler.columnCount { let name=(sampler.requestedNames?.indices.contains(col) == true ? sampler.requestedNames![col] : nextDefaultLineName(sessionIndex:si)); let line=StreamRecord(id:UUID(),name:name,state:.live,unitHint:sampler.unitHint); sessions[si].charts[ci].streams.append(line); streamIDs.append(line.id); descriptors.append(descriptor(line)) }
+            for col in 0..<sampler.columnCount { let name=(sampler.requestedNames?.indices.contains(col) == true ? sampler.requestedNames![col] : nextDefaultLineName(sessionIndex:si)); let id=UUID();let line=StreamRecord(id:id,name:name,state:.live,unitHint:sampler.unitHint,colorHex:stableColor(id),dotsVisible:sessions[si].charts[ci].settings.dotsVisible,linesVisible:sessions[si].charts[ci].settings.linesVisible); sessions[si].charts[ci].streams.append(line); streamIDs.append(line.id); descriptors.append(descriptor(line)) }
         }
         let aid=UUID(); let attach=AttachmentRecord(id:aid,owner:owner,sessionID:sessions[si].id,chartID:chartID,streamIDs:streamIDs,active:true)
-        attachments[aid]=attach; for id in streamIDs { owners[id]=aid }
+        attachments[aid]=attach;attachmentOrder.append(aid); for id in streamIDs { owners[id]=aid }
         sessions[si].timeline.clockStoppedAt = nil
         if intent == .target { lastContinuation=Continuation(epoch:epoch,chartID:chartID,streamIDs:streamIDs,active:true) }
-        touch(chartID); try persist()
+        touch(chartID); try persistSnapshot()
         return ReadyReply(sessionID:sessions[si].id,chartID:chartID,attachmentID:aid,streams:descriptors,continued:continued)
         } catch {
             sessions=oldSessions; targetChartID=oldTarget; nextNumber=oldNext; epoch=oldEpoch
-            lastContinuation=oldContinuation; attachments=oldAttachments; owners=oldOwners
+            lastContinuation=oldContinuation; attachments=oldAttachments; owners=oldOwners;attachmentOrder=oldAttachmentOrder
             undoStacks=oldUndo; redoStacks=oldRedo; recency=oldRecency
             // Restore the on-disk snapshot too: createSession/createChart may have persisted
             // during this compound operation before a later binding check failed.
-            try? persist()
+            try? persistSnapshot()
             throw error
         }
     }
@@ -165,31 +196,65 @@ public final class PipePlotStore {
         guard row.values.count==attachment.streamIDs.count, row.values.allSatisfy(\.isFinite) else { throw DomainError.invalidColumnCount }
         let seqs=try samples.append(values:row.values,timestamp:row.timestamp,to:attachment.streamIDs,segmentID:attachmentID.uuidString.lowercased())
         for id in attachment.streamIDs { if let (si,ci)=streamIndices(id), let idx=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==id}) { var s=sessions[si].charts[ci].streams[idx]; s.sampleCount += 1; if s.firstSampleAt == nil {s.firstSampleAt=row.timestamp}; s.lastSampleAt=row.timestamp; s.state = .live; sessions[si].charts[ci].streams[idx]=s } }
+        // Raw samples already committed in SQLite; a metadata write failure must not
+        // pretend the in-memory sample or producer is absent.
+        committedState=memoryState()
         try persist(); return seqs
     }
     public func finishAttachment(_ attachmentID:AttachmentID, reason:FinishReason) throws {
         lock.lock(); defer{lock.unlock()}; guard var a=attachments[attachmentID], a.active else{return}; a.active=false; attachments[attachmentID]=a
-        for id in a.streamIDs { owners.removeValue(forKey:id); if let (si,ci)=streamIndices(id),let ix=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==id}) { sessions[si].charts[ci].streams[ix].state = reason == .error ? .errored : (reason == .clientDisconnected ? .disconnected : .ended) } }
+        for id in a.streamIDs { if owners[id]==attachmentID { owners.removeValue(forKey:id) }; if let (si,ci)=streamIndices(id),let ix=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==id}) { sessions[si].charts[ci].streams[ix].state = reason == .error ? .errored : (reason == .clientDisconnected ? .disconnected : .ended) } }
         if lastContinuation?.streamIDs == a.streamIDs { lastContinuation?.active=false }
         if !attachments.values.contains(where: { $0.sessionID == a.sessionID && $0.active }), let i = sessionIndex(a.sessionID) {
             sessions[i].timeline.clockStoppedAt = Date()
         }
+        // EOF/interruption is an external lifecycle fact; do not roll it back if the
+        // metadata snapshot cannot be written.
+        committedState=memoryState()
         try persist()
     }
     public func recordRejectedInput(_ rejection:InputRejection,to attachmentID:AttachmentID) throws {
         lock.lock();defer{lock.unlock()};guard let attachment=attachments[attachmentID],let i=sessionIndex(attachment.sessionID) else{throw DomainError.unknownStream}
-        sessions[i].rejectedLineCount += 1;try persist()
+        sessions[i].rejectedLineCount += Int(rejection.rejectedCount);try persist()
     }
 
     public func moveStream(_ streamID:StreamID,to chartID:ChartID) throws {
         lock.lock(); defer{lock.unlock()}; guard let (si,ci)=findChartIndices(chartID), let (oi,oj)=streamIndices(streamID) else { throw DomainError.unknownStream }
         guard si == oi, !(si==oi && ci==oj), sessions[si].charts[ci].isVisible else { throw DomainError.invalidMove }
         let sourceWasVisible=sessions[oi].charts[oj].isVisible, destinationWasVisible=sessions[si].charts[ci].isVisible
-        let stream=sessions[oi].charts[oj].streams.remove(at:sessions[oi].charts[oj].streams.firstIndex{$0.id==streamID}!)
+        var stream=sessions[oi].charts[oj].streams.remove(at:sessions[oi].charts[oj].streams.firstIndex{$0.id==streamID}!)
+        if stream.colorHex == nil { stream.colorHex=stableColor(streamID) }
+        if stream.dotsVisible == nil { stream.dotsVisible=sessions[oi].charts[oj].settings.dotsVisible }
+        if stream.linesVisible == nil { stream.linesVisible=sessions[oi].charts[oj].settings.linesVisible }
         sessions[si].charts[ci].streams.append(stream)
         if sessions[oi].charts[oj].streams.isEmpty { sessions[oi].charts[oj].isVisible=false; if targetChartID==sessions[oi].charts[oj].id { fallbackTarget() } }
         record(.movedStream(streamID,from:sessions[oi].charts[oj].id,to:chartID,fromWasVisible:sourceWasVisible,toWasVisible:destinationWasVisible,fromNowVisible:sessions[oi].charts[oj].isVisible,toNowVisible:sessions[si].charts[ci].isVisible),in:sessions[oi].id)
         try persist()
+    }
+    /// Creates a chart immediately after the stream's current chart and moves the stream
+    /// as one undoable model action. The app-wide target is preserved unless source collapse
+    /// requires its normal fallback.
+    @discardableResult public func moveStreamToNewChart(_ streamID:StreamID,after afterChartID:ChartID?=nil) throws -> ChartSnapshot {
+        lock.lock(); defer{lock.unlock()}
+        guard let (si,sourceIndex)=streamIndices(streamID), let sourcePosition=sessions[si].charts[sourceIndex].streams.firstIndex(where:{$0.id==streamID}) else { throw DomainError.unknownStream }
+        let sourceID=sessions[si].charts[sourceIndex].id
+        let insertionAnchor=afterChartID.flatMap{aid in sessions[si].charts.firstIndex(where:{$0.id==aid})} ?? sourceIndex
+        let chartIndex=insertionAnchor+1, id=UUID()
+        var chart=ChartRecord(id:id,title:"Chart \(sessions[si].charts.count+1)",streams:[],settings:AxisSettings(),guides:[],isVisible:true)
+        let oldTarget=targetChartID, wasVisible=sessions[si].charts[sourceIndex].isVisible
+        var stream=sessions[si].charts[sourceIndex].streams.remove(at:sourcePosition)
+        if stream.colorHex == nil { stream.colorHex=stableColor(streamID) }
+        if stream.dotsVisible == nil { stream.dotsVisible=sessions[si].charts[sourceIndex].settings.dotsVisible }
+        if stream.linesVisible == nil { stream.linesVisible=sessions[si].charts[sourceIndex].settings.linesVisible }
+        chart.streams.append(stream)
+        sessions[si].charts.insert(chart,at:chartIndex)
+        if sessions[si].charts[sourceIndex].streams.isEmpty {
+            sessions[si].charts[sourceIndex].isVisible=false
+            if targetChartID==sourceID { fallbackTarget() }
+        }
+        record(.moveToNewChart(streamID,from:sourceID,chart:chart,index:chartIndex,streamIndex:sourcePosition,sourceWasVisible:wasVisible,targetBefore:oldTarget,targetAfter:targetChartID),in:sessions[si].id)
+        try persist()
+        return chartSnapshot(sessions[si].charts[chartIndex],target:targetChartID)
     }
     /// Associates an active sampler group with older disconnected lines. Histories stay in
     /// SQLite and all columns are remapped in one transaction, so undo can restore routing.
@@ -240,7 +305,7 @@ public final class PipePlotStore {
         let action=ReassociationAction(sessionID:sessions[sessionIndex].id,attachmentID:aid,items:items,chartVisibility:visibility)
         try applyReassociation(action,reverse:false)
         record(.reassociation(action),in:sessions[sessionIndex].id)
-        try persist()
+        do {try persist()} catch {try? rollbackReassociationSamples(action,currentlyReversed:false);throw error}
     }
     public func renameStream(_ streamID:StreamID,to name:String) throws {
         lock.lock(); defer{lock.unlock()}; guard let (si,ci)=streamIndices(streamID),let ix=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==streamID}) else{throw DomainError.unknownStream}
@@ -249,7 +314,7 @@ public final class PipePlotStore {
         sessions[si].charts[ci].streams[ix].name=name
         record(.renamedStream(streamID,old:old,new:name),in:sessions[si].id); try persist()
     }
-    public func updateSettings(_ settings:AxisSettings,chartID:ChartID) throws { lock.lock();defer{lock.unlock()}; guard let(si,ci)=findChartIndices(chartID) else{throw DomainError.unknownChart};if case .fixed(let min,let max)=settings.yScale,(!min.isFinite || !max.isFinite || min>=max){throw DomainError.invalidAxisSettings};let old=sessions[si].charts[ci].settings;guard old != settings else{return};sessions[si].charts[ci].settings=settings; record(.settings(chartID,old:old,new:settings),in:sessions[si].id); try persist() }
+    public func updateSettings(_ settings:AxisSettings,chartID:ChartID) throws { lock.lock();defer{lock.unlock()}; guard let(si,ci)=findChartIndices(chartID) else{throw DomainError.unknownChart};if case .fixed(let min,let max)=settings.yScale,(!min.isFinite || !max.isFinite || min>=max){throw DomainError.invalidAxisSettings};let old=sessions[si].charts[ci].settings;guard old != settings else{return};let styles=sessions[si].charts[ci].streams.map{StreamStyleSnapshot(id:$0.id,color:$0.colorHex,dots:$0.dotsVisible,lines:$0.linesVisible)};sessions[si].charts[ci].settings=settings;for ix in sessions[si].charts[ci].streams.indices{sessions[si].charts[ci].streams[ix].dotsVisible=settings.dotsVisible;sessions[si].charts[ci].streams[ix].linesVisible=settings.linesVisible}; record(.settings(chartID,old:old,new:settings,oldStyles:styles),in:sessions[si].id); try persist() }
     public func upsertGuide(_ guide:Guide,chartID:ChartID) throws {
         lock.lock();defer{lock.unlock()};guard guide.value.isFinite else{throw DomainError.invalidAxisSettings};guard let(si,ci)=findChartIndices(chartID) else{throw DomainError.unknownChart}
         if guide.orientation == .verticalTime { try upsertTimeGuide(guide,sessionID:sessions[si].id);return }
@@ -271,9 +336,11 @@ public final class PipePlotStore {
     public func removeTimeGuide(_ guideID:UUID,sessionID:SessionID) throws {
         lock.lock();defer{lock.unlock()};guard let si=sessionIndex(sessionID) else{throw DomainError.unknownSession};guard let i=sessions[si].timeGuides.firstIndex(where:{$0.id==guideID}) else{return};let old=sessions[si].timeGuides.remove(at:i);record(.timeGuide(sessionID,id:guideID,old:old,new:nil),in:sessionID);try persist()
     }
-    public func updateTimeline(_ timeline:TimelineState,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID) else{throw DomainError.unknownSession};var value=timeline;value.selection=sessions[i].timeline.selection;value.forecast=sessions[i].timeline.forecast;value.clockStoppedAt=sessions[i].timeline.clockStoppedAt;sessions[i].timeline=value;try persist() }
+    public func updateTimeline(_ timeline:TimelineState,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID) else{throw DomainError.unknownSession};var value=timeline;value.selection=sessions[i].timeline.selection;value.forecast=sessions[i].timeline.forecast;value.forecasts=sessions[i].timeline.forecasts;value.clockStoppedAt=sessions[i].timeline.clockStoppedAt;sessions[i].timeline=value;try persist() }
     public func setSelection(_ selection:TimeSelection?,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID) else{throw DomainError.unknownSession};if let s=selection { if s.start>s.end {throw DomainError.invalidSelection};if case .bothFollowNow(let duration)=s.mode,(!duration.isFinite || duration<=0){throw DomainError.invalidSelection} };let old=sessions[i].timeline.selection;guard old != selection else{return};sessions[i].timeline.selection=selection;record(.selection(sessionID,old:old,new:selection),in:sessionID);try persist() }
     public func setForecast(_ forecast:ForecastConfiguration?,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID) else{throw DomainError.unknownSession};if let f=forecast {guard f.selection.start<=f.selection.end, sessions[i].charts.flatMap(\.streams).contains(where:{$0.id==f.streamID}),sessions[i].charts.contains(where:{$0.guides.contains(where:{$0.id==f.guideID && $0.orientation == .horizontalValue})}) else {throw DomainError.invalidSelection}};let old=sessions[i].timeline.forecast;guard old != forecast else{return};sessions[i].timeline.forecast=forecast;record(.forecast(sessionID,old:old,new:forecast),in:sessionID);try persist() }
+    public func setForecasts(_ forecasts:[ForecastConfiguration],sessionID:SessionID)throws {lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID)else{throw DomainError.unknownSession};for f in forecasts{guard f.selection.start<=f.selection.end,sessions[i].charts.flatMap(\.streams).contains(where:{$0.id==f.streamID}),sessions[i].charts.contains(where:{$0.guides.contains(where:{$0.id==f.guideID && $0.orientation == .horizontalValue})}) else{throw DomainError.invalidSelection}};let old=sessions[i].timeline.forecasts ?? sessions[i].timeline.forecast.map{[$0]} ?? [];guard old != forecasts else{return};sessions[i].timeline.forecasts=forecasts;sessions[i].timeline.forecast=forecasts.first;record(.forecasts(sessionID,old:old,new:forecasts),in:sessionID);try persist()}
+    public func updateStreamStyle(_ id:StreamID,colorHex:String?,dotsVisible:Bool?,linesVisible:Bool?)throws {lock.lock();defer{lock.unlock()};guard let(si,ci)=streamIndices(id),let ix=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==id})else{throw DomainError.unknownStream};let old=sessions[si].charts[ci].streams[ix];let color=colorHex ?? old.colorHex,dots=dotsVisible ?? old.dotsVisible,lines=linesVisible ?? old.linesVisible;guard color != old.colorHex || dots != old.dotsVisible || lines != old.linesVisible else{return};sessions[si].charts[ci].streams[ix].colorHex=color;sessions[si].charts[ci].streams[ix].dotsVisible=dots;sessions[si].charts[ci].streams[ix].linesVisible=lines;record(.streamStyle(id,oldColor:old.colorHex,newColor:color,oldDots:old.dotsVisible,newDots:dots,oldLines:old.linesVisible,newLines:lines),in:sessions[si].id);try persist()}
     public func setSessionOpen(_ open:Bool,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID) else{throw DomainError.unknownSession};sessions[i].isOpen=open;if !open { let active=attachments.values.filter{$0.sessionID==sessionID && $0.active};for a in active { try finishAttachment(a.id,reason:.sessionClosed) }; if let t=targetChartID, sessions[i].charts.contains(where:{$0.id==t}) { targetChartID=nil; fallbackTarget() } };try persist() }
 
     public func undoActionName(sessionID: SessionID) -> String? {
@@ -311,26 +378,48 @@ public final class PipePlotStore {
                 sessions[si].charts[existing.1].isVisible=true
             } else { sessions[si].charts.insert(chart,at:min(index,sessions[si].charts.count)) }
             action = .createdChart(sessionID:sid,chartID:chart.id,index:index)
-        case .movedStream(let id,let from,let to,let fromWasVisible,let toWasVisible,let fromNowVisible,let toNowVisible):
+        case .movedStream(let id,let from,let to,_,_,_,_):
             if let destination=findChartIndices(undo ? from : to),let sourceChart=findChartIndices(undo ? to : from),let stream=removeStream(id,at:sourceChart) {
                 sessions[destination.0].charts[destination.1].streams.append(stream)
-                if let (fsi,fci)=findChartIndices(from),let (tsi,tci)=findChartIndices(to) {
-                    sessions[fsi].charts[fci].isVisible=undo ? fromWasVisible:fromNowVisible
-                    sessions[tsi].charts[tci].isVisible=undo ? toWasVisible:toNowVisible
+                if let (fsi,fci)=findChartIndices(from) { if sessions[fsi].charts[fci].streams.isEmpty { sessions[fsi].charts[fci].isVisible=false } else { sessions[fsi].charts[fci].isVisible=true } }
+                if let (tsi,tci)=findChartIndices(to) { if sessions[tsi].charts[tci].streams.isEmpty { sessions[tsi].charts[tci].isVisible=false } else { sessions[tsi].charts[tci].isVisible=true } }
+            }
+        case .moveToNewChart(let id,let from,let chartRecord,let index,let streamIndex,let sourceWasVisible,let targetBefore,let targetAfter):
+            let chartID=chartRecord.id
+            if undo {
+                if let source=findChartIndices(from), let current=streamIndices(id), let stream=removeStream(id,at:current) {
+                    sessions[source.0].charts[source.1].streams.insert(stream,at:min(streamIndex,sessions[source.0].charts[source.1].streams.count))
+                    if sourceWasVisible || !sessions[source.0].charts[source.1].streams.isEmpty { sessions[source.0].charts[source.1].isVisible=true }
+                }
+                if let target=findChartIndices(chartID),sessions[target.0].charts[target.1].streams.isEmpty { sessions[target.0].charts.remove(at:target.1) }
+                if targetChartID==targetAfter { targetChartID=targetBefore }
+            } else {
+                if let source=findChartIndices(from),let position=sessions[source.0].charts.firstIndex(where:{$0.id==from}) {
+                    if findChartIndices(chartID)==nil {var restored=chartRecord;restored.streams=[];sessions[source.0].charts.insert(restored,at:min(index,sessions[source.0].charts.count))}
+                    if let current=streamIndices(id),let stream=removeStream(id,at:current),let dest=findChartIndices(chartID) { sessions[dest.0].charts[dest.1].streams.append(stream);sessions[dest.0].charts[dest.1].isVisible=true }
+                    if sessions[source.0].charts[position].streams.isEmpty { sessions[source.0].charts[position].isVisible=false;if targetChartID==from{fallbackTarget()} }
                 }
             }
         case .renamedStream(let id,let old,let new): if let (a,b)=streamIndices(id),let ix=sessions[a].charts[b].streams.firstIndex(where:{$0.id==id}) { sessions[a].charts[b].streams[ix].name=undo ? old:new }
-        case .settings(let cid,let old,let new): if let(a,b)=findChartIndices(cid){sessions[a].charts[b].settings=undo ? old:new}
+        case .settings(let cid,let old,let new,let oldStyles): if let(a,b)=findChartIndices(cid){let value=undo ? old:new;sessions[a].charts[b].settings=value;for ix in sessions[a].charts[b].streams.indices{let id=sessions[a].charts[b].streams[ix].id;if undo,let style=oldStyles.first(where:{$0.id==id}){sessions[a].charts[b].streams[ix].colorHex=style.color;sessions[a].charts[b].streams[ix].dotsVisible=style.dots;sessions[a].charts[b].streams[ix].linesVisible=style.lines}else{sessions[a].charts[b].streams[ix].dotsVisible=value.dotsVisible;sessions[a].charts[b].streams[ix].linesVisible=value.linesVisible}}}
         case .guide(let cid,let gid,let old,let new): if let(a,b)=findChartIndices(cid){sessions[a].charts[b].guides.removeAll{$0.id==gid};if let value=undo ? old:new{sessions[a].charts[b].guides.append(value)}}
         case .timeGuide(let sid,let gid,let old,let new): if let i=sessionIndex(sid){sessions[i].timeGuides.removeAll{$0.id==gid};if let value=undo ? old:new{sessions[i].timeGuides.append(value)}}
         case .selection(let sid,let old,let new): if let i=sessionIndex(sid){sessions[i].timeline.selection=undo ? old:new}
         case .forecast(let sid,let old,let new): if let i=sessionIndex(sid){sessions[i].timeline.forecast=undo ? old:new}
+        case .forecasts(let sid,let old,let new):if let i=sessionIndex(sid){let value=undo ? old:new;sessions[i].timeline.forecasts=value;sessions[i].timeline.forecast=value.first}
+        case .streamStyle(let id,let oldColor,let newColor,let oldDots,let newDots,let oldLines,let newLines):if let(a,b)=streamIndices(id),let ix=sessions[a].charts[b].streams.firstIndex(where:{$0.id==id}){sessions[a].charts[b].streams[ix].colorHex=undo ? oldColor:newColor;sessions[a].charts[b].streams[ix].dotsVisible=undo ? oldDots:newDots;sessions[a].charts[b].streams[ix].linesVisible=undo ? oldLines:newLines}
         case .sessionTitle(let sid,let old,let new): if let i=sessionIndex(sid){sessions[i].title=undo ? old:new}
+        case .chartTitle(let id,let old,let new):if let(a,b)=findChartIndices(id){sessions[a].charts[b].title=undo ? old:new}
+        case .chartReordered(let id,let from,let to):if let(a,b)=findChartIndices(id){let chart=sessions[a].charts.remove(at:b);sessions[a].charts.insert(chart,at:min(undo ? from:to,sessions[a].charts.count))}
+        case .chartDeleted(let sid,let chart,index:let chartIndex):if let i=sessionIndex(sid){if undo{sessions[i].charts.insert(chart,at:min(chartIndex,sessions[i].charts.count))}else if let ci=sessions[i].charts.firstIndex(where:{$0.id==chart.id}),sessions[i].charts[ci].streams.isEmpty{sessions[i].charts.remove(at:ci)}}
+        case .chartVisibility(let id,let old,let new):if let(a,b)=findChartIndices(id){sessions[a].charts[b].isVisible=undo ? old:new;if !(undo ? old:new),targetChartID==id{fallbackTarget()}}
+        case .sessionDeleted(let sid,let wasOpen,let targetBefore,let targetAfter): if let i=sessionIndex(sid){sessions[i].isDeleted = !undo;sessions[i].isOpen = undo ? wasOpen:false;if undo {if targetChartID==targetAfter,let prior=targetBefore,isUsableTarget(prior){setTargetInternal(prior,invalidate:true)}} else if targetChartID.flatMap(findSessionIndex(forChart:)) == i {fallbackTarget()}}
+        case .sessionRestored(let sid,let targetBefore,let targetAfter):if let i=sessionIndex(sid){sessions[i].isDeleted=undo;sessions[i].isOpen = !undo;if undo {if targetChartID==targetAfter,let prior=targetBefore,isUsableTarget(prior){setTargetInternal(prior,invalidate:true)}}else if let chart=sessions[i].charts.first(where:\.isVisible){setTargetInternal(chart.id,invalidate:true)}}
         case .reassociation(let association): do { try applyReassociation(association,reverse:undo) } catch { _ = restoreAction(.reassociation(association),sessionID:sessionID,undo:undo); throw error }
         }
         if undo { redoStacks[sessionID,default:[]].append(action) } else { undoStacks[sessionID,default:[]].append(action) }
         if let targetChartID,findChartIndices(targetChartID).map({sessions[$0.0].charts[$0.1].isVisible && sessions[$0.0].isOpen}) != true { fallbackTarget() }
-        try persist();return true
+        do {try persist()} catch {if case .reassociation(let association)=action {try? rollbackReassociationSamples(association,currentlyReversed:undo)};throw error};return true
     }
 
     private func restoreAction(_ action:UndoRecord,sessionID:SessionID,undo:Bool)->Bool { if undo {undoStacks[sessionID,default:[]].append(action)} else {redoStacks[sessionID,default:[]].append(action)};return false }
@@ -383,6 +472,7 @@ public final class PipePlotStore {
         }
         if lastContinuation?.streamIDs == expectedOwned { lastContinuation?.streamIDs=targetIDs }
     }
+    private func rollbackReassociationSamples(_ action:ReassociationAction,currentlyReversed:Bool)throws {let transfers=action.items.map{item in SegmentTransfer(segmentIDs:item.segmentIDs,from:currentlyReversed ? item.sourceID:item.destinationID,to:currentlyReversed ? item.destinationID:item.sourceID)};try samples.reassignSegments(transfers)}
 
     private func record(_ action:UndoRecord,in sessionID:SessionID){var stack=undoStacks[sessionID,default:[]];stack.append(action);if stack.count>200{stack.removeFirst(stack.count-200)};undoStacks[sessionID]=stack;redoStacks[sessionID]=[]}
     private func setTargetInternal(_ id:ChartID,invalidate:Bool){targetChartID=id;touch(id);if invalidate{epoch &+= 1;lastContinuation=nil}}
@@ -397,26 +487,32 @@ public final class PipePlotStore {
     private func findSessionIndex(forChart id:ChartID)->Int?{sessions.firstIndex{$0.charts.contains(where:{$0.id==id})}}
     private func streamIndices(_ id:StreamID)->(Int,Int)?{for i in sessions.indices{for j in sessions[i].charts.indices where sessions[i].charts[j].streams.contains(where:{$0.id==id}){return(i,j)}};return nil}
     private func streamLocation(_ id:StreamID)->(Int,Int)?{streamIndices(id)}
-    private func descriptor(_ s:StreamRecord)->StreamDescriptor{StreamDescriptor(id:s.id,name:s.name,state:s.state,sampleCount:s.sampleCount,firstSampleAt:s.firstSampleAt,lastSampleAt:s.lastSampleAt,unitHint:s.unitHint)}
+    private func descriptor(_ s:StreamRecord)->StreamDescriptor{StreamDescriptor(id:s.id,name:s.name,state:s.state,sampleCount:s.sampleCount,firstSampleAt:s.firstSampleAt,lastSampleAt:s.lastSampleAt,unitHint:s.unitHint,colorHex:s.colorHex,dotsVisible:s.dotsVisible,linesVisible:s.linesVisible)}
+    private func stableColor(_ id:UUID)->String {let h=id.uuidString.utf8.reduce(UInt64(1469598103934665603)){($0 ^ UInt64($1)) &* 1099511628211};return String(format:"#%06X",UInt32(h & 0xFFFFFF))}
     private func findStream(_ id:StreamID)->StreamRecord?{guard let (i,j)=streamIndices(id) else{return nil};return sessions[i].charts[j].streams.first{$0.id==id}}
     private func nextDefaultLineName(sessionIndex:Int)->String { let existing=Set(sessions[sessionIndex].charts.flatMap(\.streams).map(\.name));var n=1;while existing.contains("Line \(n)"){n+=1};return "Line \(n)" }
     private func chartSnapshot(_ c:ChartRecord,target:ChartID?)->ChartSnapshot{ChartSnapshot(id:c.id,title:c.title,streams:c.streams.map(descriptor),settings:c.settings,guides:c.guides,isTarget:c.id==target,isVisible:c.isVisible)}
-    private func snapshotRecord(_ s:SessionRecord)->SessionSnapshot{SessionSnapshot(id:s.id,number:s.number,title:s.title,charts:s.charts.map{chartSnapshot($0,target:targetChartID)},timeGuides:s.timeGuides,timeline:s.timeline,isOpen:s.isOpen,rejectedLineCount:s.rejectedLineCount)}
-    private func persist() throws { if !terminationSnapshotTaken { restoreOpenSessionIDs=Set(sessions.filter(\.isOpen).map(\.id)) }; let state=PersistedState(sessions:sessions,targetChartID:targetChartID,nextNumber:nextNumber,recency:recency,restoreOpenSessionIDs:restoreOpenSessionIDs);let data=try JSONEncoder().encode(state);try data.write(to:metadataURL,options:.atomic) }
+    private func snapshotRecord(_ s:SessionRecord)->SessionSnapshot{SessionSnapshot(id:s.id,number:s.number,title:s.title,charts:s.charts.map{chartSnapshot($0,target:targetChartID)},timeGuides:s.timeGuides,timeline:s.timeline,isOpen:s.isOpen,rejectedLineCount:s.rejectedLineCount,isDeleted:s.isDeleted)}
+    private func persist() throws {guard suppressPersistDepth==0 else{return};try persistSnapshot()}
+    private func persistSnapshot()throws {let before=committedState ?? memoryState();do{if !terminationSnapshotTaken { restoreOpenSessionIDs=Set(sessions.filter(\.isOpen).map(\.id)) }; let state=PersistedState(sessions:sessions,targetChartID:targetChartID,nextNumber:nextNumber,recency:recency,restoreOpenSessionIDs:restoreOpenSessionIDs);let data=try JSONEncoder().encode(state);try data.write(to:metadataURL,options:.atomic);committedState=memoryState()}catch{restoreMemoryState(before);throw error}}
+    private func memoryState()->MemoryState {MemoryState(previouslyOpenSessionIDs:previouslyOpenSessionIDs,sessions:sessions,targetChartID:targetChartID,nextNumber:nextNumber,epoch:epoch,lastContinuation:lastContinuation,attachments:attachments,owners:owners,attachmentOrder:attachmentOrder,undoStacks:undoStacks,redoStacks:redoStacks,recency:recency,restoreOpenSessionIDs:restoreOpenSessionIDs,terminationSnapshotTaken:terminationSnapshotTaken)}
+    private func restoreMemoryState(_ s:MemoryState){previouslyOpenSessionIDs=s.previouslyOpenSessionIDs;sessions=s.sessions;targetChartID=s.targetChartID;nextNumber=s.nextNumber;epoch=s.epoch;lastContinuation=s.lastContinuation;attachments=s.attachments;owners=s.owners;attachmentOrder=s.attachmentOrder;undoStacks=s.undoStacks;redoStacks=s.redoStacks;recency=s.recency;restoreOpenSessionIDs=s.restoreOpenSessionIDs;terminationSnapshotTaken=s.terminationSnapshotTaken}
 }
 
 private struct Continuation {var epoch:UInt64;var chartID:ChartID;var streamIDs:[StreamID];var active:Bool}
+private struct MemoryState {var previouslyOpenSessionIDs:Set<SessionID>;var sessions:[SessionRecord];var targetChartID:ChartID?;var nextNumber:Int;var epoch:UInt64;var lastContinuation:Continuation?;var attachments:[AttachmentID:AttachmentRecord];var owners:[StreamID:AttachmentID];var attachmentOrder:[AttachmentID];var undoStacks:[SessionID:[UndoRecord]];var redoStacks:[SessionID:[UndoRecord]];var recency:[ChartID];var restoreOpenSessionIDs:Set<SessionID>;var terminationSnapshotTaken:Bool}
 private struct AttachmentRecord {var id:AttachmentID;var owner:UUID;var sessionID:SessionID;var chartID:ChartID;var streamIDs:[StreamID];var active:Bool}
-private struct SessionRecord:Codable {var id:SessionID;var number:Int;var title:String;var charts:[ChartRecord];var timeGuides:[Guide];var timeline:TimelineState;var isOpen:Bool;var rejectedLineCount:Int}
+private struct SessionRecord:Codable {var id:SessionID;var number:Int;var title:String;var charts:[ChartRecord];var timeGuides:[Guide];var timeline:TimelineState;var isOpen:Bool;var rejectedLineCount:Int;var isDeleted:Bool=false}
 private struct ChartRecord:Codable {var id:ChartID;var title:String;var streams:[StreamRecord];var settings:AxisSettings;var guides:[Guide];var isVisible:Bool}
-private struct StreamRecord:Codable {var id:StreamID;var name:String;var state:StreamState;var sampleCount:Int64=0;var firstSampleAt:Date?;var lastSampleAt:Date?;var unitHint:String?}
+private struct StreamRecord:Codable {var id:StreamID;var name:String;var state:StreamState;var sampleCount:Int64=0;var firstSampleAt:Date?;var lastSampleAt:Date?;var unitHint:String?;var colorHex:String?;var dotsVisible:Bool?;var linesVisible:Bool?}
 private struct PersistedState:Codable {var sessions:[SessionRecord];var targetChartID:ChartID?;var nextNumber:Int;var recency:[ChartID];var restoreOpenSessionIDs:Set<SessionID>?}
 private struct ReassociationItem {var sourceID:StreamID;var destinationID:StreamID;var segmentIDs:[String];var sourceRecord:StreamRecord;var sourceChartID:ChartID;var sourceChartIndex:Int;var sourceStreamIndex:Int;var destinationChartID:ChartID}
 private struct ReassociationAction {var sessionID:SessionID;var attachmentID:AttachmentID;var items:[ReassociationItem];var chartVisibility:[ChartID:Bool]}
-private enum UndoRecord {case createdChart(sessionID:SessionID,chartID:ChartID,index:Int),restoredChart(sessionID:SessionID,chart:ChartRecord,index:Int,streamIDs:[StreamID]),movedStream(StreamID,from:ChartID,to:ChartID,fromWasVisible:Bool,toWasVisible:Bool,fromNowVisible:Bool,toNowVisible:Bool),renamedStream(StreamID,old:String,new:String),sessionTitle(SessionID,old:String,new:String),settings(ChartID,old:AxisSettings,new:AxisSettings),guide(ChartID,id:UUID,old:Guide?,new:Guide?),timeGuide(SessionID,id:UUID,old:Guide?,new:Guide?),selection(SessionID,old:TimeSelection?,new:TimeSelection?),forecast(SessionID,old:ForecastConfiguration?,new:ForecastConfiguration?),reassociation(ReassociationAction)}
+private struct StreamStyleSnapshot {var id:StreamID;var color:String?;var dots:Bool?;var lines:Bool?}
+private enum UndoRecord {case createdChart(sessionID:SessionID,chartID:ChartID,index:Int),restoredChart(sessionID:SessionID,chart:ChartRecord,index:Int,streamIDs:[StreamID]),movedStream(StreamID,from:ChartID,to:ChartID,fromWasVisible:Bool,toWasVisible:Bool,fromNowVisible:Bool,toNowVisible:Bool),moveToNewChart(StreamID,from:ChartID,chart:ChartRecord,index:Int,streamIndex:Int,sourceWasVisible:Bool,targetBefore:ChartID?,targetAfter:ChartID?),renamedStream(StreamID,old:String,new:String),sessionTitle(SessionID,old:String,new:String),chartTitle(ChartID,old:String,new:String),chartReordered(ChartID,from:Int,to:Int),chartDeleted(SessionID,chart:ChartRecord,index:Int),chartVisibility(ChartID,old:Bool,new:Bool),sessionDeleted(SessionID,wasOpen:Bool,targetBefore:ChartID?,targetAfter:ChartID?),sessionRestored(SessionID,targetBefore:ChartID?,targetAfter:ChartID?),settings(ChartID,old:AxisSettings,new:AxisSettings,oldStyles:[StreamStyleSnapshot]),guide(ChartID,id:UUID,old:Guide?,new:Guide?),timeGuide(SessionID,id:UUID,old:Guide?,new:Guide?),selection(SessionID,old:TimeSelection?,new:TimeSelection?),forecast(SessionID,old:ForecastConfiguration?,new:ForecastConfiguration?),forecasts(SessionID,old:[ForecastConfiguration],new:[ForecastConfiguration]),streamStyle(StreamID,oldColor:String?,newColor:String?,oldDots:Bool?,newDots:Bool?,oldLines:Bool?,newLines:Bool?),reassociation(ReassociationAction)}
 
 private extension SessionRecord {
-    enum CodingKeys: String, CodingKey { case id, number, title, charts, timeGuides, timeline, isOpen, rejectedLineCount }
+    enum CodingKeys: String, CodingKey { case id, number, title, charts, timeGuides, timeline, isOpen, rejectedLineCount, isDeleted }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(SessionID.self, forKey: .id)
@@ -427,6 +523,7 @@ private extension SessionRecord {
         timeline = try c.decode(TimelineState.self, forKey: .timeline)
         isOpen = try c.decode(Bool.self, forKey: .isOpen)
         rejectedLineCount = try c.decodeIfPresent(Int.self, forKey: .rejectedLineCount) ?? 0
+        isDeleted = try c.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false
     }
 }
 
@@ -434,13 +531,21 @@ private extension UndoRecord {
     var title: String {
         switch self {
         case .createdChart, .restoredChart: return "Create Chart"
-        case .movedStream: return "Move Stream"
+        case .movedStream, .moveToNewChart: return "Move Stream"
         case .renamedStream: return "Rename Stream"
         case .sessionTitle: return "Rename Session"
+        case .chartTitle: return "Rename Chart"
+        case .chartReordered: return "Reorder Chart"
+        case .chartDeleted: return "Delete Chart"
+        case .chartVisibility: return "Delete Chart"
+        case .sessionDeleted: return "Delete Session"
+        case .sessionRestored: return "Restore Session"
         case .settings: return "Axis Settings"
         case .guide, .timeGuide: return "Guide Edit"
         case .selection: return "Selection"
         case .forecast: return "Linear Forecast"
+        case .forecasts: return "Linear Forecasts"
+        case .streamStyle: return "Stream Style"
         case .reassociation: return "Reassociate Streams"
         }
     }

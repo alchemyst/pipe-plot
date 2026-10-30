@@ -21,6 +21,13 @@ final class CoreTests: XCTestCase {
         let oversized=InputParser().append(Data(repeating:65,count:InputParser.maximumLineBytes+1)+Data([10]))
         if case .rejected(let issue)?=oversized.first { XCTAssertEqual(issue.kind,.tooLong) } else { XCTFail("expected oversized row rejection") }
     }
+    func testAggregatedRejectionCountAndLegacyDecode() throws {
+        let encoder=JSONEncoder(),decoder=JSONDecoder()
+        let value=InputRejection(kind:.nonFinite,lineNumber:9,message:"bad",rejectedCount:5)
+        XCTAssertEqual(try decoder.decode(InputRejection.self,from:encoder.encode(value)),value)
+        let legacy=Data("{\"kind\":\"nonFinite\",\"lineNumber\":9,\"message\":\"bad\"}".utf8)
+        XCTAssertEqual(try decoder.decode(InputRejection.self,from:legacy).rejectedCount,1)
+    }
     func testSQLiteStoresRowsAndBoundsQueries() throws {
         let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
         defer{try? FileManager.default.removeItem(at:dir)}
@@ -72,18 +79,100 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(store.currentTarget(),target)
         XCTAssertNotEqual(second,first)
     }
+    func testColdNewChartUsesOneFreshInitialChart() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let db=dir.appendingPathComponent("state.sqlite")
+        do {let store=try PipePlotStore(databaseURL:db);_=try store.createSession()}
+        let store=try PipePlotStore(databaseURL:db)
+        let ready=try store.registerSampler(intent:.newChart,sampler:SamplerIntent(columnCount:1))
+        XCTAssertEqual(try store.snapshot(sessionID:ready.sessionID)?.charts.count,1)
+    }
+    func testFailedMetadataCommitRollsBackEditAndReplayState() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let db=dir.appendingPathComponent("state.sqlite"),store=try PipePlotStore(databaseURL:db)
+        let session=try store.createSession(),chart=session.charts[0].id
+        let start=Date(timeIntervalSince1970:10),selection=TimeSelection(start:start,end:start.addingTimeInterval(5))
+        try store.setSelection(selection,sessionID:session.id)
+        let metadata=db.appendingPathExtension("metadata.json")
+        try FileManager.default.removeItem(at:metadata);try FileManager.default.createDirectory(at:metadata,withIntermediateDirectories:true)
+        XCTAssertThrowsError(try store.renameChart(chart,to:"Changed"))
+        XCTAssertEqual(try store.snapshot(sessionID:session.id)?.charts[0].title,"Chart 1")
+        XCTAssertThrowsError(try store.undo(sessionID:session.id))
+        XCTAssertEqual(try store.snapshot(sessionID:session.id)?.timeline.selection,selection)
+        XCTAssertEqual(store.undoActionName(sessionID:session.id),"Selection")
+    }
 
     func testUndoCreatedChartMakesCollapsedPredecessorVisible() throws {
         let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
         defer{try? FileManager.default.removeItem(at:dir)}
         let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
         let session=try store.createSession(), previous=session.charts[0].id
+        let middle=try store.createChart(in:session.id,after:previous)
+        try store.deleteChart(previous)
         let made=try store.createChart(in:session.id,after:previous)
-        let line=try store.registerSampler(intent:.chart(chartID:made.id,lineNames:[]),sampler:SamplerIntent(columnCount:1))
-        try store.moveStream(line.streams[0].id,to:previous)
+        _=middle
         XCTAssertFalse(try XCTUnwrap(store.snapshot(sessionID:session.id)?.charts.first{$0.id==previous}).isVisible)
         XCTAssertTrue(try store.undo(sessionID:session.id))
         XCTAssertTrue(try XCTUnwrap(store.snapshot(sessionID:session.id)?.charts.first{$0.id==previous}).isVisible)
+    }
+
+    func testLiveOwnerCannotBeTakenByDisconnectedContinuationCandidate() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        let old=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1,requestedNames:["same"]))
+        try store.finishAttachment(old.attachmentID,reason:.eof)
+        let explicit=try store.registerSampler(intent:.chart(chartID:old.chartID,lineNames:["same"]),sampler:SamplerIntent(columnCount:1))
+        let incoming=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1))
+        XCTAssertNotEqual(incoming.streams[0].id,explicit.streams[0].id)
+    }
+
+    func testMoveToNewChartIsOneUndoStepAndKeepsLaterProducerVisible() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        let session=try store.createSession(), source=session.charts[0].id
+        let producer=try store.registerSampler(intent:.chart(chartID:source,lineNames:[]),sampler:SamplerIntent(columnCount:1))
+        let made=try store.moveStreamToNewChart(producer.streams[0].id)
+        let laterInCreated=try store.registerSampler(intent:.chart(chartID:made.id,lineNames:[]),sampler:SamplerIntent(columnCount:1))
+        XCTAssertEqual(store.undoActionName(sessionID:session.id),"Move Stream")
+        XCTAssertTrue(try store.undo(sessionID:session.id))
+        let later=try store.registerSampler(intent:.chart(chartID:source,lineNames:[]),sampler:SamplerIntent(columnCount:1))
+        XCTAssertTrue(try store.redo(sessionID:session.id))
+        let snapshot=try XCTUnwrap(store.snapshot(sessionID:session.id))
+        XCTAssertTrue(snapshot.charts.first{$0.id==made.id}?.isVisible == true)
+        XCTAssertTrue(snapshot.charts.first{$0.id==made.id}?.streams.contains(where:{$0.id==laterInCreated.streams[0].id}) == true)
+        XCTAssertTrue(snapshot.charts.first{$0.id==made.id}?.streams.contains(where:{$0.id==producer.streams[0].id}) == true)
+        XCTAssertTrue(snapshot.charts.first{$0.id==source}?.streams.contains(where:{$0.id==later.streams[0].id}) == true)
+    }
+
+    func testDeletedSessionCanBeRestoredWithoutRestoringLiveAttachment() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        let session=try store.createSession(), attachment=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1))
+        try store.deleteSession(sessionID:session.id)
+        XCTAssertEqual(try store.listDeletedSessions().map(\.id),[session.id])
+        XCTAssertThrowsError(try store.append(SampleRow(values:[3]),to:attachment.attachmentID))
+        try store.restoreSession(sessionID:session.id)
+        XCTAssertFalse(try XCTUnwrap(store.snapshot(sessionID:session.id)).isDeleted)
+        XCTAssertTrue(try store.undo(sessionID:session.id))
+        XCTAssertTrue(try XCTUnwrap(store.snapshot(sessionID:session.id)).isDeleted)
+    }
+    func testFailedReassociationCommitRestoresSQLiteSegmentOwnership() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let db=dir.appendingPathComponent("state.sqlite"),store=try PipePlotStore(databaseURL:db)
+        let old=try store.registerSampler(intent:.target,sampler:SamplerIntent(columnCount:1))
+        _=try store.append(SampleRow(values:[1]),to:old.attachmentID);try store.finishAttachment(old.attachmentID,reason:.eof)
+        let fresh=try store.registerSampler(intent:.fresh,sampler:SamplerIntent(columnCount:1))
+        _=try store.append(SampleRow(values:[2]),to:fresh.attachmentID)
+        let metadata=db.appendingPathExtension("metadata.json");try FileManager.default.removeItem(at:metadata);try FileManager.default.createDirectory(at:metadata,withIntermediateDirectories:true)
+        XCTAssertThrowsError(try store.reassociateStreams(fresh.streams.map(\.id),to:old.streams.map(\.id)))
+        XCTAssertEqual(try store.samples.count(streamID:old.streams[0].id),1)
+        XCTAssertEqual(try store.samples.count(streamID:fresh.streams[0].id),1)
     }
 
     func testUndoCreatedChartKeepsArrivalsAndRedoLeavesLaterLinesAlone() throws {
@@ -139,6 +228,12 @@ final class CoreTests: XCTestCase {
         let settings=AxisSettings(unit:"MiB",yScale:.fixed(min:-1,max:9),dotsVisible:false,linesVisible:true)
         try store.updateSettings(settings,chartID:chart);XCTAssertTrue(try store.undo(sessionID:session.id));XCTAssertEqual(try store.snapshot(sessionID:session.id)?.charts[0].settings,AxisSettings())
         XCTAssertTrue(try store.redo(sessionID:session.id));XCTAssertEqual(try store.snapshot(sessionID:session.id)?.charts[0].settings,settings)
+
+        let changedMarks=AxisSettings(unit:"MiB",yScale:.fixed(min:-1,max:9),dotsVisible:true,linesVisible:false)
+        try store.updateSettings(changedMarks,chartID:chart)
+        XCTAssertEqual(try store.snapshot(sessionID:session.id)?.charts[0].streams[0].dotsVisible,true)
+        XCTAssertTrue(try store.undo(sessionID:session.id))
+        XCTAssertEqual(try store.snapshot(sessionID:session.id)?.charts[0].streams[0].dotsVisible,false)
 
         let guide=Guide(orientation:.horizontalValue,value:8,label:"limit")
         try store.upsertGuide(guide,chartID:chart);XCTAssertTrue(try store.undo(sessionID:session.id));XCTAssertTrue(try store.snapshot(sessionID:session.id)?.charts[0].guides.isEmpty == true)
