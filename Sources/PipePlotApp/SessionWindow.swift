@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Observation
 import PipePlotCore
 
 struct SessionWindow: View {
@@ -8,39 +9,15 @@ struct SessionWindow: View {
     @State private var selectedChartID: ChartID?
     @State private var hoverDate: Date?
     @State private var dragStart: Date?
-    @State private var gestureDomain: ClosedRange<Date>?
-    @State private var previewSelectionStart: Date?
-    @State private var previewSelectionEnd: Date?
-    @State private var previewSelectionLinked = false
-    @State private var previewGuide: Guide?
-    @State private var previewGuideChartID: ChartID?
+    @State private var gestures = SessionGesturePreview()
 
     private var session: SessionSnapshot? { model.sessions[sessionID] }
+    private var visibleCharts: [ChartSnapshot] { session?.charts.filter(\.isVisible) ?? [] }
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
-            if let session {
-                if session.charts.isEmpty {
-                    ContentUnavailableView("No charts yet", systemImage: "chart.xyaxis.line", description: Text("Create a chart or pipe values into pp."))
-                } else {
-                    sharedRuler(session)
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                            ForEach(session.charts.filter(\.isVisible)) { chart in
-                                chartRow(chart, session: session)
-                                    .onTapGesture { selectedChartID = chart.id; model.selectChart(chart.id, sessionID: session.id) }
-                                    .overlay(RoundedRectangle(cornerRadius: 13).stroke(selectedChartID == chart.id ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 2))
-                            }
-                        }
-                        .padding(16)
-                    }
-                    .background(Color(nsColor: .underPageBackgroundColor))
-                }
-                timelineBar(session)
-            } else {
-                ProgressView().task { model.refresh(sessionID) }
-            }
+            sessionContent
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle(session.map { "\($0.number) · \($0.title)" } ?? "PipePlot")
@@ -51,22 +28,20 @@ struct SessionWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: .pipePlotWillTerminate)) { _ in model.prepareForTermination() }
         .onDisappear { model.windowClosed(sessionID) }
         .background(WindowFocusObserver { model.becameActive(sessionID) }.frame(width: 0, height: 0))
-        .alert("PipePlot", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.clearError() } })) {
-            Button("OK") { model.clearError() }
-        } message: { Text(model.errorMessage ?? "") }
-        .onKeyPress(keys: [.escape, .a, .d, .f, .w, .s]) { press in
+        .alert("PipePlot", isPresented: errorPresented) { errorButtons } message: { errorMessage }
+        .onKeyPress(keys: [.escape, "a", "d", "f", "w", "s"]) { press in
             guard !isEditingText, let session else { return .ignored }
             switch press.key {
             case .escape:
                 if session.timeline.selection != nil { model.setSelection(nil, session: session); return .handled }
-            case .a: model.pan(80, width: 800, session: session); return .handled
-            case .d: model.pan(-80, width: 800, session: session); return .handled
-            case .w, .s:
+            case "a": model.pan(80, width: 800, session: session); return .handled
+            case "d": model.pan(-80, width: 800, session: session); return .handled
+            case "w", "s":
                 let range = model.domain(for: session)
                 let anchor = range.lowerBound.addingTimeInterval(range.upperBound.timeIntervalSince(range.lowerBound) / 2)
-                model.zoom(press.key == .w ? 1.25 : 0.8, anchor: anchor, session: session)
+                model.zoom(press.key == "w" ? 1.25 : 0.8, anchor: anchor, session: session)
                 return .handled
-            case .f:
+            case "f":
                 guard let selection = session.timeline.selection else { return .ignored }
                 let bounds = model.resolvedSelectionBounds(selection, session: session)
                 var timeline = session.timeline; timeline.followNow = false
@@ -76,6 +51,28 @@ struct SessionWindow: View {
             default: break
             }
             return .ignored
+        }
+    }
+
+    @ViewBuilder private var sessionContent: some View {
+        if let session {
+            if session.isDeleted {
+                ContentUnavailableView {
+                    Label("Deleted session", systemImage: "trash")
+                } description: {
+                    Text("This session and its captured data are retained in Recently Deleted.")
+                } actions: {
+                    Button("Restore Session") { model.restoreSession(session.id) }.buttonStyle(.borderedProminent)
+                }
+            } else if session.charts.isEmpty {
+                ContentUnavailableView("No charts yet", systemImage: "chart.xyaxis.line", description: Text("Create a chart or pipe values into pp."))
+            } else {
+                sharedRuler(session)
+                chartRows(session)
+            }
+            timelineBar(session)
+        } else {
+            ProgressView().task { model.refresh(sessionID) }
         }
     }
 
@@ -96,10 +93,32 @@ struct SessionWindow: View {
         .background(.bar)
     }
 
+    private func chartRows(_ session: SessionSnapshot) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 12) {
+                ForEach(visibleCharts) { chart in
+                    ChartRowHost(chart: chart, session: session, model: model, hoverDate: $hoverDate,
+                                 gestures: gestures, selectedChartID: $selectedChartID)
+                }
+            }.padding(16)
+        }.background(Color(nsColor: .underPageBackgroundColor))
+    }
+
+    private var errorPresented: Binding<Bool> {
+        Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.clearError() } })
+    }
+    private var errorButtons: some View { Button("OK") { model.clearError() } }
+    private var errorMessage: some View { Text(model.errorMessage ?? "") }
+
     @ViewBuilder private func timelineBar(_ session: SessionSnapshot) -> some View {
         HStack {
             Label("Session \(session.number)", systemImage: "circle.grid.2x2")
                 .foregroundStyle(.secondary)
+            if session.rejectedLineCount > 0 {
+                Text("\(session.rejectedLineCount) rejected input row\(session.rejectedLineCount == 1 ? "" : "s")")
+                    .font(.caption).foregroundStyle(.orange)
+                    .help("Rows rejected because the input was invalid or did not match the registered stream group")
+            }
             Spacer()
             if let date = hoverDate {
                 Text(date.formatted(date: .abbreviated, time: .standard)).monospacedDigit().font(.caption)
@@ -126,18 +145,8 @@ struct SessionWindow: View {
     }
 
     private func sharedRuler(_ session: SessionSnapshot) -> some View {
-        let range = gestureDomain ?? model.domain(for: session)
-        let span = range.upperBound.timeIntervalSince(range.lowerBound)
-        return HStack {
-            ForEach(0...4, id: \.self) { index in
-                let date = range.lowerBound.addingTimeInterval(span * Double(index) / 4)
-                Text(date.formatted(date: .omitted, time: span < 120 ? .standard : .shortened))
-                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: index == 0 ? .leading : (index == 4 ? .trailing : .center))
-            }
-        }
-        .padding(.horizontal, 74).padding(.vertical, 5).background(.bar)
-        .overlay(alignment: .bottom) { Rectangle().fill(.separator).frame(height: 0.5) }
+        let range = gestures.domain ?? model.domain(for: session)
+        return SharedTimeRuler(range: range)
     }
 
     private func createChart() {
@@ -149,12 +158,47 @@ struct SessionWindow: View {
         return responder is NSTextView || responder is NSTextField
     }
 
-    private func chartRow(_ chart: ChartSnapshot, session: SessionSnapshot) -> some View {
-        ChartRow(chart: chart, session: session,
-                 samples: model.visibleSamples(for: chart, session: session), now: model.sessionNow(session), hoverDate: $hoverDate,
-                 sharedGestureDomain: $gestureDomain, sharedSelectionStart: $previewSelectionStart,
-                 sharedSelectionEnd: $previewSelectionEnd, sharedSelectionLinked: $previewSelectionLinked,
-                 sharedGuidePreview: $previewGuide, sharedGuideChartID: $previewGuideChartID, model: model,
+}
+
+private struct SharedTimeRuler: View {
+    let range: ClosedRange<Date>
+    private var span: TimeInterval { max(0.001, range.upperBound.timeIntervalSince(range.lowerBound)) }
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .topLeading) {
+                ForEach(0...4, id: \.self) { index in
+                    let fraction = CGFloat(index) / 4
+                    let date = range.lowerBound.addingTimeInterval(span * Double(fraction))
+                    Text(date.formatted(date: .omitted, time: span < 120 ? .standard : .shortened))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        .frame(width: 72, alignment: index == 0 ? .leading : (index == 4 ? .trailing : .center))
+                        .position(x: 84 + max(1, geometry.size.width - 112) * fraction, y: 10)
+                }
+            }
+        }
+        .frame(height: 20).padding(.vertical, 3).background(.bar)
+        .overlay(alignment: .bottom) { Rectangle().fill(.separator).frame(height: 0.5) }
+    }
+}
+
+private struct ChartRowHost: View {
+    let chart: ChartSnapshot
+    let session: SessionSnapshot
+    let model: PipePlotAppModel
+    @Binding var hoverDate: Date?
+    let gestures: SessionGesturePreview
+    @Binding var selectedChartID: ChartID?
+
+    var body: some View {
+        ChartRow(chart: chart, session: session, samples: model.visibleSamples(for: chart, session: session, range: gestures.domain),
+                 now: model.sessionNow(session), hoverDate: $hoverDate,
+                 sharedGestureDomain: Binding(get: { gestures.domain }, set: { gestures.domain = $0 }),
+                 sharedSelectionStart: Binding(get: { gestures.selectionStart }, set: { gestures.selectionStart = $0 }),
+                 sharedSelectionEnd: Binding(get: { gestures.selectionEnd }, set: { gestures.selectionEnd = $0 }),
+                 sharedSelectionLinked: Binding(get: { gestures.selectionLinked }, set: { gestures.selectionLinked = $0 }),
+                 sharedGuidePreview: Binding(get: { gestures.guide }, set: { gestures.guide = $0 }),
+                 sharedGuideChartID: Binding(get: { gestures.guideChartID }, set: { gestures.guideChartID = $0 }), model: model,
                  onTarget: { model.setTarget(chart.id) },
                  onToggleDots: { model.toggleDots(chart) }, onToggleLines: { model.toggleLines(chart) },
                  onAddGuide: { value, label in model.addGuide(value: value, chart: chart, session: session, label: label) },
@@ -162,9 +206,21 @@ struct SessionWindow: View {
                  onRemoveGuide: { guide in model.removeGuide(guide, chartID: chart.id, sessionID: session.id) },
                  onSelection: { model.setSelection($0, session: session) },
                  onRename: { stream, name in model.rename(stream, to: name) },
-                 onMove: { stream, destination in model.move(stream, to: destination) },
-                 onReassociate: { source, destination in model.reassociate(source, with: destination, sessionID: session.id) })
+                 onMove: { stream, destination in model.move(stream, to: destination) })
+            .onTapGesture { selectedChartID = chart.id; model.selectChart(chart.id, sessionID: session.id) }
+            .overlay(RoundedRectangle(cornerRadius: 13).stroke(selectedChartID == chart.id ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 2))
     }
+}
+
+@Observable
+@MainActor
+private final class SessionGesturePreview {
+    var domain: ClosedRange<Date>?
+    var selectionStart: Date?
+    var selectionEnd: Date?
+    var selectionLinked = false
+    var guide: Guide?
+    var guideChartID: ChartID?
 }
 
 private struct ChartRow: View {
@@ -189,7 +245,6 @@ private struct ChartRow: View {
     let onSelection: (TimeSelection?) -> Void
     let onRename: (StreamID, String) -> Void
     let onMove: (StreamID, ChartID) -> Void
-    let onReassociate: (StreamID, StreamID) -> Void
 
     @State private var showGuideEditor = false
     @State private var guideValue = ""
@@ -197,6 +252,9 @@ private struct ChartRow: View {
     @State private var editingGuide: Guide?
     @State private var renameStream: StreamDescriptor?
     @State private var renameText = ""
+    @State private var renameChartText = ""
+    @State private var showRenameChart = false
+    @State private var reassociationSource: StreamDescriptor?
     @State private var panPixels: CGFloat = 0
     @State private var zoomFactor = 1.0
     @State private var zoomAnchor: Date?
@@ -244,7 +302,7 @@ private struct ChartRow: View {
                                 onSelection(TimeSelection(start: current.addingTimeInterval(-duration), end: current, mode: .bothFollowNow(duration: duration), selectedStreamIDs: selection.selectedStreamIDs))
                            },
                            selection: session.timeline.selection,
-                           forecast: model.forecastDrawing(for: chart, session: session),
+                           forecasts: model.forecastDrawings(for: chart, session: session),
                            onSelectionCommit: { start, end, mode in
                                 guard let start, let end else { onSelection(nil); return }
                                 onSelection(TimeSelection(start: start, end: end, mode: mode ?? .fixed, selectedStreamIDs: Set(chart.streams.map(\.id))))
@@ -319,7 +377,7 @@ private struct ChartRow: View {
             }
             .frame(height: 25)
             if let selection = session.timeline.selection { selectionSummary(selection) }
-            if let status = model.forecastStatuses[session.id], chart.streams.contains(where: { $0.id == status.configuration.streamID }) {
+            ForEach(model.allForecastStatuses[session.id, default: []].filter { status in chart.streams.contains(where: { $0.id == status.configuration.streamID }) }, id: \.configuration.id) { status in
                 HStack(spacing: 8) {
                     Label("Linear forecast", systemImage: "arrow.up.right")
                     Text(status.message).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -327,13 +385,17 @@ private struct ChartRow: View {
                     if let crossing = status.crossing, crossing > now {
                         Text("in \(max(0, Int(crossing.timeIntervalSince(now))) / 60)m").font(.caption.monospacedDigit()).foregroundStyle(.tint)
                     }
-                    Button("Disable") { model.setForecast(nil, session: session) }.buttonStyle(.borderless).font(.caption)
+                    Button("Disable") { model.removeForecast(status.configuration.id, session: session) }.buttonStyle(.borderless).font(.caption)
                 }.padding(.horizontal, 15).padding(.bottom, 10)
             }
         }
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary, lineWidth: 1))
+        .onChange(of: sharedSelectionStart) { _, start in
+            if start != nil, sharedGestureDomain == nil { sharedGestureDomain = domain }
+            if start == nil, gestureBaseDomain == nil { sharedGestureDomain = nil }
+        }
         .sheet(isPresented: $showGuideEditor) { guideSheet }
         .sheet(item: $renameStream) { stream in
             VStack(alignment: .leading, spacing: 14) {
@@ -341,6 +403,16 @@ private struct ChartRow: View {
                 TextField("Stream name", text: $renameText).textFieldStyle(.roundedBorder)
                 HStack { Spacer(); Button("Cancel") { renameStream = nil }; Button("Save") { onRename(stream.id, renameText); renameStream = nil }.keyboardShortcut(.defaultAction) }
             }.padding(22).frame(width: 340)
+        }
+        .sheet(isPresented: $showRenameChart) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Rename chart").font(.title3.weight(.semibold))
+                TextField("Chart name", text: $renameChartText).textFieldStyle(.roundedBorder)
+                HStack { Spacer(); Button("Cancel") { showRenameChart = false }; Button("Save") { model.renameChart(chart.id, to: renameChartText); showRenameChart = false }.keyboardShortcut(.defaultAction) }
+            }.padding(22).frame(width: 340)
+        }
+        .sheet(item: $reassociationSource) { source in
+            ReassociationSheet(source: source, session: session, model: model) { reassociationSource = nil }
         }
     }
 
@@ -366,6 +438,21 @@ private struct ChartRow: View {
                     }
                 }
             } label: { Label("Guides", systemImage: "line.3.horizontal") }.help("Create and edit chart guides")
+            Menu {
+                Button("Rename Chart…") { renameChartText = chart.title; showRenameChart = true }
+                let charts = session.charts.filter(\.isVisible)
+                if let index = charts.firstIndex(where: { $0.id == chart.id }) {
+                    Button("Move Up") { model.reorderChart(chart.id, to: max(0, index - 1)) }.disabled(index == 0)
+                    Button("Move Down") { model.reorderChart(chart.id, to: min(charts.count - 1, index + 1)) }.disabled(index == charts.count - 1)
+                }
+                Button(chart.streams.isEmpty ? "Delete Empty Chart" : "Hide Chart") { model.deleteChart(chart.id) }
+                let hidden = session.charts.filter { !$0.isVisible }
+                if !hidden.isEmpty {
+                    Divider(); Menu("Restore Hidden Chart") {
+                        ForEach(hidden) { item in Button(item.title) { model.restoreChart(item.id) } }
+                    }
+                }
+            } label: { Image(systemName: "ellipsis.circle") }.help("Chart actions")
             Button(action: onToggleLines) { Image(systemName: chart.settings.linesVisible ? "point.topleft.down.to.point.bottomright.curvepath" : "point.topleft.down.to.point.bottomright.curvepath") }
                 .buttonStyle(.plain).foregroundStyle(chart.settings.linesVisible ? Color.accentColor : .secondary).help("Toggle connecting lines")
             Button(action: onToggleDots) { Image(systemName: "circle.fill") }.buttonStyle(.plain).foregroundStyle(chart.settings.dotsVisible ? Color.accentColor : .secondary).help("Toggle dots")
@@ -381,11 +468,25 @@ private struct ChartRow: View {
             HStack(spacing: 8) {
                 ForEach(Array(chart.streams.enumerated()), id: \.element.id) { index, stream in
                     HStack(spacing: 6) {
-                        Circle().fill(PlotCanvas.color(index)).frame(width: 8, height: 8)
+                        Circle().fill(PlotCanvas.color(for: stream, fallback: index)).frame(width: 8, height: 8)
                         Text(stream.name).font(.caption.weight(.medium))
                         Text(stream.state.rawValue.capitalized).font(.caption2).foregroundStyle(.secondary)
                         Menu {
                             streamActions(stream)
+                            Divider()
+                            Button((stream.linesVisible ?? chart.settings.linesVisible) ? "Hide connecting lines" : "Show connecting lines") {
+                                model.updateStreamStyle(stream.id, colorHex: stream.colorHex, dotsVisible: stream.dotsVisible, linesVisible: !(stream.linesVisible ?? chart.settings.linesVisible))
+                            }
+                            Button((stream.dotsVisible ?? chart.settings.dotsVisible) ? "Hide dots" : "Show dots") {
+                                model.updateStreamStyle(stream.id, colorHex: stream.colorHex, dotsVisible: !(stream.dotsVisible ?? chart.settings.dotsVisible), linesVisible: stream.linesVisible)
+                            }
+                            Menu("Color") {
+                                ForEach(0..<9, id: \.self) { index in
+                                    Button("Color \(index + 1)") {
+                                        model.updateStreamStyle(stream.id, colorHex: PlotCanvas.paletteHex(index), dotsVisible: stream.dotsVisible, linesVisible: stream.linesVisible)
+                                    }
+                                }
+                            }
                         } label: { Image(systemName: "ellipsis").font(.caption).foregroundStyle(.secondary) }.menuStyle(.borderlessButton)
                     }
                     .padding(.leading, 8).padding(.trailing, 4).padding(.vertical, 5)
@@ -482,24 +583,7 @@ private struct ChartRow: View {
             }
         }
         Button("Move to New Chart") { model.moveToNewChart(stream.id, sessionID: session.id, after: chart.id) }
-        let canContinue = stream.state.rawValue == "live" || stream.state.rawValue == "quiet"
-        if canContinue {
-            Menu("Continue Existing Stream…") {
-                ForEach(reassociationCandidates) { destination in
-                    Button("\(destination.stream.name) · \(destination.chart.title)") {
-                        onReassociate(stream.id, destination.stream.id)
-                    }
-                }
-            }
-            .disabled(reassociationCandidates.isEmpty)
-        }
-    }
-
-    private var reassociationCandidates: [StreamDestination] {
-        session.charts.filter(\.isVisible).flatMap { destination in
-            destination.streams.filter { $0.state.rawValue == "ended" || $0.state.rawValue == "disconnected" }
-                .map { StreamDestination(stream: $0, chart: destination) }
-        }
+        Button("Continue / Reassociate Group…") { reassociationSource = stream }
     }
 
     private var guideSheet: some View {
@@ -520,13 +604,75 @@ private struct ChartRow: View {
     private func onAddGuideFromCurrentScale() { editingGuide = nil; guideValue = ""; guideLabel = ""; showGuideEditor = true }
 }
 
-private struct StreamDestination: Identifiable {
-    let stream: StreamDescriptor
-    let chart: ChartSnapshot
-    var id: StreamID { stream.id }
-}
-
 extension StreamDescriptor: Identifiable {}
+
+private struct ReassociationSheet: View {
+    let source: StreamDescriptor
+    let session: SessionSnapshot
+    let model: PipePlotAppModel
+    let onClose: () -> Void
+    @State private var targets: [StreamID: StreamID] = [:]
+
+    private var sourceIDs: [StreamID] { model.samplerGroup(containing: source.id, sessionID: session.id) }
+    private var sourceStreams: [StreamDescriptor] {
+        let all = session.charts.flatMap(\.streams)
+        return sourceIDs.compactMap { id in all.first(where: { $0.id == id }) }
+    }
+    private var candidates: [StreamDescriptor] {
+        let sourceSet = Set(sourceIDs)
+        return session.charts.filter(\.isVisible).flatMap(\.streams).filter {
+            !sourceSet.contains($0.id) && ($0.state == .ended || $0.state == .disconnected)
+        }
+    }
+    private var valid: Bool {
+        sourceIDs.count > 0 && sourceStreams.count == sourceIDs.count
+            && targets.count == sourceIDs.count && Set(targets.values).count == sourceIDs.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Reassociate sampler group").font(.title3.weight(.semibold))
+            Text("Map each incoming column to a disconnected stream. The entire group is applied together.")
+                .font(.callout).foregroundStyle(.secondary)
+            if candidates.count < sourceIDs.count {
+                ContentUnavailableView("Not enough destination streams", systemImage: "arrow.left.arrow.right", description: Text("The destination group must have one disconnected stream per incoming column."))
+            } else {
+                ForEach(sourceStreams) { item in
+                    HStack {
+                        Text(item.name).frame(maxWidth: .infinity, alignment: .leading)
+                        Picker("Destination", selection: targetBinding(for: item.id)) {
+                            Text("Choose destination…").tag(Optional<StreamID>.none)
+                            ForEach(candidates) { candidate in
+                                Text("\(candidate.name) · \(candidateChartTitle(candidate.id))")
+                                    .tag(Optional(candidate.id))
+                            }
+                        }.frame(width: 240)
+                    }
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", action: onClose)
+                Button("Reassociate") {
+                    let destinationIDs = sourceIDs.compactMap { targets[$0] }
+                    model.reassociate(sourceIDs, with: destinationIDs, sessionID: session.id)
+                    onClose()
+                }.keyboardShortcut(.defaultAction).disabled(!valid)
+            }
+        }
+        .padding(22).frame(width: 520)
+    }
+
+    private func targetBinding(for id: StreamID) -> Binding<StreamID?> {
+        Binding(get: { targets[id] }, set: { value in
+            if let value { targets[id] = value } else { targets.removeValue(forKey: id) }
+        })
+    }
+
+    private func candidateChartTitle(_ streamID: StreamID) -> String {
+        session.charts.first(where: { $0.streams.contains(where: { $0.id == streamID }) })?.title ?? "Chart"
+    }
+}
 
 private struct WindowFocusObserver: NSViewRepresentable {
     let onFocus: () -> Void

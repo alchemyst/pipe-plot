@@ -13,7 +13,7 @@ struct PlotCanvas: View {
     @Binding var selectionLinkedPreview: Bool
     var onFollowSelectionDuration: (() -> Void)? = nil
     let selection: TimeSelection?
-    let forecast: ForecastDrawing?
+    let forecasts: [ForecastDrawing]
     let onSelectionCommit: (Date?, Date?, SelectionMode?) -> Void
     let onGuide: (Guide, PlotGesturePhase) -> Void
     let onPan: (CGSize, PlotGesturePhase, CGFloat) -> Void
@@ -127,8 +127,10 @@ struct PlotCanvas: View {
         for (index, stream) in chart.streams.enumerated() {
             let data = samples[stream.id] ?? []
             guard !data.isEmpty else { continue }
-            let color = Self.color(index)
-            if chart.settings.linesVisible && data.count > 1 {
+            let color = Self.color(for: stream, fallback: index)
+            let linesVisible = stream.linesVisible ?? chart.settings.linesVisible
+            let dotsVisible = stream.dotsVisible ?? chart.settings.dotsVisible
+            if linesVisible && data.count > 1 {
                 var path = Path()
                 var previousSegment: String?
                 for (pointIndex, sample) in data.enumerated() {
@@ -139,7 +141,7 @@ struct PlotCanvas: View {
                 }
                 context.stroke(path, with: .color(color.opacity(0.85)), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
             }
-            if chart.settings.linesVisible && !chart.settings.dotsVisible {
+            if linesVisible && !dotsVisible {
                 for (pointIndex, sample) in data.enumerated() {
                     let hasSameSegmentNeighbor = (pointIndex > 0 && data[pointIndex - 1].segmentID == sample.segmentID)
                         || (pointIndex + 1 < data.count && data[pointIndex + 1].segmentID == sample.segmentID)
@@ -149,7 +151,7 @@ struct PlotCanvas: View {
                     context.fill(Path(ellipseIn: marker), with: .color(color))
                 }
             }
-            if chart.settings.dotsVisible {
+            if dotsVisible {
                 for sample in data {
                     let point = CGPoint(x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
                     guard plot.contains(point) else { continue }
@@ -176,8 +178,8 @@ struct PlotCanvas: View {
                 }
             }
         }
-        if let forecast {
-            let forecastColor: Color = chart.streams.firstIndex(where: { $0.id == forecast.streamID }).map(Self.color) ?? .orange
+        for forecast in forecasts {
+            let forecastColor: Color = chart.streams.first(where: { $0.id == forecast.streamID }).map { Self.color(for: $0, fallback: 0) } ?? .orange
             let start = min(max(forecast.range.upperBound, domain.lowerBound), now)
             if forecast.crossing > start {
                 var path = Path()
@@ -221,7 +223,8 @@ struct PlotCanvas: View {
 
     private var yRange: ClosedRange<Double> {
         if case let .fixed(minimum, maximum) = chart.settings.yScale, minimum < maximum { return minimum...maximum }
-        let values = chart.streams.flatMap { samples[$0.id, default: []].map(\.value) }
+        var values = chart.streams.flatMap { samples[$0.id, default: []].map(\.value) }
+        values.append(contentsOf: forecasts.filter { forecast in chart.streams.contains(where: { $0.id == forecast.streamID }) }.map(\.value))
         guard let minimum = values.min(), let maximum = values.max() else { return 0...1 }
         if minimum == maximum {
             let delta = max(abs(minimum) * 0.08, 1)
@@ -234,8 +237,22 @@ struct PlotCanvas: View {
     private func y(_ value: Double, range: ClosedRange<Double>, in rect: CGRect) -> CGFloat { rect.maxY - rect.height * CGFloat((value - range.lowerBound) / max(range.upperBound - range.lowerBound, 0.000001)) }
 
     static func color(_ index: Int) -> Color {
-        let palette: [Color] = [.cyan, .orange, .purple, .green, .pink, .yellow, .blue, .mint, .red]
-        return palette[index % palette.count]
+        color(hex: paletteHex(index))
+    }
+
+    static func color(for stream: StreamDescriptor, fallback: Int) -> Color {
+        if let colorHex = stream.colorHex, !colorHex.isEmpty { return color(hex: colorHex) }
+        let bytes = withUnsafeBytes(of: stream.id.uuid) { Array($0) }
+        let stableIndex = bytes.isEmpty ? UInt32(fallback % 9) : bytes.prefix(4).reduce(UInt32(0)) { ($0 &* 31) &+ UInt32($1) } % 9
+        return color(Int(stableIndex))
+    }
+
+    static func paletteHex(_ index: Int) -> String {
+        ["#38bdf8", "#fb923c", "#c084fc", "#4ade80", "#f472b6", "#facc15", "#60a5fa", "#2dd4bf", "#f87171"][index % 9]
+    }
+
+    private static func color(hex: String) -> Color {
+        Color(hex: hex)
     }
 }
 
