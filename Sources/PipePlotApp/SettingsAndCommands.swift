@@ -95,21 +95,20 @@ struct SettingsView: View {
                 }
                 Text("Scale and unit belong to the chart. Moving a stream leaves these settings in place.").font(.caption).foregroundStyle(.secondary)
             }
-            Section("Time axis") {
-                Picker("Timezone", selection: Binding(get: { selectedSession.flatMap { model.sessions[$0]?.timeline.timeZone } ?? .local }, set: { value in if let session = selectedSession.flatMap({ model.sessions[$0] }) { model.setTimeZone(value, session: session) } })) {
-                    Text("Local").tag(PlotTimeZone.local); Text("UTC").tag(PlotTimeZone.utc)
-                }
+            Section("Relative time origin") {
                 Picker("Relative time origin", selection: Binding(get: { selectedSession.flatMap { model.sessions[$0]?.timeline.referenceTimeGuideID } }, set: { value in if let session = selectedSession.flatMap({ model.sessions[$0] }) { model.setTimeReference(value, session: session) } })) {
                     Text("Absolute time").tag(UUID?.none)
                     ForEach(selectedSession.flatMap { model.sessions[$0]?.timeGuides } ?? []) { guide in
-                        Text(guide.label?.isEmpty == false ? guide.label! : Date(timeIntervalSince1970: guide.value).formatted(date: .numeric, time: .shortened)).tag(Optional(guide.id))
+                        let session = selectedSession.flatMap { model.sessions[$0] }
+                        let zone = session?.timeline.timeZone ?? .local
+                        Text(guide.label?.isEmpty == false ? guide.label! : TimeText.format(Date(timeIntervalSince1970: guide.value), zone: zone, includeDate: true)).tag(Optional(guide.id))
                     }
                 }
             }
             Section("Guide notifications") {
                 if let chart, let sessionID = selectedSession {
                     ForEach(chart.guides.filter { $0.orientation == .horizontalValue }) { guide in
-                        GuideAlertSettingsRow(guide: guide, sessionID: sessionID, chartID: chart.id, model: model)
+                        GuideAlertSettingsRow(guide: guide, unit: chart.settings.unit, sessionID: sessionID, chartID: chart.id, model: model)
                     }
                     if chart.guides.allSatisfy({ $0.orientation != .horizontalValue }) { Text("Add a horizontal value guide to configure notifications.").font(.caption).foregroundStyle(.secondary) }
                 }
@@ -135,6 +134,7 @@ struct SettingsView: View {
 
 private struct GuideAlertSettingsRow: View {
     let guide: Guide
+    let unit: String?
     let sessionID: SessionID
     let chartID: ChartID
     let model: PipePlotAppModel
@@ -142,22 +142,34 @@ private struct GuideAlertSettingsRow: View {
     @State private var hysteresis = "0"
     @State private var cooldown = "10"
     private var enabled: Bool { guide.alert != nil }
+    private var parsedHysteresis: Double? { NumericText.parse(hysteresis, unit: unit) }
+    private var parsedCooldown: Double? { NumericText.parse(cooldown, unit: "s") }
+    private var validationMessage: String? {
+        guard let parsedHysteresis, parsedHysteresis >= 0 else { return "Hysteresis must be a finite non-negative number." }
+        guard let parsedCooldown, parsedCooldown >= 0 else { return "Cooldown must be finite and non-negative." }
+        return nil
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Toggle(guide.label?.isEmpty == false ? guide.label! : "Guide at \(guide.value.formatted(.number.precision(.significantDigits(4))))", isOn: Binding(get: { enabled }, set: { value in
-                var next = guide; next.alert = value ? GuideAlert(direction: direction, hysteresis: Double(hysteresis) ?? 0, cooldown: Double(cooldown) ?? 10) : nil
-                model.updateGuide(next, chartID: chartID, sessionID: sessionID)
+                if !value { var next = guide; next.alert = nil; model.updateGuide(next, chartID: chartID, sessionID: sessionID) }
+                else if let parsedHysteresis, parsedHysteresis >= 0, let parsedCooldown, parsedCooldown >= 0 { var next = guide; next.alert = GuideAlert(direction: direction, hysteresis: parsedHysteresis, cooldown: parsedCooldown); model.updateGuide(next, chartID: chartID, sessionID: sessionID) }
             }))
             if enabled {
                 Picker("Crossing", selection: $direction) { Text("Rising").tag(CrossingDirection.rising); Text("Falling").tag(CrossingDirection.falling); Text("Both").tag(CrossingDirection.both) }
                     .onChange(of: direction) { _, value in save(direction: value) }
-                HStack { TextField("Hysteresis", text: $hysteresis).onSubmit { save() }; TextField("Cooldown (s)", text: $cooldown).onSubmit { save() } }
+                HStack {
+                    TextField("Hysteresis", text: $hysteresis).onSubmit { save() }.accessibilityLabel("Hysteresis")
+                    TextField("Cooldown (s)", text: $cooldown).onSubmit { save() }.accessibilityLabel("Cooldown in seconds")
+                }
+                if let validationMessage { Text(validationMessage).font(.caption).foregroundStyle(.red) }
             }
         }.onAppear(perform: loadAlert).onChange(of: guide.alert) { _, _ in loadAlert() }
     }
     private func loadAlert() { direction = guide.alert?.direction ?? .both; hysteresis = "\(guide.alert?.hysteresis ?? 0)"; cooldown = "\(guide.alert?.cooldown ?? 10)" }
     private func save(direction: CrossingDirection? = nil) {
-        var next = guide; next.alert = GuideAlert(direction: direction ?? self.direction, hysteresis: Double(hysteresis) ?? 0, cooldown: Double(cooldown) ?? 10)
+        guard let hysteresis = parsedHysteresis, hysteresis >= 0, let cooldown = parsedCooldown, cooldown >= 0 else { return }
+        var next = guide; next.alert = GuideAlert(direction: direction ?? self.direction, hysteresis: hysteresis, cooldown: cooldown)
         model.updateGuide(next, chartID: chartID, sessionID: sessionID)
     }
 }

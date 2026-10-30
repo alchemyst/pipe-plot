@@ -15,6 +15,9 @@ struct SessionWindow: View {
 
     private var session: SessionSnapshot? { model.sessions[sessionID] }
     private var visibleCharts: [ChartSnapshot] { session?.charts.filter(\.isVisible) ?? [] }
+    private func timeReference(_ session: SessionSnapshot) -> Date? {
+        session.timeGuides.first(where: { $0.id == session.timeline.referenceTimeGuideID }).map { Date(timeIntervalSince1970: $0.value) }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -144,13 +147,13 @@ struct SessionWindow: View {
             }
             Spacer()
             if let date = hoverDate {
-                Text(date.formatted(date: .abbreviated, time: .standard)).monospacedDigit().font(.caption)
+                Text(TimeText.format(date, zone: session.timeline.timeZone ?? .local, reference: timeReference(session), includeDate: true)).monospacedDigit().font(.caption)
             }
             Button { model.navigateBack(session) } label: { Image(systemName: "chevron.left") }
                 .disabled(!model.canNavigateBack(session.id)).help("Back in time navigation")
             Button { model.navigateForward(session) } label: { Image(systemName: "chevron.right") }
                 .disabled(!model.canNavigateForward(session.id)).help("Forward in time navigation")
-            Text("Now  \(model.sessionNow(session).formatted(date: .omitted, time: .standard))")
+            Text("Now  \(TimeText.format(model.sessionNow(session), zone: session.timeline.timeZone ?? .local, reference: timeReference(session)))")
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             Button { model.followNow(session) } label: { Label("Follow Now", systemImage: "clock") }
                 .buttonStyle(.borderedProminent).tint(session.timeline.followNow ? .accentColor : .gray)
@@ -161,6 +164,11 @@ struct SessionWindow: View {
                 Button("Last hour") { model.setSpan(60 * 60, session: session) }
                 Button("Show all history") { model.showAllHistory(session) }
             } label: { Image(systemName: "clock.arrow.circlepath") }.help("Time range")
+            Menu {
+                Button("Local time") { model.setTimeZone(.local, session: session) }
+                Button("UTC") { model.setTimeZone(.utc, session: session) }
+            } label: { Label(session.timeline.timeZone == .utc ? "UTC" : "Local", systemImage: "globe") }
+                .help("Display timestamps in local time or UTC")
         }
         .padding(.horizontal, 18).padding(.vertical, 11)
         .background(.bar)
@@ -169,7 +177,7 @@ struct SessionWindow: View {
 
     private func sharedRuler(_ session: SessionSnapshot) -> some View {
         let range = gestures.domain ?? model.domain(for: session)
-        return SharedTimeRuler(range: range)
+        return SharedTimeRuler(range: range, timeZone: session.timeline.timeZone ?? .local, reference: timeReference(session))
     }
 
     private func createChart() {
@@ -185,6 +193,8 @@ struct SessionWindow: View {
 
 private struct SharedTimeRuler: View {
     let range: ClosedRange<Date>
+    let timeZone: PlotTimeZone
+    let reference: Date?
     private var span: TimeInterval { max(0.001, range.upperBound.timeIntervalSince(range.lowerBound)) }
 
     var body: some View {
@@ -193,7 +203,7 @@ private struct SharedTimeRuler: View {
                 ForEach(0...4, id: \.self) { index in
                     let fraction = CGFloat(index) / 4
                     let date = range.lowerBound.addingTimeInterval(span * Double(fraction))
-                    Text(date.formatted(date: .omitted, time: span < 120 ? .standard : .shortened))
+                    Text(TimeText.format(date, zone: timeZone, reference: reference, includeDate: span > 86_400))
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                         .frame(width: 72, alignment: index == 0 ? .leading : (index == 4 ? .trailing : .center))
                         .position(x: 84 + max(1, geometry.size.width - 112) * fraction + (index == 0 ? 36 : (index == 4 ? -36 : 0)), y: 10)
@@ -221,7 +231,8 @@ private struct SelectionInspector: View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 10) {
                 Label("Selection", systemImage: "selection.pin.in.out").font(.caption.weight(.semibold))
-                Text("\(bounds.lowerBound.formatted(date: .omitted, time: .shortened)) – \(bounds.upperBound.formatted(date: .omitted, time: .shortened))")
+                let reference = session.timeGuides.first(where: { $0.id == session.timeline.referenceTimeGuideID }).map { Date(timeIntervalSince1970: $0.value) }
+                Text("\(TimeText.format(bounds.lowerBound, zone: session.timeline.timeZone ?? .local, reference: reference, includeDate: true)) – \(TimeText.format(bounds.upperBound, zone: session.timeline.timeZone ?? .local, reference: reference, includeDate: true))")
                     .font(.caption.monospacedDigit())
                 Text("duration \(duration(bounds.upperBound.timeIntervalSince(bounds.lowerBound)) )")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -414,6 +425,7 @@ private struct ChartRow: View {
     @State private var showGuideManager = false
     @State private var guideValue = ""
     @State private var guideLabel = ""
+    @State private var guideEntryError: String?
     @State private var guideDate = Date()
     @State private var guideSecond = "0"
     @State private var editingGuide: Guide?
@@ -432,6 +444,11 @@ private struct ChartRow: View {
         model.domain(for: session)
     }
     private var plotDomain: ClosedRange<Date> { sharedGestureDomain ?? domain }
+    private var guideCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = session.timeline.timeZone == .utc ? TimeZone(secondsFromGMT: 0)! : .current
+        return calendar
+    }
     private var plotChart: ChartSnapshot {
         guard let guidePreview = sharedGuidePreview, sharedGuideChartID == chart.id, guidePreview.orientation == .horizontalValue else { return chart }
         var value = chart
@@ -727,7 +744,7 @@ private struct ChartRow: View {
             Circle().fill(Color.accentColor).frame(width: 9, height: 9)
             VStack(alignment: .leading) {
                 Text(guide.label?.isEmpty == false ? guide.label! : (guide.orientation == .horizontalValue ? "Value guide" : "Time guide"))
-                Text(guide.orientation == .verticalTime ? Date(timeIntervalSince1970: guide.value).formatted(date: .abbreviated, time: .shortened) : guide.value.formatted(.number.precision(.significantDigits(5))) )
+                Text(guide.orientation == .verticalTime ? TimeText.format(Date(timeIntervalSince1970: guide.value), zone: session.timeline.timeZone ?? .local, reference: session.timeGuides.first(where: { $0.id == session.timeline.referenceTimeGuideID }).map { Date(timeIntervalSince1970: $0.value) }, includeDate: true) : guide.value.formatted(.number.precision(.significantDigits(5))) )
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -748,20 +765,23 @@ private struct ChartRow: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(item.orientation == .verticalTime ? "Edit time guide" : "Edit value guide").font(.title3.weight(.semibold))
             if item.orientation == .verticalTime {
-                DatePicker("Local date and time", selection: $guideDate, displayedComponents: [.date, .hourAndMinute])
+                DatePicker(session.timeline.timeZone == .utc ? "UTC date and time" : "Local date and time", selection: $guideDate, displayedComponents: [.date, .hourAndMinute])
+                    .environment(\.calendar, guideCalendar)
                 TextField("Seconds (0–59.999)", text: $guideSecond).textFieldStyle(.roundedBorder)
             } else {
                 TextField("Value", text: $guideValue).textFieldStyle(.roundedBorder)
+                    .onChange(of: guideValue) { _, _ in validateGuideValue() }
+                if let guideEntryError { Text(guideEntryError).font(.caption).foregroundStyle(.red) }
             }
             TextField("Label (optional)", text: $guideLabel).textFieldStyle(.roundedBorder)
             HStack { Button("Back") { editingGuide = nil }; Spacer(); Button("Save Guide") {
-                let enteredValue = item.orientation == .verticalTime ? editedGuideTimestamp() : Double(guideValue)
+                let enteredValue = item.orientation == .verticalTime ? editedGuideTimestamp() : NumericText.parse(guideValue, unit: chart.settings.unit)
                 if let value = enteredValue, value.isFinite {
                     var guide = item; guide.value = value; guide.label = guideLabel.isEmpty ? nil : guideLabel
                     if guide.orientation == .verticalTime { model.updateTimeGuide(guide, sessionID: session.id) } else { onEditGuide(guide) }
                 }
                 editingGuide = nil
-            }.keyboardShortcut(.defaultAction) }
+            }.disabled(item.orientation == .horizontalValue && NumericText.parse(guideValue, unit: chart.settings.unit) == nil).keyboardShortcut(.defaultAction) }
         }.padding(22).frame(width: 340)
     }
 
@@ -769,20 +789,21 @@ private struct ChartRow: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Add value guide").font(.title3.weight(.semibold))
             TextField("Value", text: $guideValue).textFieldStyle(.roundedBorder)
+                .onChange(of: guideValue) { _, _ in validateGuideValue() }
+            if let guideEntryError { Text(guideEntryError).font(.caption).foregroundStyle(.red) }
             TextField("Label (optional)", text: $guideLabel).textFieldStyle(.roundedBorder)
             HStack { Button("Back") { isAddingGuide = false }; Spacer(); Button("Add Guide") {
-                if let value = Double(guideValue), value.isFinite { onAddGuide(value, guideLabel.isEmpty ? nil : guideLabel) }
+                if let value = NumericText.parse(guideValue, unit: chart.settings.unit) { onAddGuide(value, guideLabel.isEmpty ? nil : guideLabel) }
                 isAddingGuide = false
-            }.keyboardShortcut(.defaultAction) }
+            }.disabled(NumericText.parse(guideValue, unit: chart.settings.unit) == nil).keyboardShortcut(.defaultAction) }
         }.padding(22).frame(width: 340)
     }
 
-    private func onAddGuideFromCurrentScale() { editingGuide = nil; isAddingGuide = true; guideValue = ""; guideLabel = ""; showGuideManager = true }
+    private func onAddGuideFromCurrentScale() { editingGuide = nil; isAddingGuide = true; guideValue = ""; guideLabel = ""; validateGuideValue(); showGuideManager = true }
     private func hoverReadout(stream: StreamDescriptor, sample: StoredSample, offset: TimeInterval) -> String {
-        let value = String(format: "%.3g", sample.value)
-        let unit = chart.settings.unit.map { " \($0)" } ?? ""
+        let value = NumericText.format(sample.value, scale: chart.settings.numericScale ?? .decimal, unit: chart.settings.unit)
         let signedOffset = String(format: "%+.1fs", offset)
-        return "\(stream.name)  \(value)\(unit)  \(signedOffset)"
+        return "\(stream.name)  \(value)  \(signedOffset)"
     }
     private func beginEditingGuide(_ guide: Guide) {
         isAddingGuide = false
@@ -790,22 +811,32 @@ private struct ChartRow: View {
         guideLabel = guide.label ?? ""
         if guide.orientation == .verticalTime {
             guideDate = Date(timeIntervalSince1970: guide.value)
-            let seconds = Double(Calendar.current.component(.second, from: guideDate)) + guide.value.truncatingRemainder(dividingBy: 1)
+            let seconds = Double(guideCalendar.component(.second, from: guideDate)) + guide.value.truncatingRemainder(dividingBy: 1)
             guideSecond = String(format: "%.3f", seconds)
-        } else { guideValue = "\(guide.value)" }
+        } else { guideValue = "\(guide.value)"; validateGuideValue() }
         showGuideManager = true
+    }
+    private func validateGuideValue() {
+        guideEntryError = NumericText.parse(guideValue, unit: chart.settings.unit) == nil ? "Enter a finite number, such as 10 Gi." : nil
     }
     private func toggleSelectionBoundary(_ edge: PlotSelectionEdge) {
         guard let selection = session.timeline.selection else { return }
         let bounds = model.resolvedSelectionBounds(selection, session: session)
+        let duration = max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound))
         switch edge {
         case .start:
-            if case .startFollowsEnd = selection.mode { updateSelectionMode(.fixed, bounds: bounds, selection: selection) }
-            else { updateSelectionMode(.startFollowsEnd(duration: max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound))), bounds: bounds, selection: selection) }
+            switch selection.mode {
+            case .fixed: updateSelectionMode(.startFollowsEnd(duration: duration), bounds: bounds, selection: selection)
+            case .startFollowsEnd: updateSelectionMode(.fixed, bounds: bounds, selection: selection)
+            case .endFollowsNow: updateSelectionMode(.bothFollowNow(duration: duration), bounds: bounds, selection: selection)
+            case .bothFollowNow: updateSelectionMode(.endFollowsNow, bounds: bounds, selection: selection)
+            }
         case .end:
             switch selection.mode {
-            case .endFollowsNow, .bothFollowNow: updateSelectionMode(.fixed, bounds: bounds, selection: selection)
-            default: updateSelectionMode(.endFollowsNow, bounds: bounds, selection: selection)
+            case .fixed: updateSelectionMode(.endFollowsNow, bounds: bounds, selection: selection)
+            case .endFollowsNow: updateSelectionMode(.fixed, bounds: bounds, selection: selection)
+            case .startFollowsEnd: updateSelectionMode(.bothFollowNow(duration: duration), bounds: bounds, selection: selection)
+            case .bothFollowNow: updateSelectionMode(.startFollowsEnd(duration: duration), bounds: bounds, selection: selection)
             }
         }
     }
@@ -821,9 +852,9 @@ private struct ChartRow: View {
     }
     private func editedGuideTimestamp() -> Double? {
         guard let seconds = Double(guideSecond), seconds >= 0, seconds < 60 else { return nil }
-        var components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: guideDate)
+        var components = guideCalendar.dateComponents([.year, .month, .day, .hour, .minute], from: guideDate)
         components.second = Int(seconds)
-        guard let date = Calendar.current.date(from: components) else { return nil }
+        guard let date = guideCalendar.date(from: components) else { return nil }
         return date.timeIntervalSince1970 + seconds.truncatingRemainder(dividingBy: 1)
     }
 }
