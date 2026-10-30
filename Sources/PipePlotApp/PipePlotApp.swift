@@ -20,16 +20,17 @@ struct PipePlotApplication: App {
                 }
             }
             .environment(model)
-            .onReceive(NotificationCenter.default.publisher(for: .pipePlotReopen)) { _ in model.presentSessionPicker() }
             .onAppear {
                 model.installOpenWindow { id in
                     if sessionID == nil { sessionID = id } else { openWindow(value: id) }
                 }
                 model.installOpenSessionPicker { openWindow(id: "sessions") }
                 appDelegate.installTerminationHandler { model.prepareForTermination() }
+                appDelegate.installReopenHandler { model.presentSessionPicker() }
                 if sessionID == nil, let id = model.bootstrap() { sessionID = id }
             }
         }
+        .restorationBehavior(.disabled)
         .commands {
             PipePlotCommands(model: model)
         }
@@ -37,6 +38,7 @@ struct PipePlotApplication: App {
             SessionPicker(model: model) { id in model.openSession(id); openWindow(value: id) }
                 .frame(minWidth: 520, minHeight: 400)
         }
+        .restorationBehavior(.disabled)
         Settings {
             SettingsView(model: model)
         }
@@ -45,6 +47,8 @@ struct PipePlotApplication: App {
 
 @MainActor
 final class PipePlotAppDelegate: NSObject, NSApplicationDelegate {
+    private var reopenHandler: (() -> Void)?
+    func installReopenHandler(_ handler: @escaping () -> Void) { reopenHandler = handler }
     private var terminationHandler: (() -> Void)?
     func installTerminationHandler(_ handler: @escaping () -> Void) { terminationHandler = handler }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -53,7 +57,7 @@ final class PipePlotAppDelegate: NSObject, NSApplicationDelegate {
         return .terminateNow
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        if !hasVisibleWindows { NotificationCenter.default.post(name: .pipePlotReopen, object: nil) }
+        if !hasVisibleWindows { reopenHandler?() }
         return true
     }
 }

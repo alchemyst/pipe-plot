@@ -183,7 +183,7 @@ private struct SharedTimeRuler: View {
                     Text(date.formatted(date: .omitted, time: span < 120 ? .standard : .shortened))
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                         .frame(width: 72, alignment: index == 0 ? .leading : (index == 4 ? .trailing : .center))
-                        .position(x: 84 + max(1, geometry.size.width - 112) * fraction, y: 10)
+                        .position(x: 84 + max(1, geometry.size.width - 112) * fraction + (index == 0 ? 36 : (index == 4 ? -36 : 0)), y: 10)
                 }
             }
         }
@@ -574,10 +574,10 @@ private struct ChartRow: View {
             Spacer()
             Menu {
                 Button("Add horizontal value guide…", action: onAddGuideFromCurrentScale)
-                    .keyboardShortcut("g", modifiers: [.command, .option])
+                    .keyboardShortcut(isCurrentChart ? KeyboardShortcut("g", modifiers: [.command, .option]) : nil)
                 Button("Add time guide at Now") {
                     model.addTimeGuide(at: now, sessionID: session.id)
-                }.keyboardShortcut("t", modifiers: [.command, .option])
+                }.keyboardShortcut(isCurrentChart ? KeyboardShortcut("t", modifiers: [.command, .option]) : nil)
                 ForEach(chart.guides) { guide in
                     Menu("\(guide.label?.isEmpty == false ? guide.label! : guide.orientation == .horizontalValue ? "Value guide" : "Time guide") · \(guide.value.formatted(.number.precision(.significantDigits(4))))") {
                         Button(guide.orientation == .verticalTime ? "Edit date and label…" : "Edit exact value…") { beginEditingGuide(guide) }
@@ -689,6 +689,10 @@ private struct ChartRow: View {
         }
         Button("Move to New Chart") { model.moveToNewChart(stream.id, sessionID: session.id, after: chart.id) }
         Button("Continue / Reassociate Group…") { reassociationSource = stream }
+    }
+
+    private var isCurrentChart: Bool {
+        (model.selectedChartIDs[session.id] ?? session.charts.last(where: \.isVisible)?.id) == chart.id
     }
 
     private var guideSheet: some View {

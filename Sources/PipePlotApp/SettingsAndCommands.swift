@@ -68,7 +68,7 @@ struct SettingsView: View {
             Section("Axis presentation") {
                 Picker("Session", selection: $selectedSession) {
                     Text("Choose session").tag(SessionID?.none)
-                    ForEach(model.sessions.values.sorted { $0.number < $1.number }) { Text("\($0.number) · \($0.title)").tag(Optional($0.id)) }
+                    ForEach(model.sessions.values.filter { !$0.isDeleted }.sorted { $0.number < $1.number }) { Text("\($0.number) · \($0.title)").tag(Optional($0.id)) }
                 }
                 Picker("Chart", selection: $selectedChart) {
                     Text("Choose chart").tag(ChartID?.none)

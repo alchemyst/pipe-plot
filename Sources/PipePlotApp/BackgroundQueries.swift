@@ -87,6 +87,7 @@ final class BackgroundQueries {
         }
         return nil
     }
+    func isCalculatingStatistics(_ id: StreamID) -> Bool { statisticsPending.contains(id) }
     func isFitting(_ id: UUID) -> Bool { fitPending.contains(id) }
     func retain(_ ids: Set<StreamID>) {
         nearest = nearest.filter { ids.contains($0.key) }

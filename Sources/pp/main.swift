@@ -195,6 +195,7 @@ private func printSnapshot(_ session: SessionSnapshot) {
 }
 
 private func runSampler(_ options: Options) throws {
+    let startedAt = Date()
     if options.listing { try sendCommand(.list); return }
     let parser = InputParser()
     let interrupt = InterruptMonitor()
@@ -224,7 +225,7 @@ private func runSampler(_ options: Options) throws {
         }
         let connection = try connectOrLaunch()
         let names = options.names
-        let request = SamplerIntent(columnCount: width, sourceLabel: options.sourceLabel, requestedNames: names, unitHint: options.unit)
+        let request = SamplerIntent(columnCount: width, sourceLabel: options.sourceLabel, requestedNames: names, unitHint: options.unit, startedAt: startedAt)
         try connection.send(ClientMessage.hello(HelloRequest(clientLabel: "pp", sink: options.sink.asSinkIntent(fresh: options.fresh), sampler: request)))
         var gotHello = false
         while true {

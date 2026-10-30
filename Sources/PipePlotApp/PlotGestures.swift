@@ -208,11 +208,16 @@ final class PlotInteractionView: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        if event.modifierFlags.contains(.shift) || abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) {
-            onPan(CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY), gesturePhase(event.phase, default: .ended))
-        } else if event.scrollingDeltaY != 0 {
+        let phase = event.phase.isEmpty ? event.momentumPhase : event.phase
+        if event.modifierFlags.contains(.control) {
             let point = localPoint(event)
-            onZoom(exp(Double(event.scrollingDeltaY) / 120), timeAtX(point.x), gesturePhase(event.phase, default: .ended))
+            onZoom(exp(Double(event.scrollingDeltaY) / 120), timeAtX(point.x), gesturePhase(phase, default: .ended))
+        } else if event.modifierFlags.contains(.shift) || abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) {
+            let delta = event.scrollingDeltaX == 0 ? event.scrollingDeltaY : event.scrollingDeltaX
+            onPan(CGSize(width: delta, height: 0), gesturePhase(phase, default: .ended))
+        } else {
+            // Ordinary vertical scrolling belongs to the stack, not its X scale.
+            super.scrollWheel(with: event)
         }
     }
 

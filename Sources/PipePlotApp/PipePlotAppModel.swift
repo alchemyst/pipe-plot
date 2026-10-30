@@ -55,7 +55,7 @@ final class PipePlotAppModel {
 
     /// Returns the session to show in the initial WindowGroup. CLI launches deliberately start fresh.
     func bootstrap() -> SessionID? {
-        guard !didBootstrap else { return sessions.values.sorted { $0.number < $1.number }.first?.id }
+        guard !didBootstrap else { return nil }
         didBootstrap = true
         do {
             let all = try store.listSessions()
@@ -100,6 +100,10 @@ final class PipePlotAppModel {
     }
 
     func selectChart(_ chartID: ChartID, sessionID: SessionID) { selectedChartIDs[sessionID] = chartID }
+
+    func addTimeGuide(at date: Date, sessionID: SessionID) {
+        updateTimeGuide(Guide(orientation: .verticalTime, value: date.timeIntervalSince1970), sessionID: sessionID)
+    }
 
     func updateTimeGuide(_ guide: Guide, sessionID: SessionID) {
         do { try store.upsertTimeGuide(guide, sessionID: sessionID); refresh(sessionID) }
@@ -161,10 +165,18 @@ final class PipePlotAppModel {
     func deleteChart(_ id: ChartID) { perform { try store.deleteChart(id) } }
     func restoreChart(_ id: ChartID) { perform { try store.restoreChart(id) } }
     func deleteSession(_ id: SessionID) {
-        connectionRegistry.closeConnections(for: id)
-        perform { try store.deleteSession(sessionID: id) }
+        do {
+            try store.deleteSession(sessionID: id)
+            connectionRegistry.closeConnections(for: id)
+            refreshAll()
+        } catch { errorMessage = error.localizedDescription }
     }
-    func restoreSession(_ id: SessionID) { perform { try store.restoreSession(sessionID: id) } }
+    func restoreSession(_ id: SessionID) {
+        do {
+            try store.restoreSession(sessionID: id); refreshAll()
+            if !openedSessionIDs.contains(id) { openWindowAction?(id) }
+        } catch { errorMessage = error.localizedDescription }
+    }
     func updateStreamStyle(_ id: StreamID, colorHex: String?, dotsVisible: Bool?, linesVisible: Bool?) {
         perform { try store.updateStreamStyle(id, colorHex: colorHex, dotsVisible: dotsVisible, linesVisible: linesVisible) }
     }
@@ -247,6 +259,7 @@ final class PipePlotAppModel {
         return max(earliest ?? now.addingTimeInterval(-span), now.addingTimeInterval(-span))
     }
 
+    func isCalculatingStats(_ stream: StreamID) -> Bool { queries.isCalculatingStatistics(stream) }
     func stats(for stream: StreamID, in selection: TimeSelection) -> SelectionStatistics? {
         let range = resolvedRange(selection, now: sessionNow(for: stream))
         return queries.stats(stream, key: queryKey(stream, range: range), store: queryStore) { [weak self] in self?.errorMessage = $0.localizedDescription }
@@ -341,7 +354,9 @@ final class PipePlotAppModel {
             if let fitted, let crossing {
                 let slope = fitted.slope.formatted(.number.precision(.significantDigits(3)))
                 let detail = "n \(fitted.count) · \(Int(range.upperBound.timeIntervalSince(range.lowerBound)))s training · slope \(slope)/s"
-                message = crossing > now ? "Crossing \(crossing.formatted(date: .abbreviated, time: .standard)) · \(detail)" : "No future crossing · \(detail)"
+                let remaining = crossing.timeIntervalSince(now)
+                let countdown = remaining < 60 ? String(format: "%.0f s", remaining) : (remaining < 3600 ? String(format: "%.1f min", remaining / 60) : (remaining < 86400 ? String(format: "%.1f h", remaining / 3600) : String(format: "%.1f days", remaining / 86400)))
+                message = crossing > now ? "Crossing \(crossing.formatted(date: .abbreviated, time: .standard)) · in \(countdown) · \(detail)" : "No future crossing · \(detail)"
             } else { message = fitted == nil ? (queries.isFitting(configuration.id) ? "Calculating…" : "Not enough distinct sample times") : "No finite crossing predicted" }
             return ForecastStatus(configuration: configuration, fit: fitted, guide: guide, crossing: crossing, message: message, fitSampleCount: count, fitRange: range)
         }
@@ -394,8 +409,11 @@ final class PipePlotAppModel {
     func windowClosed(_ id: SessionID) {
         guard !terminating else { return }
         openedSessionIDs.remove(id)
-        connectionRegistry.closeConnections(for: id)
-        do { try store.setSessionOpen(false, sessionID: id); refreshAll(); if activeSessionID == id { activeSessionID = nil } }
+        defer { connectionRegistry.closeConnections(for: id) }
+        do {
+            try store.setSessionOpen(false, sessionID: id)
+            refreshAll(); if activeSessionID == id { activeSessionID = nil }
+        }
         catch { errorMessage = error.localizedDescription }
     }
     func applicationWillTerminate() { terminating = true }

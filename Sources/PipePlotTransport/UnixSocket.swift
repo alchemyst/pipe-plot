@@ -302,7 +302,7 @@ public enum PipePlotLocations {
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-gj", app.path, "--args", "--pipeplot-launched-by-cli"]
+        process.arguments = ["-g", app.path, "--args", "--pipeplot-launched-by-cli"]
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {

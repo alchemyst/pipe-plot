@@ -25,10 +25,11 @@ public enum SinkIntent: Codable, Equatable, Sendable {
 public struct SamplerIntent: Codable, Equatable, Sendable {
     public var columnCount: Int
     public var sourceLabel: String?
+    public var startedAt: Date?
     public var requestedNames: [String]?
     public var unitHint: String?
-    public init(columnCount: Int, sourceLabel: String? = nil, requestedNames: [String]? = nil, unitHint: String? = nil) {
-        self.columnCount = columnCount; self.sourceLabel = sourceLabel; self.requestedNames = requestedNames; self.unitHint = unitHint
+    public init(columnCount: Int, sourceLabel: String? = nil, requestedNames: [String]? = nil, unitHint: String? = nil, startedAt: Date? = nil) {
+        self.columnCount = columnCount; self.sourceLabel = sourceLabel; self.startedAt = startedAt; self.requestedNames = requestedNames; self.unitHint = unitHint
     }
 }
 public struct HelloRequest: Codable, Equatable, Sendable {
