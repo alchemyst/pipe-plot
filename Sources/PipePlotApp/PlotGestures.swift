@@ -8,6 +8,7 @@ import PipePlotCore
 struct PlotInteractionOverlay: NSViewRepresentable {
     let guides: [Guide]
     let selectionRange: ClosedRange<Date>?
+    let selectionMode: SelectionMode?
     let now: Date
     let plotBounds: CGRect
     let timeAtX: (CGFloat) -> Date
@@ -19,19 +20,27 @@ struct PlotInteractionOverlay: NSViewRepresentable {
     let onPan: (CGSize, PlotGesturePhase) -> Void
     let onZoom: (Double, Date, PlotGesturePhase) -> Void
     let onHover: (Date?) -> Void
+    var onBackgroundClick: () -> Void = {}
+    var onBackgroundDoubleClick: (Date) -> Void = { _ in }
+    var onGuideSelected: (Guide) -> Void = { _ in }
+    var onSelectionModeToggle: (PlotSelectionEdge) -> Void = { _ in }
 
     func makeNSView(context: Context) -> PlotInteractionView {
         let view = PlotInteractionView()
-        view.update(guides: guides, selectionRange: selectionRange, now: now, plotBounds: plotBounds, timeAtX: timeAtX,
+        view.update(guides: guides, selectionRange: selectionRange, selectionMode: selectionMode, now: now, plotBounds: plotBounds, timeAtX: timeAtX,
                     valueAtY: valueAtY, xAtTime: xAtTime, yAtValue: yAtValue,
-                    onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover)
+                    onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover,
+                    onBackgroundClick: onBackgroundClick, onBackgroundDoubleClick: onBackgroundDoubleClick,
+                    onGuideSelected: onGuideSelected, onSelectionModeToggle: onSelectionModeToggle)
         return view
     }
 
     func updateNSView(_ view: PlotInteractionView, context: Context) {
-        view.update(guides: guides, selectionRange: selectionRange, now: now, plotBounds: plotBounds, timeAtX: timeAtX,
+        view.update(guides: guides, selectionRange: selectionRange, selectionMode: selectionMode, now: now, plotBounds: plotBounds, timeAtX: timeAtX,
                     valueAtY: valueAtY, xAtTime: xAtTime, yAtValue: yAtValue,
-                    onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover)
+                    onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover,
+                    onBackgroundClick: onBackgroundClick, onBackgroundDoubleClick: onBackgroundDoubleClick,
+                    onGuideSelected: onGuideSelected, onSelectionModeToggle: onSelectionModeToggle)
     }
 }
 
@@ -48,6 +57,7 @@ final class PlotInteractionView: NSView {
 
     private var guides: [Guide] = []
     private var selectionRange: ClosedRange<Date>?
+    private var selectionMode: SelectionMode?
     private var now = Date()
     private var plotBounds = CGRect.zero
     private var timeAtX: (CGFloat) -> Date = { _ in .now }
@@ -59,6 +69,10 @@ final class PlotInteractionView: NSView {
     private var onPan: (CGSize, PlotGesturePhase) -> Void = { _, _ in }
     private var onZoom: (Double, Date, PlotGesturePhase) -> Void = { _, _, _ in }
     private var onHover: (Date?) -> Void = { _ in }
+    private var onBackgroundClick: () -> Void = {}
+    private var onBackgroundDoubleClick: (Date) -> Void = { _ in }
+    private var onGuideSelected: (Guide) -> Void = { _ in }
+    private var onSelectionModeToggle: (PlotSelectionEdge) -> Void = { _ in }
     private var activeDrag: Drag?
     private var dragOrigin = CGPoint.zero
     private var lastPoint = CGPoint.zero
@@ -76,16 +90,21 @@ final class PlotInteractionView: NSView {
         updateTrackingAreas()
     }
 
-    func update(guides: [Guide], selectionRange: ClosedRange<Date>?, now: Date, plotBounds: CGRect,
+    func update(guides: [Guide], selectionRange: ClosedRange<Date>?, selectionMode: SelectionMode?, now: Date, plotBounds: CGRect,
                 timeAtX: @escaping (CGFloat) -> Date, valueAtY: @escaping (CGFloat) -> Double,
                 xAtTime: @escaping (Date) -> CGFloat, yAtValue: @escaping (Double) -> CGFloat,
                 onGuide: @escaping (Guide, PlotGesturePhase) -> Void,
                 onSelection: @escaping (Date, Date, PlotSelectionEdge?, Bool, PlotGesturePhase) -> Void,
                 onPan: @escaping (CGSize, PlotGesturePhase) -> Void,
                 onZoom: @escaping (Double, Date, PlotGesturePhase) -> Void,
-                onHover: @escaping (Date?) -> Void) {
+                onHover: @escaping (Date?) -> Void,
+                onBackgroundClick: @escaping () -> Void,
+                onBackgroundDoubleClick: @escaping (Date) -> Void,
+                onGuideSelected: @escaping (Guide) -> Void,
+                onSelectionModeToggle: @escaping (PlotSelectionEdge) -> Void) {
         self.guides = guides
         self.selectionRange = selectionRange
+        self.selectionMode = selectionMode
         self.now = now
         self.plotBounds = plotBounds
         self.timeAtX = timeAtX
@@ -97,6 +116,10 @@ final class PlotInteractionView: NSView {
         self.onPan = onPan
         self.onZoom = onZoom
         self.onHover = onHover
+        self.onBackgroundClick = onBackgroundClick
+        self.onBackgroundDoubleClick = onBackgroundDoubleClick
+        self.onGuideSelected = onGuideSelected
+        self.onSelectionModeToggle = onSelectionModeToggle
         needsDisplay = true
     }
 
@@ -121,6 +144,18 @@ final class PlotInteractionView: NSView {
         dragOrigin = point
         lastPoint = point
         dragMoved = false
+
+        if let edge = hitSelectionEdge(at: point), event.clickCount >= 2, point.y >= bounds.maxY - 30 {
+            onSelectionModeToggle(edge)
+            activeDrag = nil
+            return
+        }
+        if event.clickCount >= 2, plotBounds.contains(point), hitGuide(at: point) == nil,
+           hitSelectionEdge(at: point) == nil {
+            onBackgroundDoubleClick(timeAtX(point.x))
+            activeDrag = nil
+            return
+        }
 
         if event.modifierFlags.contains(.shift) {
             activeDrag = .pan
@@ -155,10 +190,10 @@ final class PlotInteractionView: NSView {
             let time = timeAtX(point.x)
             switch edge {
             case .start: onSelection(min(time, end), max(time, end), .start, false, .changed)
-            case .end: onSelection(min(start, time), max(start, time), .end, isNearNow(point.x), .changed)
+            case .end: onSelection(min(start, time), max(start, time), .end, isAtOrBeyondNow(point.x), .changed)
             case nil:
                 let lower = min(timeAtX(dragOrigin.x), time), upper = max(timeAtX(dragOrigin.x), time)
-                onSelection(lower, upper, nil, isNearNow(xAtTime(upper)), .changed)
+                onSelection(lower, upper, nil, isAtOrBeyondNow(xAtTime(upper)), .changed)
             }
         case .pan:
             onPan(movement, .changed)
@@ -177,19 +212,27 @@ final class PlotInteractionView: NSView {
         onHover(timeAtX(point.x))
         switch activeDrag {
         case let .guide(guide, isNew):
-            if isNew && !dragMoved { onGuide(guide, .cancelled) }
-            else { onGuide(replacingValue(in: guide, at: point), .ended) }
+            if !dragMoved {
+                onGuide(guide, .cancelled)
+                if !isNew { onGuideSelected(guide) }
+            } else { onGuide(replacingValue(in: guide, at: point), .ended) }
         case let .selection(start, end, edge):
+            if !dragMoved {
+                onSelection(start, end, edge, false, .cancelled)
+                onBackgroundClick()
+                self.activeDrag = nil
+                return
+            }
             let time = timeAtX(point.x)
             switch edge {
             case .start: onSelection(min(time, end), max(time, end), .start, false, .ended)
             case .end:
-                let linked = isNearNow(point.x) && start <= now
+                let linked = isAtOrBeyondNow(point.x) && start <= now
                 let lower = min(start, linked ? now : time), upper = max(start, linked ? now : time)
                 onSelection(lower, upper, .end, linked, .ended)
             case nil:
                 let origin = timeAtX(dragOrigin.x)
-                let linked = isNearNow(xAtTime(max(origin, time)))
+                let linked = isAtOrBeyondNow(xAtTime(max(origin, time)))
                 let lower = min(origin, time), upper = max(origin, time)
                 onSelection(lower, linked ? now : upper, nil, linked, .ended)
             }
@@ -245,14 +288,36 @@ final class PlotInteractionView: NSView {
         super.draw(dirtyRect)
         guard let selectionRange, let context = NSGraphicsContext.current?.cgContext else { return }
         let y = min(bounds.maxY - 16, max(bounds.minY + 10, bounds.maxY - 16))
-        for date in [selectionRange.lowerBound, selectionRange.upperBound] {
+        for (index, date) in [selectionRange.lowerBound, selectionRange.upperBound].enumerated() {
             let x = xAtTime(date)
-            let rect = CGRect(x: x - 5, y: y - 8, width: 10, height: 16)
-            context.setFillColor(NSColor.windowBackgroundColor.cgColor)
-            context.fillEllipse(in: rect)
+            let centerY = y
+            let path = NSBezierPath()
+            if index == 0 {
+                path.move(to: CGPoint(x: x - 7, y: centerY))
+                path.line(to: CGPoint(x: x + 4, y: centerY - 7))
+                path.line(to: CGPoint(x: x + 4, y: centerY + 7))
+            } else {
+                path.move(to: CGPoint(x: x + 7, y: centerY))
+                path.line(to: CGPoint(x: x - 4, y: centerY - 7))
+                path.line(to: CGPoint(x: x - 4, y: centerY + 7))
+            }
+            path.close()
             context.setStrokeColor(NSColor.controlAccentColor.cgColor)
             context.setLineWidth(1.5)
-            context.strokeEllipse(in: rect)
+            let tracking: Bool
+            switch (selectionMode ?? .fixed, index) {
+            case (.fixed, _): tracking = false
+            case (.endFollowsNow, 1), (.bothFollowNow, _), (.startFollowsEnd, 0): tracking = true
+            default: tracking = false
+            }
+            if tracking {
+                NSColor.controlAccentColor.setFill()
+                path.fill()
+            } else {
+                NSColor.windowBackgroundColor.setFill()
+                path.fill()
+                path.stroke()
+            }
         }
     }
 
@@ -289,7 +354,7 @@ final class PlotInteractionView: NSView {
         return nil
     }
 
-    private func isNearNow(_ screenX: CGFloat) -> Bool { abs(screenX - xAtTime(now)) <= 18 }
+    private func isAtOrBeyondNow(_ screenX: CGFloat) -> Bool { screenX >= xAtTime(now) - 18 }
 
     private func guideValue(_ orientation: GuideOrientation, at point: CGPoint) -> Double {
         switch orientation {

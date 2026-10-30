@@ -12,6 +12,10 @@ struct PlotCanvas: View {
     @Binding var selectionPreview: Date?
     @Binding var selectionLinkedPreview: Bool
     var onFollowSelectionDuration: (() -> Void)? = nil
+    var onBackgroundClick: () -> Void = {}
+    var onBackgroundDoubleClick: (Date) -> Void = { _ in }
+    var onGuideSelected: (Guide) -> Void = { _ in }
+    var onSelectionModeToggle: (PlotSelectionEdge) -> Void = { _ in }
     let selection: TimeSelection?
     let forecasts: [ForecastDrawing]
     let onSelectionCommit: (Date?, Date?, SelectionMode?) -> Void
@@ -31,6 +35,7 @@ struct PlotCanvas: View {
                 PlotInteractionOverlay(
                     guides: chart.guides + session.timeGuides,
                     selectionRange: currentSelectionRange,
+                    selectionMode: selection?.mode,
                     now: now,
                     plotBounds: plot,
                     timeAtX: { date(at: $0, width: geometry.size.width, plot: plot) },
@@ -57,7 +62,11 @@ struct PlotCanvas: View {
                     },
                     onPan: { delta, phase in onPan(delta, phase, plot.width) },
                     onZoom: onZoom,
-                    onHover: { hoverDate = $0 }
+                    onHover: { hoverDate = $0 },
+                    onBackgroundClick: onBackgroundClick,
+                    onBackgroundDoubleClick: onBackgroundDoubleClick,
+                    onGuideSelected: onGuideSelected,
+                    onSelectionModeToggle: onSelectionModeToggle
                 )
                 if selection?.mode == .endFollowsNow, let onFollowSelectionDuration {
                     Button(action: onFollowSelectionDuration) {
@@ -82,6 +91,7 @@ struct PlotCanvas: View {
             case .fixed: start = item.start; end = item.end
             case .endFollowsNow: start = item.start; end = now
             case .bothFollowNow(let duration): start = now.addingTimeInterval(-duration); end = now
+            case .startFollowsEnd(let duration): start = item.end.addingTimeInterval(-duration); end = item.end
             }
             return min(start, end)...max(start, end)
         }
@@ -103,25 +113,28 @@ struct PlotCanvas: View {
         let plot = plotRect(for: size)
         let valueRange = yRange
         var grid = Path()
-        for fraction in 0...4 {
-            let y = plot.minY + plot.height * CGFloat(fraction) / 4
-            grid.move(to: CGPoint(x: plot.minX, y: y)); grid.addLine(to: CGPoint(x: plot.maxX, y: y))
+        let numericScale = chart.settings.numericScale ?? .decimal
+        let yTicks = NumericText.ticks(in: valueRange, scale: numericScale, targetCount: max(2, min(6, Int(plot.height / 55))))
+        for value in yTicks {
+            let position = y(value, range: valueRange, in: plot)
+            grid.move(to: CGPoint(x: plot.minX, y: position)); grid.addLine(to: CGPoint(x: plot.maxX, y: position))
         }
         context.stroke(grid, with: .color(.secondary.opacity(0.13)), lineWidth: 1)
 
         let tickCount = max(2, min(6, Int(size.width / 125)))
+        let referenceTime = session.timeGuides.first(where: { $0.id == session.timeline.referenceTimeGuideID })
+            .map { Date(timeIntervalSince1970: $0.value) }
         for index in 0...tickCount {
             let fraction = Double(index) / Double(tickCount)
             let date = domain.lowerBound.addingTimeInterval(timeSpan * fraction)
             let x = plot.minX + plot.width * CGFloat(fraction)
-            let label = date.formatted(date: .omitted, time: timeSpan < 120 ? .standard : .shortened)
+            let label = TimeText.format(date, zone: session.timeline.timeZone ?? .local, reference: referenceTime)
             context.draw(Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary), at: CGPoint(x: x, y: plot.maxY + 12), anchor: index == 0 ? .leading : (index == tickCount ? .trailing : .center))
         }
-        for index in 0...4 {
-            let fraction = Double(index) / 4
-            let value = interpolatedValue(in: valueRange, fraction: 1 - fraction)
-            let label = value.formatted(.number.precision(.significantDigits(4)))
-            let yPosition = plot.minY + plot.height * CGFloat(fraction)
+        let referenceValue = chart.guides.first(where: { $0.id == chart.settings.referenceGuideID && $0.orientation == .horizontalValue })?.value
+        for value in yTicks {
+            let label = NumericText.format(value - (referenceValue ?? 0), scale: numericScale, unit: chart.settings.unit)
+            let yPosition = y(value, range: valueRange, in: plot)
             context.draw(Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary), at: CGPoint(x: plot.minX - 7, y: yPosition), anchor: .trailing)
         }
 
@@ -161,6 +174,26 @@ struct PlotCanvas: View {
                     context.fill(Path(ellipseIn: rect), with: .color(color))
                 }
             }
+            if chart.settings.showExtrema != false, chart.streams.count <= 6, data.count >= 3 {
+                let extrema = PeakFinder.extrema(samples: data, visibleRange: domain, plotWidth: Double(plot.width), valueRange: valueRange, maximumCount: 3)
+                for extremum in extrema {
+                    let sample = data[extremum.sampleIndex]
+                    let point = CGPoint(x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
+                    let symbol = extremum.kind == .peak ? "▲" : "▼"
+                    let name = chart.streams.count > 1 ? "\(stream.name) " : ""
+                    let verticalOffset: CGFloat = extremum.kind == .peak ? -9 : 9
+                    context.draw(Text("\(symbol) \(name)\(NumericText.format(sample.value, scale: chart.settings.numericScale ?? .decimal, unit: chart.settings.unit))")
+                        .font(.system(size: 9, weight: .semibold)).foregroundColor(color), at: CGPoint(x: point.x + 5, y: point.y + verticalOffset), anchor: .leading)
+                }
+            }
+            if let last = data.last {
+                let point = CGPoint(x: x(last.timestamp, in: plot), y: y(last.value, range: valueRange, in: plot))
+                if plot.maxX - point.x >= 64 {
+                    let name = chart.streams.count > 1 ? "\(stream.name) " : ""
+                    context.draw(Text(name + NumericText.format(last.value, scale: chart.settings.numericScale ?? .decimal, unit: chart.settings.unit))
+                        .font(.system(size: 9, weight: .medium)).foregroundColor(color), at: CGPoint(x: point.x + 6, y: point.y), anchor: .leading)
+                }
+            }
         }
 
         for guide in chart.guides + session.timeGuides {
@@ -175,9 +208,13 @@ struct PlotCanvas: View {
                 let xPos = x(date, in: plot)
                 var path = Path(); path.move(to: CGPoint(x: xPos, y: plot.minY)); path.addLine(to: CGPoint(x: xPos, y: plot.maxY))
                 context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
-                if let label = guide.label, !label.isEmpty {
-                    context.draw(Text(label).font(.system(size: 10, weight: .medium)).foregroundColor(color), at: CGPoint(x: min(plot.maxX - 5, xPos + 5), y: plot.minY + 8), anchor: .leading)
-                }
+                let label = guide.label.flatMap { $0.isEmpty ? nil : $0 }
+                    ?? TimeText.format(date, zone: session.timeline.timeZone ?? .local, includeDate: timeSpan > 86_400)
+                let textWidth = CGFloat(label.count) * 5.5
+                let labelX = min(plot.maxX - textWidth - 10, max(plot.minX, xPos + 5))
+                let badge = CGRect(x: labelX, y: plot.minY + 2, width: textWidth + 10, height: 15)
+                context.fill(Path(roundedRect: badge, cornerRadius: 4), with: .color(.black.opacity(0.32)))
+                context.draw(Text(label).font(.system(size: 9, weight: .semibold)).foregroundColor(color), at: CGPoint(x: labelX + 5, y: badge.midY), anchor: .leading)
             }
         }
         for forecast in forecasts {
@@ -195,6 +232,7 @@ struct PlotCanvas: View {
             case .fixed: return (item.start, item.end)
             case .endFollowsNow: return (item.start, now)
             case .bothFollowNow(let duration): return (now.addingTimeInterval(-duration), now)
+            case .startFollowsEnd(let duration): return (item.end.addingTimeInterval(-duration), item.end)
             }
         }
         if let selectionStart, let selectionPreview {
@@ -226,6 +264,8 @@ struct PlotCanvas: View {
     private var yRange: ClosedRange<Double> {
         if case let .fixed(minimum, maximum) = chart.settings.yScale, minimum < maximum { return minimum...maximum }
         var values = chart.streams.flatMap { samples[$0.id, default: []].map(\.value) }
+        values.append(contentsOf: chart.guides.filter { $0.orientation == .horizontalValue }.map(\.value))
+        if chart.settings.includeZero == true { values.append(0) }
         values.append(contentsOf: forecasts.filter { forecast in
             forecast.value.isFinite && chart.streams.contains(where: { $0.id == forecast.streamID })
         }.map(\.value))
@@ -266,6 +306,15 @@ struct PlotCanvas: View {
         let low = range.lowerBound / scale
         let high = range.upperBound / scale
         return (low + (high - low) * fraction) * scale
+    }
+
+    private static func elapsedLabel(_ interval: TimeInterval) -> String {
+        let sign = interval < 0 ? "−" : "+"
+        let total = Int(abs(interval).rounded())
+        let hours = total / 3600, minutes = total % 3600 / 60, seconds = total % 60
+        if hours > 0 { return "\(sign)\(hours):\(String(format: "%02d:%02d", minutes, seconds))" }
+        if minutes > 0 { return "\(sign)\(minutes):\(String(format: "%02d", seconds))" }
+        return "\(sign)\(seconds)s"
     }
 
     static func color(_ index: Int) -> Color {
