@@ -22,23 +22,51 @@ public final class SocketConnection {
     /// Native descriptor for integrating socket readiness into `poll(2)` loops.
     public var fileDescriptor: Int32 { descriptor }
 
-    public func send<T: Encodable>(_ value: T, encoder: JSONEncoder = SocketConnection.makeEncoder()) throws {
+    public func send<T: Encodable>(_ value: T, encoder: JSONEncoder = SocketConnection.makeEncoder(), timeout: TimeInterval? = nil) throws {
         var frame = try encoder.encode(value)
         guard frame.count <= Self.maximumFrameBytes else { throw SocketError.frameTooLarge }
         frame.append(0x0a)
-        try send(bytes: frame)
+        try send(bytes: frame, timeout: timeout)
     }
 
-    public func send(bytes: Data) throws {
+    /// Sends all bytes, optionally bounding the entire write even when the peer
+    /// stops reading. The default remains blocking for quiet, healthy peers.
+    public func send(bytes: Data, timeout: TimeInterval? = nil) throws {
         writeLock.lock(); defer { writeLock.unlock() }
         guard !closed else { throw SocketError.closed }
+        let deadline = timeout.map { Date().addingTimeInterval($0) }
+        var previousSendTimeout = timeval()
+        var previousSendTimeoutLength = socklen_t(MemoryLayout<timeval>.size)
+        if deadline != nil {
+            guard getsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &previousSendTimeout, &previousSendTimeoutLength) == 0 else {
+                throw SocketError.system("getsockopt send timeout", errno)
+            }
+        }
+        defer {
+            if deadline != nil { _ = setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &previousSendTimeout, socklen_t(MemoryLayout<timeval>.size)) }
+        }
         var offset = 0
         try bytes.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
             while offset < bytes.count {
+                if let deadline {
+                    let remaining = deadline.timeIntervalSinceNow
+                    guard remaining > 0 else { throw SocketError.timedOut }
+                    var sendTimeout = timeval()
+                    sendTimeout.tv_sec = numericCast(Int64(remaining))
+                    sendTimeout.tv_usec = Int32((remaining - Double(sendTimeout.tv_sec)) * 1_000_000)
+                    if sendTimeout.tv_sec == 0 && sendTimeout.tv_usec == 0 { sendTimeout.tv_usec = 1 }
+                    guard setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
+                        throw SocketError.system("setsockopt send timeout", errno)
+                    }
+                }
                 let n = Darwin.send(descriptor, base.advanced(by: offset), bytes.count - offset, 0)
                 if n < 0 {
                     if errno == EINTR { continue }
+                    if let deadline, (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        if deadline.timeIntervalSinceNow <= 0 { throw SocketError.timedOut }
+                        continue
+                    }
                     throw SocketError.system("send", errno)
                 }
                 if n == 0 { throw SocketError.closed }

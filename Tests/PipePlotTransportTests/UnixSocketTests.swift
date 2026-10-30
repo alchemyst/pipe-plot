@@ -92,6 +92,31 @@ final class UnixSocketTests: XCTestCase {
         wait(for: [timedOut], timeout: 3)
     }
 
+    func testSendDeadlineBoundsAClientThatStopsReading() throws {
+        let path = temporarySocketPath()
+        let accepted = expectation(description: "client accepted")
+        let timedOut = expectation(description: "blocked send timed out")
+        let server = UnixSocketServer(socketURL: path) { connection in
+            accepted.fulfill()
+            var sendBuffer: Int32 = 1_024
+            _ = setsockopt(connection.fileDescriptor, SOL_SOCKET, SO_SNDBUF, &sendBuffer, socklen_t(MemoryLayout<Int32>.size))
+            do {
+                try connection.send(bytes: Data(repeating: 0x61, count: 64 * 1_024 * 1_024), timeout: 0.1)
+                XCTFail("Expected the non-reading peer deadline")
+            } catch SocketError.timedOut {
+                timedOut.fulfill()
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        }
+        try server.start()
+        defer { server.stop() }
+        let fd = try connect(path)
+        defer { Darwin.close(fd) }
+        wait(for: [accepted], timeout: 3)
+        wait(for: [timedOut], timeout: 3)
+    }
+
     func testServerClosesConnectionsAboveClientLimit() throws {
         let path = temporarySocketPath()
         let capacityReached = expectation(description: "client limit reached")
