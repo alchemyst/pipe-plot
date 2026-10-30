@@ -10,13 +10,14 @@ struct PlotCanvas: View {
     @Binding var hoverDate: Date?
     @Binding var selectionStart: Date?
     @Binding var selectionPreview: Date?
+    @Binding var selectionLinkedPreview: Bool
+    var onFollowSelectionDuration: (() -> Void)? = nil
     let selection: TimeSelection?
     let forecast: ForecastDrawing?
     let onSelectionCommit: (Date?, Date?, SelectionMode?) -> Void
     let onGuide: (Guide, PlotGesturePhase) -> Void
     let onPan: (CGSize, PlotGesturePhase, CGFloat) -> Void
     let onZoom: (Double, Date, PlotGesturePhase) -> Void
-    @State private var selectionLinkedPreview = false
 
     private var timeSpan: TimeInterval { max(0.001, domain.upperBound.timeIntervalSince(domain.lowerBound)) }
 
@@ -54,10 +55,22 @@ struct PlotCanvas: View {
                             selectionStart = nil; selectionPreview = nil; selectionLinkedPreview = false
                         }
                     },
-                    onPan: { delta, phase in onPan(delta, phase, geometry.size.width) },
+                    onPan: { delta, phase in onPan(delta, phase, plot.width) },
                     onZoom: onZoom,
                     onHover: { hoverDate = $0 }
                 )
+                if selection?.mode == .endFollowsNow, let onFollowSelectionDuration {
+                    Button(action: onFollowSelectionDuration) {
+                        Image(systemName: "arrow.left.to.line.compact")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 18, height: 18)
+                            .background(.green, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Make the start follow now at this fixed duration")
+                    .position(x: x(selection!.start, in: plot), y: plot.maxY - 8)
+                }
             }
         }
     }

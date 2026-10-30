@@ -8,6 +8,11 @@ struct SessionWindow: View {
     @State private var selectedChartID: ChartID?
     @State private var hoverDate: Date?
     @State private var dragStart: Date?
+    @State private var gestureDomain: ClosedRange<Date>?
+    @State private var previewSelectionStart: Date?
+    @State private var previewSelectionEnd: Date?
+    @State private var previewSelectionLinked = false
+    @State private var previewGuide: Guide?
 
     private var session: SessionSnapshot? { model.sessions[sessionID] }
 
@@ -18,22 +23,12 @@ struct SessionWindow: View {
                 if session.charts.isEmpty {
                     ContentUnavailableView("No charts yet", systemImage: "chart.xyaxis.line", description: Text("Create a chart or pipe values into pp."))
                 } else {
+                    sharedRuler(session)
                     ScrollView {
                         LazyVStack(spacing: 12) {
                             ForEach(session.charts.filter(\.isVisible)) { chart in
-                                ChartRow(chart: chart, session: session, samples: model.visibleSamples(for: chart, session: session), now: model.sessionNow(session), hoverDate: $hoverDate,
-                                         model: model,
-                                         onTarget: { model.setTarget(chart.id) },
-                                         onToggleDots: { model.toggleDots(chart) },
-                                         onToggleLines: { model.toggleLines(chart) },
-                                         onAddGuide: { value, label in model.addGuide(value: value, chart: chart, session: session, label: label) },
-                                         onEditGuide: { guide in model.updateGuide(guide, chartID: chart.id, sessionID: session.id) },
-                                         onRemoveGuide: { guide in model.removeGuide(guide, chartID: chart.id, sessionID: session.id) },
-                                         onSelection: { model.setSelection($0, session: session) },
-                                         onRename: { stream, name in model.rename(stream, to: name) },
-                                         onMove: { stream, destination in model.move(stream, to: destination) },
-                                         onReassociate: { source, destination in model.reassociate(source, with: destination, sessionID: session.id) })
-                                    .onTapGesture { selectedChartID = chart.id }
+                                chartRow(chart, session: session)
+                                    .onTapGesture { selectedChartID = chart.id; model.selectChart(chart.id, sessionID: session.id) }
                                     .overlay(RoundedRectangle(cornerRadius: 13).stroke(selectedChartID == chart.id ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 2))
                             }
                         }
@@ -58,8 +53,19 @@ struct SessionWindow: View {
         .alert("PipePlot", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.clearError() } })) {
             Button("OK") { model.clearError() }
         } message: { Text(model.errorMessage ?? "") }
-        .background {
-            Button("New Chart") { createChart() }.keyboardShortcut("d", modifiers: [.command, .shift]).hidden()
+        .onKeyPress(keys: [.escape, .leftArrow, .rightArrow, .upArrow, .downArrow, .a, .d, .f, .w, .s]) { press in
+            guard !isEditingText, let session else { return .ignored }
+            switch press.key {
+            case .escape:
+                if session.timeline.selection != nil { model.setSelection(nil, session: session); return .handled }
+            case .leftArrow, .a: model.navigateBack(session); return .handled
+            case .rightArrow, .d: model.navigateForward(session); return .handled
+            case .f: model.followNow(session); return .handled
+            case .upArrow, .w: selectAdjacentChart(-1, in: session); return .handled
+            case .downArrow, .s: selectAdjacentChart(1, in: session); return .handled
+            default: break
+            }
+            return .ignored
         }
     }
 
@@ -110,8 +116,54 @@ struct SessionWindow: View {
         .overlay(alignment: .top) { Rectangle().fill(.separator).frame(height: 0.5) }
     }
 
+    private func sharedRuler(_ session: SessionSnapshot) -> some View {
+        let range = gestureDomain ?? model.domain(for: session)
+        let span = range.upperBound.timeIntervalSince(range.lowerBound)
+        return HStack {
+            ForEach(0...4, id: \.self) { index in
+                let date = range.lowerBound.addingTimeInterval(span * Double(index) / 4)
+                Text(date.formatted(date: .omitted, time: span < 120 ? .standard : .shortened))
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: index == 0 ? .leading : (index == 4 ? .trailing : .center))
+            }
+        }
+        .padding(.horizontal, 74).padding(.vertical, 5).background(.bar)
+        .overlay(alignment: .bottom) { Rectangle().fill(.separator).frame(height: 0.5) }
+    }
+
     private func createChart() {
         model.createChart(in: sessionID, after: selectedChartID)
+    }
+
+    private var isEditingText: Bool {
+        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+        return responder is NSTextView || responder is NSTextField
+    }
+
+    private func selectAdjacentChart(_ offset: Int, in session: SessionSnapshot) {
+        let charts = session.charts.filter(\.isVisible)
+        guard !charts.isEmpty else { return }
+        let current = charts.firstIndex(where: { $0.id == selectedChartID }) ?? 0
+        let next = min(charts.count - 1, max(0, current + offset))
+        selectedChartID = charts[next].id
+        model.selectChart(charts[next].id, sessionID: session.id)
+    }
+
+    private func chartRow(_ chart: ChartSnapshot, session: SessionSnapshot) -> some View {
+        ChartRow(chart: chart, session: session,
+                 samples: model.visibleSamples(for: chart, session: session), now: model.sessionNow(session), hoverDate: $hoverDate,
+                 sharedGestureDomain: $gestureDomain, sharedSelectionStart: $previewSelectionStart,
+                 sharedSelectionEnd: $previewSelectionEnd, sharedSelectionLinked: $previewSelectionLinked,
+                 sharedGuidePreview: $previewGuide, model: model,
+                 onTarget: { model.setTarget(chart.id) },
+                 onToggleDots: { model.toggleDots(chart) }, onToggleLines: { model.toggleLines(chart) },
+                 onAddGuide: { value, label in model.addGuide(value: value, chart: chart, session: session, label: label) },
+                 onEditGuide: { guide in model.updateGuide(guide, chartID: chart.id, sessionID: session.id) },
+                 onRemoveGuide: { guide in model.removeGuide(guide, chartID: chart.id, sessionID: session.id) },
+                 onSelection: { model.setSelection($0, session: session) },
+                 onRename: { stream, name in model.rename(stream, to: name) },
+                 onMove: { stream, destination in model.move(stream, to: destination) },
+                 onReassociate: { source, destination in model.reassociate(source, with: destination, sessionID: session.id) })
     }
 }
 
@@ -121,6 +173,11 @@ private struct ChartRow: View {
     let samples: [StreamID: [StoredSample]]
     let now: Date
     @Binding var hoverDate: Date?
+    @Binding var sharedGestureDomain: ClosedRange<Date>?
+    @Binding var sharedSelectionStart: Date?
+    @Binding var sharedSelectionEnd: Date?
+    @Binding var sharedSelectionLinked: Bool
+    @Binding var sharedGuidePreview: Guide?
     let model: PipePlotAppModel
     let onTarget: () -> Void
     let onToggleDots: () -> Void
@@ -133,8 +190,6 @@ private struct ChartRow: View {
     let onMove: (StreamID, ChartID) -> Void
     let onReassociate: (StreamID, StreamID) -> Void
 
-    @State private var selectionStart: Date?
-    @State private var selectionPreview: Date?
     @State private var showGuideEditor = false
     @State private var guideValue = ""
     @State private var guideLabel = ""
@@ -145,22 +200,20 @@ private struct ChartRow: View {
     @State private var zoomFactor = 1.0
     @State private var zoomAnchor: Date?
     @State private var gestureBaseDomain: ClosedRange<Date>?
-    @State private var guidePreview: Guide?
 
     private var domain: ClosedRange<Date> {
         model.domain(for: session)
     }
-    private var plotDomain: ClosedRange<Date> { gestureDomain ?? domain }
-    @State private var gestureDomain: ClosedRange<Date>?
+    private var plotDomain: ClosedRange<Date> { sharedGestureDomain ?? domain }
     private var plotChart: ChartSnapshot {
-        guard let guidePreview, guidePreview.orientation == .horizontalValue else { return chart }
+        guard let guidePreview = sharedGuidePreview, guidePreview.orientation == .horizontalValue, chart.guides.contains(where: { $0.id == guidePreview.id }) || guidePreview.id == sharedGuidePreview?.id else { return chart }
         var value = chart
         if let index = value.guides.firstIndex(where: { $0.id == guidePreview.id }) { value.guides[index] = guidePreview }
         else { value.guides.append(guidePreview) }
         return value
     }
     private var plotSession: SessionSnapshot {
-        guard let guidePreview, guidePreview.orientation == .verticalTime else { return session }
+        guard let guidePreview = sharedGuidePreview, guidePreview.orientation == .verticalTime else { return session }
         var value = session
         if let index = value.timeGuides.firstIndex(where: { $0.id == guidePreview.id }) { value.timeGuides[index] = guidePreview }
         else { value.timeGuides.append(guidePreview) }
@@ -181,7 +234,14 @@ private struct ChartRow: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             ZStack(alignment: .topLeading) {
-                PlotCanvas(chart: plotChart, session: plotSession, samples: samples, domain: plotDomain, now: now, hoverDate: $hoverDate, selectionStart: $selectionStart, selectionPreview: $selectionPreview,
+                PlotCanvas(chart: plotChart, session: plotSession, samples: samples, domain: plotDomain, now: now, hoverDate: $hoverDate, selectionStart: $sharedSelectionStart, selectionPreview: $sharedSelectionEnd, selectionLinkedPreview: $sharedSelectionLinked,
+                           onFollowSelectionDuration: {
+                                guard let selection = session.timeline.selection else { return }
+                                let bounds = model.resolvedSelectionBounds(selection, session: session)
+                                let duration = max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound))
+                                let current = model.sessionNow(session)
+                                onSelection(TimeSelection(start: current.addingTimeInterval(-duration), end: current, mode: .bothFollowNow(duration: duration), selectedStreamIDs: selection.selectedStreamIDs))
+                           },
                            selection: session.timeline.selection,
                            forecast: model.forecastDrawing(for: chart, session: session),
                            onSelectionCommit: { start, end, mode in
@@ -190,26 +250,27 @@ private struct ChartRow: View {
                            },
                            onGuide: { guide, phase in
                                 switch phase {
-                                case .began, .changed: guidePreview = guide
+                                case .began, .changed: sharedGuidePreview = guide
                                 case .ended:
-                                    guidePreview = nil
-                                    model.updateGuide(guide, chartID: chart.id, sessionID: session.id)
-                                case .cancelled: guidePreview = nil
+                                    sharedGuidePreview = nil
+                                    if guide.orientation == .verticalTime { model.updateTimeGuide(guide, sessionID: session.id) }
+                                    else { model.updateGuide(guide, chartID: chart.id, sessionID: session.id) }
+                                case .cancelled: sharedGuidePreview = nil
                                 }
                            },
                            onPan: { delta, phase, width in
                                 switch phase {
-                                case .began: panPixels = 0; gestureBaseDomain = domain; gestureDomain = domain
+                                case .began: panPixels = 0; gestureBaseDomain = domain; sharedGestureDomain = domain
                                 case .changed:
                                     if gestureBaseDomain == nil { gestureBaseDomain = domain }
                                     panPixels += delta.width
-                                    if let base = gestureBaseDomain { gestureDomain = shifted(base, pixels: panPixels, width: width) }
+                                    if let base = gestureBaseDomain { sharedGestureDomain = shifted(base, pixels: panPixels, width: width) }
                                 case .ended:
                                     if gestureBaseDomain == nil { gestureBaseDomain = domain }
                                     panPixels += delta.width
                                     model.pan(panPixels, width: width, session: session, from: gestureBaseDomain)
-                                    panPixels = 0; gestureBaseDomain = nil; gestureDomain = nil
-                                case .cancelled: panPixels = 0; gestureBaseDomain = nil; gestureDomain = nil
+                                    panPixels = 0; gestureBaseDomain = nil; sharedGestureDomain = nil
+                                case .cancelled: panPixels = 0; gestureBaseDomain = nil; sharedGestureDomain = nil
                                 }
                            },
                            onZoom: { factor, anchor, phase in
@@ -218,13 +279,13 @@ private struct ChartRow: View {
                                 case .changed:
                                     if gestureBaseDomain == nil { gestureBaseDomain = domain }
                                     zoomFactor *= factor; zoomAnchor = anchor
-                                    if let base = gestureBaseDomain { gestureDomain = scaled(base, factor: zoomFactor, anchor: anchor) }
+                                    if let base = gestureBaseDomain { sharedGestureDomain = scaled(base, factor: zoomFactor, anchor: anchor) }
                                 case .ended:
                                     if gestureBaseDomain == nil { gestureBaseDomain = domain }
                                     zoomFactor *= factor
                                     model.zoom(zoomFactor, anchor: anchor, session: session, from: gestureBaseDomain)
-                                    zoomFactor = 1; zoomAnchor = nil; gestureBaseDomain = nil; gestureDomain = nil
-                                case .cancelled: zoomFactor = 1; zoomAnchor = nil; gestureBaseDomain = nil; gestureDomain = nil
+                                    zoomFactor = 1; zoomAnchor = nil; gestureBaseDomain = nil; sharedGestureDomain = nil
+                                case .cancelled: zoomFactor = 1; zoomAnchor = nil; gestureBaseDomain = nil; sharedGestureDomain = nil
                                 }
                            })
                     .frame(height: 210)
@@ -296,6 +357,13 @@ private struct ChartRow: View {
                         Button("Delete guide", role: .destructive) { onRemoveGuide(guide) }
                     }
                 }
+                if !session.timeGuides.isEmpty { Divider(); Text("Session time guides") }
+                ForEach(session.timeGuides) { guide in
+                    Menu("\(guide.label?.isEmpty == false ? guide.label! : "Time guide") · \(Date(timeIntervalSince1970: guide.value).formatted(date: .omitted, time: .shortened))") {
+                        Button("Edit time and label…") { editingGuide = guide; guideValue = "\(guide.value)"; guideLabel = guide.label ?? ""; showGuideEditor = true }
+                        Button("Delete guide", role: .destructive) { model.removeTimeGuide(guide, sessionID: session.id) }
+                    }
+                }
             } label: { Label("Guides", systemImage: "line.3.horizontal") }.help("Create and edit chart guides")
             Button(action: onToggleLines) { Image(systemName: chart.settings.linesVisible ? "point.topleft.down.to.point.bottomright.curvepath" : "point.topleft.down.to.point.bottomright.curvepath") }
                 .buttonStyle(.plain).foregroundStyle(chart.settings.linesVisible ? Color.accentColor : .secondary).help("Toggle connecting lines")
@@ -355,12 +423,25 @@ private struct ChartRow: View {
                 Divider()
                 Button("Clear selection", role: .destructive) { onSelection(nil) }
             }
+            Menu("Included streams") {
+                ForEach(chart.streams) { stream in
+                    let included = selection.selectedStreamIDs.isEmpty || selection.selectedStreamIDs.contains(stream.id)
+                    Button {
+                        var value = selection
+                        var ids = value.selectedStreamIDs.isEmpty ? Set(chart.streams.map(\.id)) : value.selectedStreamIDs
+                        if included { ids.remove(stream.id) } else { ids.insert(stream.id) }
+                        value.selectedStreamIDs = ids
+                        onSelection(value)
+                    } label: { Label(stream.name, systemImage: included ? "checkmark" : "") }
+                }
+                Button("Include all") { var value = selection; value.selectedStreamIDs = Set(chart.streams.map(\.id)); onSelection(value) }
+            }
             Spacer()
             ForEach(chart.streams) { stream in
                 if selection.selectedStreamIDs.isEmpty || selection.selectedStreamIDs.contains(stream.id) {
                     let stats = modelStatistics(stream.id, selection)
                     if let stats {
-                        Text("\(stream.name): n \(stats.count) · min \(format(stats.minimum)) · max \(format(stats.maximum)) · mean \(format(stats.mean)) · Δ \(format(stats.change))")
+                        Text("\(stream.name): n \(stats.count) · \(duration(stats.lastSampleAt.timeIntervalSince(stats.firstSampleAt)) ) · first \(format(stats.firstValue)) · last \(format(stats.lastValue)) · min \(format(stats.minimum)) · max \(format(stats.maximum)) · sample mean \(format(stats.mean)) · Δ \(format(stats.change))")
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
                 }
@@ -386,6 +467,11 @@ private struct ChartRow: View {
 
     private func modelStatistics(_ streamID: StreamID, _ selection: TimeSelection) -> SelectionStatistics? { model.stats(for: streamID, in: selection) }
     private func format(_ value: Double) -> String { String(format: "%.3g", value) }
+    private func duration(_ seconds: TimeInterval) -> String {
+        if seconds < 60 { return String(format: "%.1fs", seconds) }
+        if seconds < 3600 { return String(format: "%.1fm", seconds / 60) }
+        return String(format: "%.1fh", seconds / 3600)
+    }
 
     @ViewBuilder private func streamActions(_ stream: StreamDescriptor) -> some View {
         Button("Rename…") { renameText = stream.name; renameStream = stream }
@@ -417,12 +503,12 @@ private struct ChartRow: View {
 
     private var guideSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(editingGuide == nil ? "Add value guide" : "Edit value guide").font(.title3.weight(.semibold))
-            TextField("Value", text: $guideValue).textFieldStyle(.roundedBorder)
+            Text(editingGuide == nil ? "Add value guide" : (editingGuide?.orientation == .verticalTime ? "Edit time guide" : "Edit value guide")).font(.title3.weight(.semibold))
+            TextField(editingGuide?.orientation == .verticalTime ? "Unix time (seconds)" : "Value", text: $guideValue).textFieldStyle(.roundedBorder)
             TextField("Label (optional)", text: $guideLabel).textFieldStyle(.roundedBorder)
             HStack { Spacer(); Button("Cancel") { showGuideEditor = false; editingGuide = nil }; Button(editingGuide == nil ? "Add Guide" : "Save Guide") {
                 if let value = Double(guideValue), value.isFinite {
-                    if var guide = editingGuide { guide.value = value; guide.label = guideLabel.isEmpty ? nil : guideLabel; onEditGuide(guide) }
+                    if var guide = editingGuide { guide.value = value; guide.label = guideLabel.isEmpty ? nil : guideLabel; if guide.orientation == .verticalTime { model.updateTimeGuide(guide, sessionID: session.id) } else { onEditGuide(guide) } }
                     else { onAddGuide(value, guideLabel.isEmpty ? nil : guideLabel) }
                 }
                 showGuideEditor = false; editingGuide = nil
