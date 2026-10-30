@@ -57,6 +57,31 @@ Local resource use matters: the user already watches laptop memory closely. Pref
 - Hover readouts reserve their layout space so entering/leaving the plot does not resize its chart.
 - The session clock stops when its final producer disconnects, including terminal-side pipe breaks. A silent connected producer keeps time advancing.
 
+## Implementation feedback amendment (2026-10-30)
+
+This first-use amendment records the additional behaviors now represented in the implementation. It supplements the confirmed and proposed decisions above; where it adds a more specific behavior, use this dated wording for that behavior while retaining the earlier decision and its history. Source implementation is not evidence that every native interaction has passed manual visual acceptance.
+
+### Text events over a pipe
+
+- `pp --event` is a separate text-input mode. Every nonblank UTF-8 line becomes a session-wide vertical time guide; it creates no numeric streams and is not parsed as a sample row. `pp --event 2` routes to the existing session with public number 2. `-c` and `-s` select a new chart or session. Resolve the destination once when the connection registers, so later Target changes do not redirect the running event producer.
+- Stamp each event at receipt by `pp`, preserving the absolute timestamp in the guide. Accept CRLF and a final unterminated line at EOF. Ignore blank lines. Bound each line to 65,536 UTF-8 bytes; reject malformed UTF-8, NUL-containing, or oversized lines with a standard-error diagnostic and resume at the next newline.
+- `--event` is incompatible with `--test`, numeric line naming, and numeric unit options. A connected event producer keeps the session clock live even when no new lines arrive. EOF or a connection break ends that producer; the clock freezes when the final event or numeric producer ends. Closing the session disconnects its event producers. Incoming event guides are capture facts and do not themselves create undo history; later user edits and deletions of guides remain ordinary reversible edits.
+
+### Axis values, guides, and notifications
+
+- Axis tick labels default to decimal SI prefixes and can use binary IEC prefixes (Ki, Mi, Gi, and larger values). Guide-value entry accepts supported numeric prefixes with a unit, such as `1.5 GiB`. This changes displayed or entered quantities only; stored observations and plot coordinates remain numeric values in the configured chart unit.
+- Automatic Y scaling can include zero and accounts for horizontal value guides. A horizontal value guide can be selected as the relative value origin: axis labels show differences from that guide while data and guide coordinates remain unchanged. Explicit Y limits and chart units remain chart-level settings.
+- For charts with at most six streams, display up to three prominent local peak/trough labels per stream from actual observations in the visible time range. Do not interpolate or fabricate extrema. This is a display aid; it does not replace raw samples or selection calculations.
+- Horizontal value guides can carry a crossing alert configured for rising, falling, or either direction, with a nonnegative hysteresis band and cooldown. Evaluate accepted raw observations using the configured hysteresis and cooldown; establish a baseline for a new producer/configuration rather than inventing a crossing across a gap. Deliver macOS notifications only when notification permission is available. Vertical time guides do not have crossing alerts.
+
+### Selection and session controls
+
+- Draw distinct start and end selection markers across chart rows. Show the selected interval and its boundary mode in the inspector. Boundaries can be fixed, have the end follow now, have both ends follow now at a fixed duration, or have the start follow the end at a fixed duration. A linked boundary has a visual marker distinct from a fixed boundary. Selection inclusion can be limited to chosen streams for analysis.
+- Session windows provide rename and move-to-Trash controls; Recently Deleted sessions can be restored from the session picker. The timeline toolbar provides last 5 minutes, last 15 minutes, last hour, Show All History, Follow Now, and separate Back/Forward viewport navigation.
+- Display absolute times in local time or UTC. A selected session time guide can be used as a time reference, in which case timeline and guide labels show signed elapsed time from that instant. Stored guide timestamps remain absolute.
+
+The implementation record above has not been manually visually verified across all chart sizes, data densities, timezones, and notification-permission states. Use the acceptance scenarios and visual checks in `docs/VALIDATION.md` before calling those interactions fully validated.
+
 ## Core workflows
 
 ### Pipeline first
