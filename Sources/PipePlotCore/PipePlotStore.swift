@@ -153,6 +153,9 @@ public final class PipePlotStore {
             sessions=oldSessions; targetChartID=oldTarget; nextNumber=oldNext; epoch=oldEpoch
             lastContinuation=oldContinuation; attachments=oldAttachments; owners=oldOwners
             undoStacks=oldUndo; redoStacks=oldRedo; recency=oldRecency
+            // Restore the on-disk snapshot too: createSession/createChart may have persisted
+            // during this compound operation before a later binding check failed.
+            try? persist()
             throw error
         }
     }

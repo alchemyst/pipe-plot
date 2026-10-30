@@ -135,8 +135,8 @@ private func connectOrLaunch() throws -> SocketConnection {
     }
 }
 
-private func readServerMessage(_ connection: SocketConnection) throws -> ServerMessage {
-    guard let message = try connection.receive(ServerMessage.self) else { throw CLIError.protocolFailure("PipePlot closed the connection unexpectedly") }
+private func readServerMessage(_ connection: SocketConnection, timeout: TimeInterval = 30) throws -> ServerMessage {
+    guard let message = try connection.receive(ServerMessage.self, timeout: timeout) else { throw CLIError.protocolFailure("PipePlot closed the connection unexpectedly") }
     if case .error(let problem) = message { throw CLIError.protocolFailure(problem.message) }
     return message
 }
@@ -198,6 +198,9 @@ private func runSampler(_ options: Options) throws {
     var columnCount: Int? = nil
     var messageCount = 0
     var diagnostics = 0
+    // Invalid input can arrive before the parser has enough information to
+    // register an attachment. Retain only a small prefix until registration.
+    var pendingRejections: [InputRejection] = []
 
     func reportBounded(_ issue: ParseIssue) {
         reportBounded(message: issue.message, lineNumber: issue.lineNumber)
@@ -219,12 +222,14 @@ private func runSampler(_ options: Options) throws {
         try connection.send(ClientMessage.hello(HelloRequest(clientLabel: "pp", sink: options.sink.asSinkIntent(fresh: options.fresh), sampler: request)))
         var gotHello = false
         while true {
-            switch try readServerMessage(connection) {
+            switch try readServerMessage(connection, timeout: 12) {
             case .hello: gotHello = true
             case .ready(let ready):
                 guard gotHello else { throw CLIError.protocolFailure("PipePlot sent ready before protocol hello") }
                 if ready.streams.count != width { throw CLIError.protocolFailure("PipePlot acknowledged \(ready.streams.count) streams for \(width) columns") }
                 if ready.continued { fputs("pp: continuing previous stream group\n", stderr) }
+                for rejection in pendingRejections { try connection.send(ClientMessage.rejected(rejection)) }
+                pendingRejections.removeAll(keepingCapacity: true)
                 return connection
             case .closed: throw CLIError.protocolFailure("PipePlot closed during sampler registration")
             default: throw CLIError.protocolFailure("Unexpected response during sampler registration")
@@ -262,7 +267,9 @@ private func runSampler(_ options: Options) throws {
             case .row(let row): try sendRow(row)
             case .rejected(let issue):
                 reportBounded(issue)
-                if let connection = readyConnection { try connection.send(ClientMessage.rejected(InputRejection(issue))) }
+                let rejection = InputRejection(issue)
+                if let connection = readyConnection { try connection.send(ClientMessage.rejected(rejection)) }
+                else if pendingRejections.count < 8 { pendingRejections.append(rejection) }
             }
         }
     }

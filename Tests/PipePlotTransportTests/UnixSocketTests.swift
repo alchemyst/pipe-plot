@@ -51,6 +51,26 @@ final class UnixSocketTests: XCTestCase {
         wait(for: [received], timeout: 3)
     }
 
+    func testReceiveDeadlineBoundsAnIdleHandshake() throws {
+        let path = temporarySocketPath()
+        let timedOut = expectation(description: "idle handshake timed out")
+        let server = UnixSocketServer(socketURL: path) { connection in
+            do {
+                _ = try connection.receiveFrame(timeout: 0.05)
+                XCTFail("Expected the idle handshake deadline")
+            } catch SocketError.timedOut {
+                timedOut.fulfill()
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        }
+        try server.start()
+        defer { server.stop() }
+        let fd = try connect(path)
+        defer { Darwin.close(fd) }
+        wait(for: [timedOut], timeout: 3)
+    }
+
     func testConcurrentClientsAreServed() throws {
         let path = temporarySocketPath()
         let clientCount = 16

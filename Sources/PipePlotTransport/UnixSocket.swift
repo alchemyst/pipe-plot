@@ -48,8 +48,9 @@ public final class SocketConnection {
     }
 
     /// Returns nil on clean peer EOF. A frame without its terminating newline is rejected.
-    public func receiveFrame() throws -> Data? {
+    public func receiveFrame(timeout: TimeInterval? = nil) throws -> Data? {
         readLock.lock(); defer { readLock.unlock() }
+        let deadline = timeout.map { Date().addingTimeInterval($0) }
         while true {
             if let newline = pending.firstIndex(of: 0x0a) {
                 let frame = Data(pending[..<newline])
@@ -58,6 +59,15 @@ public final class SocketConnection {
                 return frame
             }
             guard pending.count <= Self.maximumFrameBytes else { throw SocketError.frameTooLarge }
+            if let deadline {
+                let remaining = deadline.timeIntervalSinceNow
+                guard remaining > 0 else { throw SocketError.timedOut }
+                var pfd = pollfd(fd: descriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)
+                let ms = Int32(min(Double(Int32.max), max(1, remaining * 1_000)))
+                let result = Darwin.poll(&pfd, 1, ms)
+                if result == 0 { throw SocketError.timedOut }
+                if result < 0 { if errno == EINTR { continue }; throw SocketError.system("poll", errno) }
+            }
             var scratch = [UInt8](repeating: 0, count: 16 * 1024)
             let n = Darwin.recv(descriptor, &scratch, scratch.count, 0)
             if n == 0 {
@@ -73,8 +83,8 @@ public final class SocketConnection {
         }
     }
 
-    public func receive<T: Decodable>(_ type: T.Type, decoder: JSONDecoder = JSONDecoder()) throws -> T? {
-        guard let frame = try receiveFrame() else { return nil }
+    public func receive<T: Decodable>(_ type: T.Type, decoder: JSONDecoder = JSONDecoder(), timeout: TimeInterval? = nil) throws -> T? {
+        guard let frame = try receiveFrame(timeout: timeout) else { return nil }
         return try decoder.decode(type, from: frame)
     }
 
@@ -107,6 +117,7 @@ public enum SocketError: Error, LocalizedError {
     case pathTooLong
     case frameTooLarge
     case truncatedFrame
+    case timedOut
     case closed
     case system(String, Int32)
 
@@ -115,6 +126,7 @@ public enum SocketError: Error, LocalizedError {
         case .pathTooLong: return "PipePlot socket path is too long"
         case .frameTooLarge: return "PipePlot IPC frame exceeds 1 MiB"
         case .truncatedFrame: return "PipePlot IPC connection ended in the middle of a frame"
+        case .timedOut: return "PipePlot IPC handshake timed out"
         case .closed: return "PipePlot IPC connection is closed"
         case let .system(operation, code): return "Unix socket \(operation) failed: \(String(cString: strerror(code)))"
         }
@@ -124,6 +136,10 @@ public enum SocketError: Error, LocalizedError {
 /// Accepts connections on a per-client queue. The handler owns the accepted
 /// connection and normally runs a receive loop until EOF or a protocol error.
 public final class UnixSocketServer {
+    /// Maximum number of simultaneous accepted connections. Excess clients are
+    /// closed immediately so an unbounded number of idle peers cannot consume
+    /// one worker and descriptor each.
+    public static let maximumClients = 64
     public let socketURL: URL
     private let handler: (SocketConnection) -> Void
     private let queue = DispatchQueue(label: "PipePlot.UnixSocketServer", qos: .utility)
@@ -209,9 +225,11 @@ public final class UnixSocketServer {
             let connection = SocketConnection(descriptor: client)
             lock.lock()
             let acceptClient = !stopped && listener == fd
-            if acceptClient { clients[ObjectIdentifier(connection)] = connection }
+            let belowClientLimit = clients.count < Self.maximumClients
+            if acceptClient && belowClientLimit { clients[ObjectIdentifier(connection)] = connection }
             lock.unlock()
             guard acceptClient else { connection.close(); return }
+            guard belowClientLimit else { connection.close(); continue }
             DispatchQueue.global(qos: .utility).async { [weak self, handler] in
                 defer {
                     connection.close()
