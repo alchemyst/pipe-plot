@@ -83,6 +83,11 @@ Usage:
   Options: --fresh starts a new group; --label LABEL describes the sampler.
 """
 
+// The server answers hello immediately, but valid sampler registration can wait
+// behind serialized store work. Bound the wait without treating a quiet live
+// producer as a timeout (the sampler's idle loop does not call this helper).
+private let samplerReadyTimeout: TimeInterval = 30
+
 private struct SineSampler {
     let columns: Int
     let start = Date()
@@ -223,7 +228,7 @@ private func runSampler(_ options: Options) throws {
         try connection.send(ClientMessage.hello(HelloRequest(clientLabel: "pp", sink: options.sink.asSinkIntent(fresh: options.fresh), sampler: request)))
         var gotHello = false
         while true {
-            switch try readServerMessage(connection, timeout: 12) {
+            switch try readServerMessage(connection, timeout: samplerReadyTimeout) {
             case .hello: gotHello = true
             case .ready(let ready):
                 guard gotHello else { throw CLIError.protocolFailure("PipePlot sent ready before protocol hello") }
