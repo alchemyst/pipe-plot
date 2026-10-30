@@ -11,6 +11,7 @@ private struct Options {
     var fresh = false
     var listing = false
     var testColumns: Int?
+    var event = false
 }
 
 private enum CLIError: Error, LocalizedError {
@@ -54,6 +55,7 @@ private func parseOptions(_ arguments: [String]) throws -> Options {
             }
             guard (1...32).contains(columns) else { throw CLIError.usage("--test column count must be between 1 and 32\n\(usage)") }
             options.testColumns = columns
+        case "--event": options.event = true
         default:
             if argument == "ls" && arguments.count == 1 { options.listing = true }
             else if argument.hasPrefix("-") { throw CLIError.usage("unknown option: \(argument)\n\(usage)") }
@@ -62,11 +64,14 @@ private func parseOptions(_ arguments: [String]) throws -> Options {
         index += 1
     }
     if !positional.isEmpty {
-        guard let number = Int(positional[0]), number > 0, positional.count > 1 else {
+        guard let number = Int(positional[0]), number > 0, (options.event ? positional.count == 1 : positional.count > 1) else {
             throw CLIError.usage("expected `pp <session-number> <line-name> [line-name ...]`\n\(usage)")
         }
         options.sink = .sessionNumber(number, lineNames: Array(positional.dropFirst()))
-        options.names = Array(positional.dropFirst())
+        if !options.event { options.names = Array(positional.dropFirst()) }
+    }
+    if options.event && (options.testColumns != nil || options.names != nil || options.unit != nil) {
+        throw CLIError.usage("--event cannot be combined with numeric test, line naming, or unit options\n\(usage)")
     }
     return options
 }
@@ -77,6 +82,8 @@ Usage:
   sampler | pp -n memory -u MiB        name a single line and set its unit hint
   sampler | pp -c                      create and target a chart
   sampler | pp -s                      create and target a session
+  producer | pp --event                add each input line as a session time guide
+  producer | pp --event 2              attach events to session 2
   sampler | pp 2 memory [free ...]     attach named lines in session 2
   pp ls                                list sessions, charts and lines
   pp --test [columns]                  generate one sine sample per second (default 1)
@@ -87,6 +94,73 @@ Usage:
 // behind serialized store work. Bound the wait without treating a quiet live
 // producer as a timeout (the sampler's idle loop does not call this helper).
 private let samplerReadyTimeout: TimeInterval = 30
+
+private func runEvents(_ options: Options) throws {
+    let connection = try connectOrLaunch()
+    defer { connection.close() }
+    let intent = options.sink.asSinkIntent(fresh: options.fresh)
+    try connection.send(ClientMessage.hello(HelloRequest(clientLabel: "pp --event", sink: intent, eventMode: true)))
+    var attachment: AttachmentID?
+    while attachment == nil {
+        switch try readServerMessage(connection, timeout: samplerReadyTimeout) {
+        case .hello: continue
+        case .ready(let reply): attachment = reply.attachmentID
+        case .error(let error): throw CLIError.protocolFailure(error.message)
+        case .closed: throw CLIError.protocolFailure("PipePlot closed the event connection")
+        default: continue
+        }
+    }
+    var parser = EventInputParser()
+    func consume(_ results: [EventParseResult]) throws {
+        for result in results {
+            switch result {
+            case .rejected(let message): fputs("pp: rejected event: \(message)\n", stderr)
+            case .event(let text):
+                try connection.send(ClientMessage.event(EventRow(text: text, timestamp: Date())))
+                switch try readServerMessage(connection) {
+                case .eventAccepted: break
+                case .error(let error): throw CLIError.protocolFailure(error.message)
+                case .closed: throw CLIError.protocolFailure("event session closed")
+                default: throw CLIError.protocolFailure("unexpected response to event")
+                }
+            }
+        }
+    }
+    var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+    while true {
+        var descriptors = [
+            pollfd(fd: STDIN_FILENO, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0),
+            pollfd(fd: connection.fileDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0),
+        ]
+        let ready = Darwin.poll(&descriptors, nfds_t(descriptors.count), -1)
+        if ready < 0 { if errno == EINTR { continue }; throw SocketError.system("poll", errno) }
+        let socketEvents = descriptors[1].revents
+        if socketEvents & Int16(POLLIN | POLLHUP | POLLERR) != 0 {
+            guard let message = try connection.receive(ServerMessage.self, timeout: 0.1) else {
+                throw CLIError.protocolFailure("PipePlot disconnected while reading events")
+            }
+            switch message {
+            case .closed: throw CLIError.protocolFailure("event session closed")
+            case .error(let error): throw CLIError.protocolFailure(error.message)
+            case .hello, .ready, .eventAccepted, .accepted, .snapshot, .listing: break
+            }
+        }
+        if descriptors[0].revents & Int16(POLLIN | POLLHUP | POLLERR) == 0 { continue }
+        let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)
+        if count < 0 { if errno == EINTR { continue }; throw SocketError.system("read stdin", errno) }
+        if count == 0 { break }
+        try consume(parser.append(Data(buffer[..<count])))
+    }
+    try consume(parser.finish())
+    try connection.send(ClientMessage.finish(.eof))
+    while true {
+        switch try readServerMessage(connection) {
+        case .closed: return
+        case .eventAccepted, .accepted: continue
+        default: return
+        }
+    }
+}
 
 private struct SineSampler {
     let columns: Int
@@ -385,8 +459,15 @@ do {
         }
         // Resolve the public small integer to its stable UUID before registration.
         var explicit = options
-        explicit.sink = .explicitSession(session.id, lineNames: names)
-        try runSampler(explicit)
+        if options.event {
+            explicit.sink = .explicitSession(session.id, lineNames: [])
+            try runEvents(explicit)
+        } else {
+            explicit.sink = .explicitSession(session.id, lineNames: names)
+            try runSampler(explicit)
+        }
+    } else if options.event {
+        try runEvents(options)
     } else {
         try runSampler(options)
     }

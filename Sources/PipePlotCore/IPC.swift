@@ -13,6 +13,11 @@ public struct SampleRow: Codable, Equatable, Sendable {
         self.timestamp = timestamp; self.values = values; self.sequence = sequence
     }
 }
+public struct EventRow: Codable, Equatable, Sendable {
+    public var text: String
+    public var timestamp: Date
+    public init(text: String, timestamp: Date = Date()) { self.text = text; self.timestamp = timestamp }
+}
 
 public enum SinkIntent: Codable, Equatable, Sendable {
     case target
@@ -37,13 +42,23 @@ public struct HelloRequest: Codable, Equatable, Sendable {
     public var clientLabel: String?
     public var sink: SinkIntent
     public var sampler: SamplerIntent?
-    public init(protocolVersion: Int = 1, clientLabel: String? = nil, sink: SinkIntent = .target, sampler: SamplerIntent? = nil) {
-        self.protocolVersion = protocolVersion; self.clientLabel = clientLabel; self.sink = sink; self.sampler = sampler
+    public var eventMode: Bool
+    public init(protocolVersion: Int = 1, clientLabel: String? = nil, sink: SinkIntent = .target, sampler: SamplerIntent? = nil, eventMode: Bool = false) {
+        self.protocolVersion = protocolVersion; self.clientLabel = clientLabel; self.sink = sink; self.sampler = sampler; self.eventMode = eventMode
+    }
+    private enum CodingKeys: String, CodingKey { case protocolVersion, clientLabel, sink, sampler, eventMode }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
+        clientLabel = try container.decodeIfPresent(String.self, forKey: .clientLabel)
+        sink = try container.decodeIfPresent(SinkIntent.self, forKey: .sink) ?? .target
+        sampler = try container.decodeIfPresent(SamplerIntent.self, forKey: .sampler)
+        eventMode = try container.decodeIfPresent(Bool.self, forKey: .eventMode) ?? false
     }
 }
 public enum FinishReason: String, Codable, Sendable { case eof, interrupted, clientDisconnected, sessionClosed, error }
 public enum AppCommand: Codable, Sendable { case list, snapshot(sessionID: UUID), setTarget(chartID: UUID), createChartAndTarget }
-public enum ClientMessage: Codable, Sendable { case hello(HelloRequest), row(SampleRow), rejected(InputRejection), finish(FinishReason), command(AppCommand) }
+public enum ClientMessage: Codable, Sendable { case hello(HelloRequest), row(SampleRow), event(EventRow), rejected(InputRejection), finish(FinishReason), command(AppCommand) }
 
 public struct HelloReply: Codable, Equatable, Sendable {
     public var protocolVersion: Int
@@ -82,7 +97,7 @@ public struct ReadyReply: Codable, Equatable, Sendable {
 public struct AcceptedRow: Codable, Equatable, Sendable { public var sequence: UInt64; public init(sequence: UInt64) { self.sequence=sequence } }
 public struct ProtocolError: Codable, Equatable, Sendable { public var code: String; public var message: String; public init(code: String, message: String) { self.code=code; self.message=message } }
 public enum ServerMessage: Codable, Sendable {
-    case hello(HelloReply), ready(ReadyReply), accepted(AcceptedRow), snapshot(SessionSnapshot), listing(Listing), error(ProtocolError), closed
+    case hello(HelloReply), ready(ReadyReply), accepted(AcceptedRow), eventAccepted, snapshot(SessionSnapshot), listing(Listing), error(ProtocolError), closed
 }
 
 public struct Listing: Codable, Equatable, Sendable { public var sessions: [SessionSnapshot]; public var targetChartID: ChartID?; public init(sessions:[SessionSnapshot], targetChartID:ChartID?) { self.sessions=sessions; self.targetChartID=targetChartID } }
