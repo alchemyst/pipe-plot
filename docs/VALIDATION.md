@@ -30,3 +30,16 @@ The spec's cold/warm latency and long-history resource goals are targets until m
 Measure cold and warm pipeline latency separately; inspect app and CLI RSS and idle CPU. Run long histories through the viewport reducer and compare exact selection statistics with raw data. Exercise disk-write failures, terminated IPC, an oversized line, NUL bytes, non-finite input, mixed-width rows, sleep/wake, and minimum-size windows.
 
 Automated test results do not substitute for visual interaction, sleep/wake, or sustained resource measurements.
+
+## Recorded checks — 2026-10-30
+
+- `swift test -j 4`: 19 XCTest cases passed (15 core/storage/analysis and 4 socket transport cases).
+- Release app build, ad-hoc signing and local installation succeeded on Apple Silicon with Swift 6.4 and macOS 27.0.1.
+- Installed cold pipeline retained exactly three observations and reported EOF.
+- Explicit named reattachment retained four observations on the same stream; two-column input retained an unterminated final row.
+- Closing a capturing window made a quiet CLI exit nonzero promptly; other saved sessions remained available.
+- `pp --test 2` produced two streams at approximately one-second intervals; Ctrl-C exited successfully with clean stdout and froze the session clock. `pp --test 0` failed clearly.
+- Raw history over 50,010 observations produced exact count, mean, median and regression; reduced plotting retained range endpoints within its bounded output.
+- Metadata migration preserves earlier sessions, and corrupt metadata fails instead of silently replacing the session index.
+
+The initial release was visually inspected for line rendering, axis labels and the now marker. Final drag-to-now snapping and hover-height checks were blocked by the Mac being locked. The code paths are implemented, but these interactions still need a hands-on check. Sustained interaction-latency, sleep/wake, disk-full and week-scale resource checks remain unmeasured; no performance budget is claimed.

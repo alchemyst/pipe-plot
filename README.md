@@ -33,6 +33,10 @@ The target sink is explicit and shared across windows. Changing focus never redi
 
 A plain rerun can continue the latest disconnected group if the target has not changed and the column count matches. Concurrent or ambiguous captures create new streams. This rule does not identify shell commands; use a session number and line names when you need explicit identity, or `--fresh` to request new lines.
 
+New charts show connecting lines by default; dots can be enabled independently. Hover readouts reserve their space, and dragging a selection end near the now marker links that boundary to the session clock.
+
+The session clock advances while at least one producer remains connected, even during silence. When its final producer disconnects, the clock freezes at disconnect time and resumes on the next connection.
+
 Closing a session window stops capture into that session but retains its data. EOF means input ended; it does not establish whether the upstream command succeeded. Upstream programs may buffer output before `pp` sees it.
 
 ## Development
