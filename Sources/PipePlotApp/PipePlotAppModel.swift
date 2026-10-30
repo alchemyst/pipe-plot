@@ -10,6 +10,8 @@ import PipePlotTransport
 final class PipePlotAppModel {
     let store: PipePlotStore
     private let queryStore: SampleStore
+    private let crossings = GuideCrossingDetector()
+    private let notifications: GuideNotifications
     private var server: UnixSocketServer?
     private let connectionRegistry = ConnectionRegistry()
     private let appInstanceID = UUID()
@@ -19,6 +21,7 @@ final class PipePlotAppModel {
     private var serverStarted = false
     private(set) var sessions: [SessionID: SessionSnapshot] = [:]
     private(set) var errorMessage: String?
+    private(set) var editRevision = 0
     private(set) var activeSessionID: SessionID?
     private(set) var selectedChartIDs: [SessionID: ChartID] = [:]
     private(set) var forecastStatuses: [SessionID: ForecastStatus] = [:]
@@ -32,6 +35,7 @@ final class PipePlotAppModel {
     let refreshTimer = Timer.publish(every: 0.75, on: .main, in: .common).autoconnect()
 
     init(databaseURL: URL? = nil) {
+        notifications = GuideNotifications(enabled: databaseURL == nil)
         do {
             let database = databaseURL ?? PipePlotLocations.supportDirectory.appendingPathComponent("pipeplot.sqlite")
             store = try PipePlotStore(databaseURL: database)
@@ -138,7 +142,12 @@ final class PipePlotAppModel {
         catch { errorMessage = error.localizedDescription }
     }
     func updateGuide(_ guide: Guide, chartID: ChartID, sessionID: SessionID) {
-        do { try store.upsertGuide(guide, chartID: chartID); refresh(sessionID) }
+        do {
+            try store.upsertGuide(guide, chartID: chartID); refresh(sessionID)
+            if guide.alert != nil { notifications.requestAuthorization { [weak self] message in
+                DispatchQueue.main.async { if let message { self?.errorMessage = message } }
+            } }
+        }
         catch { errorMessage = error.localizedDescription }
     }
     func removeGuide(_ guide: Guide, chartID: ChartID, sessionID: SessionID) {
@@ -197,7 +206,7 @@ final class PipePlotAppModel {
     func refresh(_ id: SessionID) {
         do {
             if let value = try store.snapshot(sessionID: id) {
-                if sessions[id] != value { sessions[id] = value }
+                if sessions[id] != value { sessions[id] = value; editRevision &+= 1 }
                 refreshForecast(value)
             }
         }
@@ -214,7 +223,8 @@ final class PipePlotAppModel {
     func refreshAll() {
         do {
             let all = try store.listSessions() + store.listDeletedSessions()
-            sessions = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
+            let updated = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
+            if sessions != updated { sessions = updated; editRevision &+= 1 }
             for session in all { refreshForecast(session) }
             queries.retain(Set(all.filter { $0.isOpen && !$0.isDeleted }.flatMap(\.charts).flatMap(\.streams).map(\.id)))
         } catch { errorMessage = error.localizedDescription }
@@ -254,7 +264,7 @@ final class PipePlotAppModel {
     }
     func defaultStart(_ session: SessionSnapshot, now: Date? = nil) -> Date {
         let now = now ?? sessionNow(session)
-        let earliest = session.charts.flatMap(\.streams).compactMap(\.firstSampleAt).min()
+        let earliest = (session.charts.flatMap(\.streams).compactMap(\.firstSampleAt) + session.timeGuides.map { Date(timeIntervalSince1970: $0.value) }).min()
         let span = session.timeline.historySpan ?? 15 * 60
         return max(earliest ?? now.addingTimeInterval(-span), now.addingTimeInterval(-span))
     }
@@ -264,10 +274,18 @@ final class PipePlotAppModel {
         let range = resolvedRange(selection, now: sessionNow(for: stream))
         return queries.stats(stream, key: queryKey(stream, range: range), store: queryStore) { [weak self] in self?.errorMessage = $0.localizedDescription }
     }
+    func setTimeZone(_ zone: PlotTimeZone, session: SessionSnapshot) {
+        var timeline = session.timeline; timeline.timeZone = zone; saveTimeline(timeline, session.id)
+    }
+    func setTimeReference(_ guide: UUID?, session: SessionSnapshot) {
+        var timeline = session.timeline; timeline.referenceTimeGuideID = guide; saveTimeline(timeline, session.id)
+    }
     func resolvedSelectionBounds(_ selection: TimeSelection, session: SessionSnapshot) -> ClosedRange<Date> {
         switch selection.mode {
         case .fixed:
             return min(selection.start, selection.end)...max(selection.start, selection.end)
+        case .startFollowsEnd(let duration):
+            return selection.end.addingTimeInterval(-duration)...selection.end
         case .endFollowsNow:
             let now = sessionNow(session)
             return min(selection.start, now)...max(selection.start, now)
@@ -292,6 +310,7 @@ final class PipePlotAppModel {
         let now = now ?? clockPulse
         switch selection.mode {
         case .fixed: return min(selection.start, selection.end)...max(selection.start, selection.end)
+        case .startFollowsEnd(let duration): return selection.end.addingTimeInterval(-duration)...selection.end
         case .endFollowsNow: return min(selection.start, now)...max(selection.start, now)
         case .bothFollowNow(let duration): return now.addingTimeInterval(-duration)...now
         }
@@ -306,7 +325,7 @@ final class PipePlotAppModel {
         navigate(timeline, session: session)
     }
     func showAllHistory(_ session: SessionSnapshot) {
-        var starts: [Date] = []
+        var starts = session.timeGuides.map { Date(timeIntervalSince1970: $0.value) }
         for chart in session.charts { for stream in chart.streams { if let first = stream.firstSampleAt { starts.append(first) } } }
         let now = sessionNow(session)
         var timeline = session.timeline; timeline.followNow = false; timeline.visibleStart = starts.min() ?? now.addingTimeInterval(-15 * 60); timeline.visibleEnd = now; timeline.historySpan = nil
@@ -356,7 +375,7 @@ final class PipePlotAppModel {
                 let detail = "n \(fitted.count) · \(Int(range.upperBound.timeIntervalSince(range.lowerBound)))s training · slope \(slope)/s"
                 let remaining = crossing.timeIntervalSince(now)
                 let countdown = remaining < 60 ? String(format: "%.0f s", remaining) : (remaining < 3600 ? String(format: "%.1f min", remaining / 60) : (remaining < 86400 ? String(format: "%.1f h", remaining / 3600) : String(format: "%.1f days", remaining / 86400)))
-                message = crossing > now ? "Crossing \(crossing.formatted(date: .abbreviated, time: .standard)) · in \(countdown) · \(detail)" : "No future crossing · \(detail)"
+                message = crossing > now ? "Crossing \(TimeText.format(crossing, zone: session.timeline.timeZone ?? .local, includeDate: true)) · in \(countdown) · \(detail)" : "No future crossing · \(detail)"
             } else { message = fitted == nil ? (queries.isFitting(configuration.id) ? "Calculating…" : "Not enough distinct sample times") : "No finite crossing predicted" }
             return ForecastStatus(configuration: configuration, fit: fitted, guide: guide, crossing: crossing, message: message, fitSampleCount: count, fitRange: range)
         }
@@ -427,15 +446,25 @@ final class PipePlotAppModel {
         let owner = UUID()
         let connectionKey = UUID()
         var attachment: AttachmentID?
-        defer { connectionRegistry.remove(connectionKey); connection.close() }
+        var eventMode = false
+        var registered: ReadyReply?
+        defer {
+            if let id = registered?.attachmentID { crossings.finish(attachment: id) }
+            connectionRegistry.remove(connectionKey); connection.close()
+        }
         do {
             guard let first = try connection.receive(ClientMessage.self, timeout: 5) else { return }
             guard case let .hello(request) = first else { throw protocolFailure("handshake", "Expected hello") }
             try connection.send(ServerMessage.hello(HelloReply(appInstanceID: appInstanceID)))
             guard request.protocolVersion == 1 else { throw protocolFailure("protocol_version", "Unsupported PipePlot protocol version") }
-            if let sampler = request.sampler {
-                let ready = try store.registerSampler(intent: request.sink, sampler: sampler, owner: owner)
+            if request.eventMode == true || request.sampler != nil {
+                eventMode = request.eventMode == true
+                guard !(eventMode && request.sampler != nil) else { throw protocolFailure("handshake", "Choose events or numeric samples") }
+                let ready: ReadyReply
+                if eventMode { ready = try store.registerEventConnection(intent: request.sink, owner: owner) }
+                else { ready = try store.registerSampler(intent: request.sink, sampler: request.sampler!, owner: owner) }
                 attachment = ready.attachmentID
+                registered = ready
                 connectionRegistry.add(connectionKey, sessionID: ready.sessionID, connection: connection)
                 try connection.send(ServerMessage.ready(ready))
                 DispatchQueue.main.async { [weak self] in
@@ -451,9 +480,19 @@ final class PipePlotAppModel {
                 case .rejected(let rejection):
                     guard let attachmentID = attachment else { throw protocolFailure("not_ready", "No sampler was registered") }
                     try store.recordRejectedInput(rejection, to: attachmentID)
+                case .event(let event):
+                    guard eventMode, let attachmentID = attachment else { throw protocolFailure("not_ready", "No event connection was registered") }
+                    try store.appendEvent(event.text, at: event.timestamp, to: attachmentID)
+                    try connection.send(ServerMessage.eventAccepted)
                 case .row(let row):
-                    guard let attachmentID = attachment else { throw protocolFailure("not_ready", "No sampler was registered") }
+                    guard !eventMode, let attachmentID = attachment else { throw protocolFailure("not_ready", "No sampler was registered") }
                     let seq = try store.append(row, to: attachmentID).first ?? row.sequence
+                    if let ready = registered, let session = try store.snapshot(sessionID: ready.sessionID) {
+                        let events = crossings.evaluate(row, streams: store.currentAttachmentStreamIDs(attachmentID), attachment: attachmentID, session: session)
+                        if !events.isEmpty { DispatchQueue.main.async { [weak self] in
+                            for event in events { self?.notifications.deliver(event) }
+                        } }
+                    }
                     try connection.send(ServerMessage.accepted(AcceptedRow(sequence: seq)))
                 case .finish(let reason):
                     if let attachmentID = attachment { try store.finishAttachment(attachmentID, reason: reason); attachment = nil }
