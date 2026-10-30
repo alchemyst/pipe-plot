@@ -46,7 +46,7 @@ public enum NumericText {
         let magnitude = abs(value)
         let prefix = prefixes.first(where: { magnitude >= $0.0 }) ?? prefixes.last!
         let scaled = value / prefix.0
-        let number = scaled.formatted(.number.locale(Locale(identifier: "en_US_POSIX")).precision(.significantDigits(1...3)))
+        let number = scaled.formatted(.number.locale(Locale(identifier: "en_US_POSIX")).grouping(.never).precision(.significantDigits(1...3)))
         let suffix = prefix.1 + (unit ?? "")
         return number + (suffix.isEmpty ? "" : " \(suffix)")
     }
@@ -73,9 +73,10 @@ public enum NumericText {
             "Ki": 1_024, "Mi": 1_048_576, "Gi": 1_073_741_824, "Ti": 1_099_511_627_776,
             "Pi": 1_125_899_906_842_624, "Ei": 1_152_921_504_606_846_976
         ]
+        let commonUnits: Set<String> = ["B", "byte", "bytes", "b", "bit", "bits", "W", "V", "A", "s", "Hz", "J", "Pa", "F", "C", "K", "mol", "g", "L", "l", "N", "Wh", "W/h"]
+        if tail == expectedUnit || (expectedUnit == nil && commonUnits.contains(tail)) { return number }
         guard let prefix = factors.keys.sorted(by: { $0.count > $1.count }).first(where: { tail.hasPrefix($0) }) else { return nil }
         let unit = String(tail.dropFirst(prefix.count))
-        let commonUnits: Set<String> = ["B", "byte", "bytes", "b", "bit", "bits", "W", "V", "A", "s", "Hz", "J", "Pa", "F", "C", "K", "mol", "m", "g", "L", "l", "N", "Wh", "W/h"]
         guard unit.isEmpty || unit == expectedUnit || commonUnits.contains(unit) else { return nil }
         let result = number * factors[prefix]!
         return result.isFinite ? result : nil

@@ -145,13 +145,13 @@ final class PlotInteractionView: NSView {
         lastPoint = point
         dragMoved = false
 
-        if let edge = hitSelectionEdge(at: point), event.clickCount >= 2, point.y >= bounds.maxY - 30 {
+        if let edge = hitSelectionHandle(at: point), event.clickCount >= 2 {
             onSelectionModeToggle(edge)
             activeDrag = nil
             return
         }
         if event.clickCount >= 2, plotBounds.contains(point), hitGuide(at: point) == nil,
-           hitSelectionEdge(at: point) == nil {
+           hitSelectionHandle(at: point) == nil {
             onBackgroundDoubleClick(timeAtX(point.x))
             activeDrag = nil
             return
@@ -189,8 +189,17 @@ final class PlotInteractionView: NSView {
         case let .selection(start, end, edge):
             let time = timeAtX(point.x)
             switch edge {
-            case .start: onSelection(min(time, end), max(time, end), .start, false, .changed)
-            case .end: onSelection(min(start, time), max(start, time), .end, isAtOrBeyondNow(point.x), .changed)
+            case .start: onSelection(min(time, end), max(time, end), .start, tracksNowFromStart, .changed)
+            case .end:
+                let linked = isAtOrBeyondNow(point.x)
+                if case .startFollowsEnd(let duration) = selectionMode {
+                    let upper = linked ? now : time
+                    onSelection(upper.addingTimeInterval(-duration), upper, .end, linked, .changed)
+                } else if case .bothFollowNow(let duration) = selectionMode, linked {
+                    onSelection(now.addingTimeInterval(-duration), now, .end, true, .changed)
+                } else {
+                    onSelection(min(start, time), max(start, time), .end, linked, .changed)
+                }
             case nil:
                 let lower = min(timeAtX(dragOrigin.x), time), upper = max(timeAtX(dragOrigin.x), time)
                 onSelection(lower, upper, nil, isAtOrBeyondNow(xAtTime(upper)), .changed)
@@ -219,17 +228,24 @@ final class PlotInteractionView: NSView {
         case let .selection(start, end, edge):
             if !dragMoved {
                 onSelection(start, end, edge, false, .cancelled)
-                onBackgroundClick()
+                if edge == nil { onBackgroundClick() }
                 self.activeDrag = nil
                 return
             }
             let time = timeAtX(point.x)
             switch edge {
-            case .start: onSelection(min(time, end), max(time, end), .start, false, .ended)
+            case .start: onSelection(min(time, end), max(time, end), .start, tracksNowFromStart, .ended)
             case .end:
                 let linked = isAtOrBeyondNow(point.x) && start <= now
-                let lower = min(start, linked ? now : time), upper = max(start, linked ? now : time)
-                onSelection(lower, upper, .end, linked, .ended)
+                if case .startFollowsEnd(let duration) = selectionMode {
+                    let upper = linked ? now : time
+                    onSelection(upper.addingTimeInterval(-duration), upper, .end, linked, .ended)
+                } else if case .bothFollowNow(let duration) = selectionMode, linked {
+                    onSelection(now.addingTimeInterval(-duration), now, .end, true, .ended)
+                } else {
+                    let lower = min(start, linked ? now : time), upper = max(start, linked ? now : time)
+                    onSelection(lower, upper, .end, linked, .ended)
+                }
             case nil:
                 let origin = timeAtX(dragOrigin.x)
                 let linked = isAtOrBeyondNow(xAtTime(max(origin, time)))
@@ -287,7 +303,7 @@ final class PlotInteractionView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard let selectionRange, let context = NSGraphicsContext.current?.cgContext else { return }
-        let y = min(bounds.maxY - 16, max(bounds.minY + 10, bounds.maxY - 16))
+        let y = min(plotBounds.maxY - 8, max(bounds.minY + 10, plotBounds.maxY - 8))
         for (index, date) in [selectionRange.lowerBound, selectionRange.upperBound].enumerated() {
             let x = xAtTime(date)
             let centerY = y
@@ -343,6 +359,11 @@ final class PlotInteractionView: NSView {
         return startDistance <= endDistance ? .start : .end
     }
 
+    private func hitSelectionHandle(at point: CGPoint) -> PlotSelectionEdge? {
+        guard abs(point.y - (plotBounds.maxY - 8)) <= 10 else { return nil }
+        return hitSelectionEdge(at: point)
+    }
+
     private func edgeGuideOrientation(at point: CGPoint) -> GuideOrientation? {
         let edgeInset: CGFloat = 15
         // Keep pulls in axis gutters, outside the plot. In particular, points
@@ -355,6 +376,12 @@ final class PlotInteractionView: NSView {
     }
 
     private func isAtOrBeyondNow(_ screenX: CGFloat) -> Bool { screenX >= xAtTime(now) - 18 }
+    private var tracksNowFromStart: Bool {
+        switch selectionMode {
+        case .endFollowsNow?, .bothFollowNow?: true
+        default: false
+        }
+    }
 
     private func guideValue(_ orientation: GuideOrientation, at point: CGPoint) -> Double {
         switch orientation {

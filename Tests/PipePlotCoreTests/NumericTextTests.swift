@@ -8,6 +8,8 @@ final class NumericTextTests: XCTestCase {
         XCTAssertEqual(NumericText.parse("1.5 MiB"), 1.5 * 1_048_576)
         XCTAssertEqual(NumericText.parse("2kB"), 2_000)
         XCTAssertEqual(NumericText.parse("1e3"), 1_000)
+        XCTAssertEqual(NumericText.parse("10 B"), 10)
+        XCTAssertEqual(NumericText.parse("10 m", unit: "m"), 10)
     }
 
     func testPrefixParsingRejectsMalformedAndNonFiniteInput() {

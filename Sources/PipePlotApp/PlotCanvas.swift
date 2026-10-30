@@ -46,15 +46,31 @@ struct PlotCanvas: View {
                     onSelection: { start, end, edge, endFollowsNow, phase in
                         switch phase {
                         case .began, .changed:
-                            selectionStart = start; selectionPreview = end
-                            selectionLinkedPreview = endFollowsNow || (edge == .start && selection?.mode == .endFollowsNow)
+                            var previewStart = start
+                            var previewEnd = end
+                            if edge == .end, case .startFollowsEnd(let duration) = selection?.mode {
+                                previewStart = end.addingTimeInterval(-duration)
+                                previewEnd = end
+                            }
+                            selectionStart = previewStart; selectionPreview = previewEnd
+                            selectionLinkedPreview = endFollowsNow || (selection.map { $0.mode != .fixed } ?? false)
                         case .ended:
                             selectionStart = nil; selectionPreview = nil; selectionLinkedPreview = false
                             if abs(end.timeIntervalSince(start)) > 0.5 {
                                 var mode: SelectionMode = .fixed
-                                if edge == .start, selection?.mode == .endFollowsNow { mode = .endFollowsNow }
-                                else if endFollowsNow { mode = .endFollowsNow }
-                                onSelectionCommit(start, mode == .endFollowsNow ? now : end, mode)
+                                let duration = max(0.5, abs(end.timeIntervalSince(start)))
+                                switch (edge, selection?.mode) {
+                                case (.start, .endFollowsNow?): mode = .endFollowsNow
+                                case (.start, .startFollowsEnd?): mode = .startFollowsEnd(duration: duration)
+                                case (.start, .bothFollowNow?): mode = .bothFollowNow(duration: duration)
+                                case (.end, .startFollowsEnd?) where endFollowsNow: mode = .bothFollowNow(duration: duration)
+                                case (.end, .startFollowsEnd?): mode = .startFollowsEnd(duration: duration)
+                                case (.end, .bothFollowNow?) where endFollowsNow: mode = .bothFollowNow(duration: duration)
+                                case (_, _) where endFollowsNow: mode = .endFollowsNow
+                                default: break
+                                }
+                                let committedEnd = (mode == .endFollowsNow || isBothFollowNow(mode)) ? now : end
+                                onSelectionCommit(start, committedEnd, mode)
                             }
                         case .cancelled:
                             selectionStart = nil; selectionPreview = nil; selectionLinkedPreview = false
@@ -95,6 +111,11 @@ struct PlotCanvas: View {
             }
             return min(start, end)...max(start, end)
         }
+    }
+
+    private func isBothFollowNow(_ mode: SelectionMode) -> Bool {
+        if case .bothFollowNow = mode { return true }
+        return false
     }
     private func plotRect(for size: CGSize) -> CGRect { CGRect(x: 56, y: 4, width: max(1, size.width - 56), height: max(1, size.height - 22)) }
     private func date(at x: CGFloat, width: CGFloat, plot: CGRect) -> Date {
