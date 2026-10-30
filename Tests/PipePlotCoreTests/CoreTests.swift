@@ -56,6 +56,36 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(fourth.continued)
     }
 
+    func testExplicitRegistrationUsesSessionMRUAndRejectsAtomically() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        let session=try store.createSession()
+        let first=session.charts[0].id
+        let second=try store.createChart(in:session.id,after:first).id
+        _=try store.setTarget(first)
+        let ready=try store.registerSampler(intent:.session(sessionID:session.id,lineNames:["named"]),sampler:SamplerIntent(columnCount:1))
+        XCTAssertEqual(ready.chartID,first)
+        let before=try store.listSessions().count, target=store.currentTarget()
+        XCTAssertThrowsError(try store.registerSampler(intent:.newSession,sampler:SamplerIntent(columnCount:2,requestedNames:["same","same"])))
+        XCTAssertEqual(try store.listSessions().count,before)
+        XCTAssertEqual(store.currentTarget(),target)
+        XCTAssertNotEqual(second,first)
+    }
+
+    func testUndoCreatedChartMakesCollapsedPredecessorVisible() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        let session=try store.createSession(), previous=session.charts[0].id
+        let made=try store.createChart(in:session.id,after:previous)
+        let line=try store.registerSampler(intent:.chart(chartID:made.id,lineNames:[]),sampler:SamplerIntent(columnCount:1))
+        try store.moveStream(line.streams[0].id,to:previous)
+        XCTAssertFalse(try XCTUnwrap(store.snapshot(sessionID:session.id)?.charts.first{$0.id==previous}).isVisible)
+        XCTAssertTrue(try store.undo(sessionID:session.id))
+        XCTAssertTrue(try XCTUnwrap(store.snapshot(sessionID:session.id)?.charts.first{$0.id==previous}).isVisible)
+    }
+
     func testUndoCreatedChartKeepsArrivalsAndRedoLeavesLaterLinesAlone() throws {
         let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
         defer{try? FileManager.default.removeItem(at:dir)}

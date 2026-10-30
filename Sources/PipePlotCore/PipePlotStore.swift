@@ -96,6 +96,12 @@ public final class PipePlotStore {
 
     @discardableResult public func registerSampler(intent:SinkIntent, sampler:SamplerIntent, owner:UUID=UUID()) throws -> ReadyReply {
         lock.lock(); defer{lock.unlock()}
+        // Registration may create a session/chart before name binding completes. Keep the
+        // operation atomic across validation and persistence failures.
+        let oldSessions=sessions, oldTarget=targetChartID, oldNext=nextNumber, oldEpoch=epoch
+        let oldContinuation=lastContinuation, oldAttachments=attachments, oldOwners=owners
+        let oldUndo=undoStacks, oldRedo=redoStacks, oldRecency=recency
+        do {
         guard sampler.columnCount>0, sampler.requestedNames.map({$0.count==sampler.columnCount}) ?? true else { throw DomainError.invalidColumnCount }
         var chartID:ChartID; var explicitNames=sampler.requestedNames ?? []
         switch intent {
@@ -109,7 +115,7 @@ public final class PipePlotStore {
             guard let si=sessionIndex(sid) else { throw DomainError.unknownSession }
             sessions[si].isOpen=true
             if sessions[si].charts.isEmpty { let c=ChartRecord(id:UUID(),title:"Chart 1",streams:[],settings:AxisSettings(),guides:[],isVisible:true); sessions[si].charts=[c] }
-            chartID=sessions[si].charts.last!.id; if !names.isEmpty { explicitNames=names }
+            chartID=recency.first(where:{ id in findChartIndices(id).map{$0.0==si && sessions[$0.0].charts[$0.1].isVisible} ?? false }) ?? sessions[si].charts.last!.id; if !names.isEmpty { explicitNames=names }
         case .chart(let cid,let names):
             guard let (chartSession,chartIndex)=findChartIndices(cid),sessions[chartSession].isOpen,sessions[chartSession].charts[chartIndex].isVisible else { throw DomainError.unknownChart }; chartID=cid; if !names.isEmpty { explicitNames=names }
         case .target,.fresh:
@@ -131,7 +137,7 @@ public final class PipePlotStore {
                 else { resolved.append(StreamRecord(id:UUID(),name:name,state:.live,unitHint:sampler.unitHint)) }
             }
             for var line in resolved { line.state = .live; if line.unitHint == nil { line.unitHint=sampler.unitHint }; streamIDs.append(line.id); descriptors.append(descriptor(line)); if streamLocation(line.id)==nil { sessions[si].charts[ci].streams.append(line) } else if let (li,lj)=streamIndices(line.id) { sessions[li].charts[lj].streams[sessions[li].charts[lj].streams.firstIndex{$0.id==line.id}!].state = .live } }
-        } else if intent == .target, let previous=lastContinuation, previous.epoch==epoch, previous.chartID==chartID, previous.streamIDs.count==sampler.columnCount, !previous.active {
+        } else if intent == .target, let previous=lastContinuation, previous.epoch==epoch, previous.chartID==chartID, previous.streamIDs.count==sampler.columnCount, !previous.active, previous.streamIDs.allSatisfy({owners[$0] == nil}) {
             streamIDs=previous.streamIDs; continued=true
             for id in streamIDs { guard let (li,lj)=streamIndices(id) else { throw DomainError.unknownStream }; sessions[li].charts[lj].streams[sessions[li].charts[lj].streams.firstIndex{$0.id==id}!].state = .live; descriptors.append(descriptor(sessions[li].charts[lj].streams.first{$0.id==id}!)) }
         } else {
@@ -143,6 +149,12 @@ public final class PipePlotStore {
         if intent == .target { lastContinuation=Continuation(epoch:epoch,chartID:chartID,streamIDs:streamIDs,active:true) }
         touch(chartID); try persist()
         return ReadyReply(sessionID:sessions[si].id,chartID:chartID,attachmentID:aid,streams:descriptors,continued:continued)
+        } catch {
+            sessions=oldSessions; targetChartID=oldTarget; nextNumber=oldNext; epoch=oldEpoch
+            lastContinuation=oldContinuation; attachments=oldAttachments; owners=oldOwners
+            undoStacks=oldUndo; redoStacks=oldRedo; recency=oldRecency
+            throw error
+        }
     }
 
     @discardableResult public func append(_ row:SampleRow,to attachmentID:AttachmentID) throws -> [UInt64] {
@@ -188,10 +200,19 @@ public final class PipePlotStore {
         let sessionIndex=locations[0].0
         guard let firstDest=destinationStreamIDs.first.flatMap(streamIndices),firstDest.0==sessionIndex else { throw DomainError.invalidMove }
         var attachmentID:AttachmentID?
+        var endedGroup=false
         for id in sourceStreamIDs {
-            guard let aid=owners[id],attachments[aid]?.active==true else { throw DomainError.streamBusy(findStream(id)?.name ?? id.uuidString) }
+            guard let aid=owners[id],attachments[aid]?.active==true else {
+                guard findStream(id)?.state == .ended else { throw DomainError.streamBusy(findStream(id)?.name ?? id.uuidString) }
+                endedGroup=true; continue
+            }
             if let attachmentID, attachmentID != aid { throw DomainError.invalidMove }
             attachmentID=aid
+        }
+        if endedGroup {
+            guard attachmentID == nil, sourceStreamIDs.allSatisfy({findStream($0)?.state == .ended}),
+                  let ended=attachments.values.first(where:{ !$0.active && Set($0.streamIDs)==Set(sourceStreamIDs) }) else { throw DomainError.invalidMove }
+            attachmentID=ended.id
         }
         guard let aid=attachmentID, let attachment=attachments[aid],Set(attachment.streamIDs)==Set(sourceStreamIDs),attachment.streamIDs.count==sourceStreamIDs.count else { throw DomainError.invalidMove }
         for id in destinationStreamIDs {
@@ -275,13 +296,17 @@ public final class PipePlotStore {
             guard destinationIndex < sessions[si].charts.count else { return restoreAction(action,sessionID:sessionID,undo:undo) }
             let chart=sessions[si].charts.remove(at:ci)
             let moved=chart.streams
+            sessions[si].charts[destinationIndex].isVisible=true
             sessions[si].charts[destinationIndex].streams.append(contentsOf:moved)
             if targetChartID==cid { fallbackTarget() }
             action = .restoredChart(sessionID:sid,chart:chart,index:index,streamIDs:moved.map(\.id))
         case .restoredChart(let sid,let chartRecord,let index,let ids):
             var chart=chartRecord; chart.streams=[]
             for id in ids { if let location=streamIndices(id),location.0==si,let stream=removeStream(id,at:location) { chart.streams.append(stream) } }
-            sessions[si].charts.insert(chart,at:min(index,sessions[si].charts.count))
+            if let existing=findChartIndices(chart.id), existing.0==si {
+                sessions[si].charts[existing.1].streams.append(contentsOf:chart.streams)
+                sessions[si].charts[existing.1].isVisible=true
+            } else { sessions[si].charts.insert(chart,at:min(index,sessions[si].charts.count)) }
             action = .createdChart(sessionID:sid,chartID:chart.id,index:index)
         case .movedStream(let id,let from,let to,let fromWasVisible,let toWasVisible,let fromNowVisible,let toNowVisible):
             if let destination=findChartIndices(undo ? from : to),let sourceChart=findChartIndices(undo ? to : from),let stream=removeStream(id,at:sourceChart) {
@@ -324,7 +349,10 @@ public final class PipePlotStore {
         try samples.reassignSegments(transfers)
         let sourceIDs=action.items.map(\.sourceID), destinationIDs=action.items.map(\.destinationID)
         if reverse {
-            for id in destinationIDs { owners.removeValue(forKey:id) }
+            for id in destinationIDs where owners[id] != nil && owners[id] != action.attachmentID {
+                throw DomainError.streamBusy(findStream(id)?.name ?? id.uuidString)
+            }
+            for id in destinationIDs where owners[id] == action.attachmentID { owners.removeValue(forKey:id) }
             for (item,sourceID) in zip(action.items,sourceIDs) {
                 if let (si,ci)=findChartIndices(item.sourceChartID) {
                     var record=item.sourceRecord
