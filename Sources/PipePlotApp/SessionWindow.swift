@@ -104,7 +104,7 @@ struct SessionWindow: View {
             Button { model.createSessionWindow() } label: { Label("New Session", systemImage: "plus.rectangle.on.folder") }
                 .help("Create a session in a new window (⌘N)")
             Button { createChart() } label: { Label("Add Chart", systemImage: "chart.bar.xaxis") }
-                .help("Create a chart below and make it the target sink (⌘⇧D)")
+                .help("Create a chart below and make it the Target (⌘⇧D)")
                 .dropDestination(for: String.self) { items, _ in
                     guard let rawID = items.first, let id = UUID(uuidString: rawID) else { return false }
                     model.moveToNewChart(id, sessionID: sessionID, after: selectedChartID)

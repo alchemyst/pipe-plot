@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(CDPATH= cd "$(dirname "$0")/.." && /bin/pwd -P)"
 "$repo_root/scripts/build-app-bundle.sh"
 bin_dir="$(swift build -c release --show-bin-path)"
 mkdir -p "$HOME/Applications" "$HOME/.local/bin"

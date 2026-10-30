@@ -309,13 +309,13 @@ final class PlotInteractionView: NSView {
             let centerY = y
             let path = NSBezierPath()
             if index == 0 {
-                path.move(to: CGPoint(x: x - 7, y: centerY))
-                path.line(to: CGPoint(x: x + 4, y: centerY - 7))
-                path.line(to: CGPoint(x: x + 4, y: centerY + 7))
-            } else {
                 path.move(to: CGPoint(x: x + 7, y: centerY))
                 path.line(to: CGPoint(x: x - 4, y: centerY - 7))
                 path.line(to: CGPoint(x: x - 4, y: centerY + 7))
+            } else {
+                path.move(to: CGPoint(x: x - 7, y: centerY))
+                path.line(to: CGPoint(x: x + 4, y: centerY - 7))
+                path.line(to: CGPoint(x: x + 4, y: centerY + 7))
             }
             path.close()
             context.setStrokeColor(NSColor.controlAccentColor.cgColor)

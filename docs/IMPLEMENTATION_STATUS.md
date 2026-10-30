@@ -43,3 +43,22 @@ Physical sleep/wake, a controlled hour-long paused-view run, week-scale resource
 - The installed sine sampler continued a group, collected both streams and stopped cleanly on Ctrl-C. No test producers were left running.
 - Native screenshots verified the corrected shared ruler, line plots and frozen end-of-capture clock. A pointer selection snapped to now and displayed the shared statistics inspector; its left-edge button changed the selection to fixed-duration following. Cmd-Shift-D created/targeted a second chart. A stream rename sheet was cancelled without changing its name.
 - Interactive validation stopped when the user noticed the menus. The complete drag/drop, multiwindow, forecast/guide and sleep/wake acceptance matrix remains unverified; automated tests and source implementation do not substitute for those checks.
+
+## First-use feedback — 2026-10-30
+
+Implemented the dated SPEC amendment: SI/IEC axis labels and postfix guide entry;
+zero and guide-aware automatic bounds; editable/deletable labelled time guides;
+stable guide and forecast managers; independent triangular selection-end tracking;
+observed extrema and latest-value labels; relative time/value origins; Local/UTC;
+session rename/trash controls; and newline-delimited `pp --event` capture.
+Horizontal-guide alarms evaluate accepted raw samples with directional hysteresis
+and cooldown, then request ordinary macOS notification delivery. Enable an alarm
+to request notification permission. Incoming events remain external captured facts;
+manual guide additions and deletions are undoable.
+
+Automated regression suite: 63 XCTest cases pass (50 core, 8 transport, 5 app).
+Coverage includes guide command invalidation and undo/redo, event-only history and
+saved display preferences, event validation/rollback, numeric parsing, extrema,
+and crossing direction/deadband/cooldown. New native gesture rendering, menu
+stability and delivered notification banners have not been manually verified.
+Desktop interaction remains paused following the user's report of menus opening.

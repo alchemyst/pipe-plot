@@ -57,3 +57,17 @@ Final native checks verified a visible cold-start window, ruler alignment,
 snap-to-now selection, the shared inspector and the left-edge duration-follow
 button. Further interactive checks were stopped after the user noticed menus
 opening; do not report the entire manual acceptance matrix as passed.
+
+## First-use feedback implementation — 2026-10-30
+
+The serial full suite passes 63 XCTest cases: 50 core, 8 transport and 5 app.
+The guide regression checks exercise model undo/redo and observable command
+invalidation; they do not simulate Cmd-Z in a native window. Event tests cover
+chunked/newline input, lifecycle, event-only history, persisted settings and failed
+registration rollback. Crossing tests cover direction, hysteresis, cooldown,
+repeated threshold values, and new-attachment baselines. Numeric and peak tests
+exercise SI/IEC parsing and display helper behavior.
+
+No native pointer operations were performed for this feedback pass. Notification
+banners, triangle gestures, live sheet stability and visual label collisions need
+manual acceptance. Existing physical sleep/wake and long-run limits still apply.
