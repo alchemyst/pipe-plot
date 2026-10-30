@@ -31,7 +31,8 @@ struct SessionWindow: View {
                                          onRemoveGuide: { guide in model.removeGuide(guide, chartID: chart.id, sessionID: session.id) },
                                          onSelection: { model.setSelection($0, session: session) },
                                          onRename: { stream, name in model.rename(stream, to: name) },
-                                         onMove: { stream, destination in model.move(stream, to: destination) })
+                                         onMove: { stream, destination in model.move(stream, to: destination) },
+                                         onReassociate: { source, destination in model.reassociate(source, with: destination, sessionID: session.id) })
                                     .onTapGesture { selectedChartID = chart.id }
                                     .overlay(RoundedRectangle(cornerRadius: 13).stroke(selectedChartID == chart.id ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 2))
                             }
@@ -130,6 +131,7 @@ private struct ChartRow: View {
     let onSelection: (TimeSelection?) -> Void
     let onRename: (StreamID, String) -> Void
     let onMove: (StreamID, ChartID) -> Void
+    let onReassociate: (StreamID, StreamID) -> Void
 
     @State private var selectionStart: Date?
     @State private var selectionPreview: Date?
@@ -139,47 +141,90 @@ private struct ChartRow: View {
     @State private var editingGuide: Guide?
     @State private var renameStream: StreamDescriptor?
     @State private var renameText = ""
-    @State private var showingMove = false
     @State private var panPixels: CGFloat = 0
     @State private var zoomFactor = 1.0
     @State private var zoomAnchor: Date?
+    @State private var gestureBaseDomain: ClosedRange<Date>?
+    @State private var guidePreview: Guide?
 
     private var domain: ClosedRange<Date> {
         model.domain(for: session)
+    }
+    private var plotDomain: ClosedRange<Date> { gestureDomain ?? domain }
+    @State private var gestureDomain: ClosedRange<Date>?
+    private var plotChart: ChartSnapshot {
+        guard let guidePreview, guidePreview.orientation == .horizontalValue else { return chart }
+        var value = chart
+        if let index = value.guides.firstIndex(where: { $0.id == guidePreview.id }) { value.guides[index] = guidePreview }
+        else { value.guides.append(guidePreview) }
+        return value
+    }
+    private var plotSession: SessionSnapshot {
+        guard let guidePreview, guidePreview.orientation == .verticalTime else { return session }
+        var value = session
+        if let index = value.timeGuides.firstIndex(where: { $0.id == guidePreview.id }) { value.timeGuides[index] = guidePreview }
+        else { value.timeGuides.append(guidePreview) }
+        return value
+    }
+    private func shifted(_ range: ClosedRange<Date>, pixels: CGFloat, width: CGFloat) -> ClosedRange<Date> {
+        let delta = -Double(pixels / max(width, 1)) * range.upperBound.timeIntervalSince(range.lowerBound)
+        return range.lowerBound.addingTimeInterval(delta)...range.upperBound.addingTimeInterval(delta)
+    }
+    private func scaled(_ range: ClosedRange<Date>, factor: Double, anchor: Date) -> ClosedRange<Date> {
+        let oldSpan = max(1, range.upperBound.timeIntervalSince(range.lowerBound))
+        let newSpan = min(7 * 24 * 3600, max(5, oldSpan / factor))
+        let fraction = min(1, max(0, anchor.timeIntervalSince(range.lowerBound) / oldSpan))
+        return anchor.addingTimeInterval(-newSpan * fraction)...anchor.addingTimeInterval(newSpan * (1 - fraction))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             ZStack(alignment: .topLeading) {
-                PlotCanvas(chart: chart, session: session, samples: samples, domain: domain, now: now, hoverDate: $hoverDate, selectionStart: $selectionStart, selectionPreview: $selectionPreview,
+                PlotCanvas(chart: plotChart, session: plotSession, samples: samples, domain: plotDomain, now: now, hoverDate: $hoverDate, selectionStart: $selectionStart, selectionPreview: $selectionPreview,
                            selection: session.timeline.selection,
                            forecast: model.forecastDrawing(for: chart, session: session),
                            onSelectionCommit: { start, end, mode in
                                 guard let start, let end else { onSelection(nil); return }
                                 onSelection(TimeSelection(start: start, end: end, mode: mode ?? .fixed, selectedStreamIDs: Set(chart.streams.map(\.id))))
                            },
-                           onGuide: { guide, phase in if phase == .ended { model.updateGuide(guide, chartID: chart.id, sessionID: session.id) } },
+                           onGuide: { guide, phase in
+                                switch phase {
+                                case .began, .changed: guidePreview = guide
+                                case .ended:
+                                    guidePreview = nil
+                                    model.updateGuide(guide, chartID: chart.id, sessionID: session.id)
+                                case .cancelled: guidePreview = nil
+                                }
+                           },
                            onPan: { delta, phase, width in
                                 switch phase {
-                                case .began: panPixels = 0
-                                case .changed: panPixels += delta.width
-                                case .ended:
+                                case .began: panPixels = 0; gestureBaseDomain = domain; gestureDomain = domain
+                                case .changed:
+                                    if gestureBaseDomain == nil { gestureBaseDomain = domain }
                                     panPixels += delta.width
-                                    model.pan(panPixels, width: width, session: session)
-                                    panPixels = 0
-                                case .cancelled: panPixels = 0
+                                    if let base = gestureBaseDomain { gestureDomain = shifted(base, pixels: panPixels, width: width) }
+                                case .ended:
+                                    if gestureBaseDomain == nil { gestureBaseDomain = domain }
+                                    panPixels += delta.width
+                                    model.pan(panPixels, width: width, session: session, from: gestureBaseDomain)
+                                    panPixels = 0; gestureBaseDomain = nil; gestureDomain = nil
+                                case .cancelled: panPixels = 0; gestureBaseDomain = nil; gestureDomain = nil
                                 }
                            },
                            onZoom: { factor, anchor, phase in
                                 switch phase {
-                                case .began: zoomFactor = 1; zoomAnchor = anchor
-                                case .changed: zoomFactor *= factor; zoomAnchor = anchor
+                                case .began: zoomFactor = 1; zoomAnchor = anchor; gestureBaseDomain = domain
+                                case .changed:
+                                    if gestureBaseDomain == nil { gestureBaseDomain = domain }
+                                    zoomFactor *= factor; zoomAnchor = anchor
+                                    if let base = gestureBaseDomain { gestureDomain = scaled(base, factor: zoomFactor, anchor: anchor) }
                                 case .ended:
+                                    if gestureBaseDomain == nil { gestureBaseDomain = domain }
                                     zoomFactor *= factor
-                                    model.zoom(zoomFactor, anchor: anchor, session: session)
-                                    zoomFactor = 1; zoomAnchor = nil
-                                case .cancelled: zoomFactor = 1; zoomAnchor = nil
+                                    model.zoom(zoomFactor, anchor: anchor, session: session, from: gestureBaseDomain)
+                                    zoomFactor = 1; zoomAnchor = nil; gestureBaseDomain = nil; gestureDomain = nil
+                                case .cancelled: zoomFactor = 1; zoomAnchor = nil; gestureBaseDomain = nil; gestureDomain = nil
                                 }
                            })
                     .frame(height: 210)
@@ -235,11 +280,6 @@ private struct ChartRow: View {
                 HStack { Spacer(); Button("Cancel") { renameStream = nil }; Button("Save") { onRename(stream.id, renameText); renameStream = nil }.keyboardShortcut(.defaultAction) }
             }.padding(22).frame(width: 340)
         }
-        .confirmationDialog("Move stream to chart", isPresented: $showingMove) {
-            ForEach(session.charts.filter { $0.id != chart.id }) { destination in
-                Button(destination.title.isEmpty ? "Chart" : destination.title) { if let stream = renameStream { onMove(stream.id, destination.id) } }
-            }
-        }
     }
 
     private var header: some View {
@@ -276,21 +316,13 @@ private struct ChartRow: View {
                         Text(stream.name).font(.caption.weight(.medium))
                         Text(stream.state.rawValue.capitalized).font(.caption2).foregroundStyle(.secondary)
                         Menu {
-                            Button("Rename…") { renameText = stream.name; renameStream = stream }
-                            Menu("Move to Chart") {
-                                ForEach(session.charts.filter { $0.id != chart.id }) { destination in
-                                    Button(destination.title) { onMove(stream.id, destination.id) }
-                                }
-                            }
+                            streamActions(stream)
                         } label: { Image(systemName: "ellipsis").font(.caption).foregroundStyle(.secondary) }.menuStyle(.borderlessButton)
                     }
                     .padding(.leading, 8).padding(.trailing, 4).padding(.vertical, 5)
                     .background(.quaternary.opacity(0.6), in: Capsule())
                     .contextMenu {
-                        Button("Rename…") { renameText = stream.name; renameStream = stream }
-                        Menu("Move to Chart") {
-                            ForEach(session.charts.filter { $0.id != chart.id }) { destination in Button(destination.title) { onMove(stream.id, destination.id) } }
-                        }
+                        streamActions(stream)
                     }
                 }
                 if chart.streams.isEmpty { Text("No streams").font(.caption).foregroundStyle(.tertiary) }
@@ -299,18 +331,25 @@ private struct ChartRow: View {
     }
 
     @ViewBuilder private func selectionSummary(_ selection: TimeSelection) -> some View {
+        let bounds = model.resolvedSelectionBounds(selection, session: session)
         HStack(spacing: 12) {
             Label("Selection", systemImage: "selection.pin.in.out")
                 .font(.caption.weight(.semibold))
-            Text("\(selection.start.formatted(date: .omitted, time: .shortened)) – \(selection.end.formatted(date: .omitted, time: .shortened))")
+            Text("\(bounds.lowerBound.formatted(date: .omitted, time: .shortened)) – \(bounds.upperBound.formatted(date: .omitted, time: .shortened))")
                 .font(.caption.monospacedDigit())
             Text(selection.mode == .fixed ? "Fixed interval" : (selection.mode == .endFollowsNow ? "End follows now" : "Fixed duration follows now"))
                 .font(.caption).foregroundStyle(.secondary)
             Menu("Selection") {
-                Button("Fix interval") { var value = selection; value.mode = .fixed; onSelection(value) }
-                Button("Link end to now") { var value = selection; value.mode = .endFollowsNow; onSelection(value) }
+                Button("Fix interval") {
+                    var value = selection; value.start = bounds.lowerBound; value.end = bounds.upperBound; value.mode = .fixed
+                    onSelection(value)
+                }
+                Button("Link end to now") {
+                    var value = selection; value.start = bounds.lowerBound; value.end = model.sessionNow(session); value.mode = .endFollowsNow
+                    onSelection(value)
+                }
                 Button("Follow now at fixed duration") {
-                    let duration = max(0.5, selection.end.timeIntervalSince(selection.start)); let now = model.sessionNow(session)
+                    let duration = max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound)); let now = model.sessionNow(session)
                     onSelection(TimeSelection(start: now.addingTimeInterval(-duration), end: now, mode: .bothFollowNow(duration: duration), selectedStreamIDs: selection.selectedStreamIDs))
                 }
                 Divider()
@@ -348,6 +387,34 @@ private struct ChartRow: View {
     private func modelStatistics(_ streamID: StreamID, _ selection: TimeSelection) -> SelectionStatistics? { model.stats(for: streamID, in: selection) }
     private func format(_ value: Double) -> String { String(format: "%.3g", value) }
 
+    @ViewBuilder private func streamActions(_ stream: StreamDescriptor) -> some View {
+        Button("Rename…") { renameText = stream.name; renameStream = stream }
+        Menu("Move to Chart") {
+            ForEach(session.charts.filter { $0.id != chart.id && $0.isVisible }) { destination in
+                Button(destination.title) { onMove(stream.id, destination.id) }
+            }
+        }
+        Button("Move to New Chart") { model.moveToNewChart(stream.id, sessionID: session.id, after: chart.id) }
+        let canContinue = stream.state.rawValue == "live" || stream.state.rawValue == "quiet"
+        if canContinue {
+            Menu("Continue Existing Stream…") {
+                ForEach(reassociationCandidates) { destination in
+                    Button("\(destination.stream.name) · \(destination.chart.title)") {
+                        onReassociate(stream.id, destination.stream.id)
+                    }
+                }
+            }
+            .disabled(reassociationCandidates.isEmpty)
+        }
+    }
+
+    private var reassociationCandidates: [StreamDestination] {
+        session.charts.filter(\.isVisible).flatMap { destination in
+            destination.streams.filter { $0.state.rawValue == "ended" || $0.state.rawValue == "disconnected" }
+                .map { StreamDestination(stream: $0, chart: destination) }
+        }
+    }
+
     private var guideSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(editingGuide == nil ? "Add value guide" : "Edit value guide").font(.title3.weight(.semibold))
@@ -364,6 +431,12 @@ private struct ChartRow: View {
     }
 
     private func onAddGuideFromCurrentScale() { editingGuide = nil; guideValue = ""; guideLabel = ""; showGuideEditor = true }
+}
+
+private struct StreamDestination: Identifiable {
+    let stream: StreamDescriptor
+    let chart: ChartSnapshot
+    var id: StreamID { stream.id }
 }
 
 extension StreamDescriptor: Identifiable {}
