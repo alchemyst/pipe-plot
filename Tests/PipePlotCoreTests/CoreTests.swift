@@ -235,6 +235,33 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(try store.undo(sessionID:session.id))
         XCTAssertTrue(try XCTUnwrap(store.snapshot(sessionID:session.id)).isDeleted)
     }
+    func testDeletedSessionCannotReopenOrRemainAnImplicitTarget() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let db=dir.appendingPathComponent("state.sqlite"),store=try PipePlotStore(databaseURL:db)
+        let removed=try store.createSession(),remaining=try store.createSession()
+        _=try store.setTarget(removed.charts[0].id)
+        try store.recordTerminationOpenSessions([removed.id,remaining.id])
+        try store.deleteSession(sessionID:removed.id)
+        XCTAssertThrowsError(try store.setSessionOpen(true,sessionID:removed.id))
+        XCTAssertThrowsError(try store.setTarget(removed.charts[0].id))
+        XCTAssertEqual(try store.listSessions().map(\.id),[remaining.id])
+        XCTAssertEqual(store.currentTarget(),remaining.charts[0].id)
+        XCTAssertEqual(try PipePlotStore(databaseURL:db).previouslyOpenSessionIDs,[remaining.id])
+    }
+    func testExplicitAttachmentCreatesVisibleChartWhenNamedSessionHasOnlyHiddenCharts() throws {
+        let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        defer{try? FileManager.default.removeItem(at:dir)}
+        let store=try PipePlotStore(databaseURL:dir.appendingPathComponent("state.sqlite"))
+        let named=try store.createSession(),first=named.charts[0].id
+        let second=try store.createChart(in:named.id)
+        try store.deleteChart(first);try store.deleteChart(second.id)
+        let targetSession=try store.createSession(),target=targetSession.charts[0].id
+        let attachment=try store.registerSampler(intent:.session(sessionID:named.id,lineNames:["missing"]),sampler:SamplerIntent(columnCount:1))
+        XCTAssertNotEqual(attachment.chartID,first)
+        XCTAssertTrue(try XCTUnwrap(store.snapshot(sessionID:named.id)?.charts.first{$0.id==attachment.chartID}).isVisible)
+        XCTAssertEqual(store.currentTarget(),target)
+    }
     func testFailedReassociationCommitRestoresSQLiteSegmentOwnership() throws {
         let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
         defer{try? FileManager.default.removeItem(at:dir)}
