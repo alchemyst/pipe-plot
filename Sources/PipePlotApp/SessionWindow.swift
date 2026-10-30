@@ -10,6 +10,8 @@ struct SessionWindow: View {
     @State private var hoverDate: Date?
     @State private var dragStart: Date?
     @State private var gestures = SessionGesturePreview()
+    @State private var showRenameSession = false
+    @State private var sessionTitle = ""
 
     private var session: SessionSnapshot? { model.sessions[sessionID] }
     private var visibleCharts: [ChartSnapshot] { session?.charts.filter(\.isVisible) ?? [] }
@@ -29,6 +31,13 @@ struct SessionWindow: View {
         .onReceive(model.refreshTimer) { _ in model.tick(sessionID) }
         .onReceive(NotificationCenter.default.publisher(for: .pipePlotWillTerminate)) { _ in model.prepareForTermination() }
         .onDisappear { model.windowClosed(sessionID) }
+        .sheet(isPresented: $showRenameSession) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Rename session").font(.title3.weight(.semibold))
+                TextField("Session name", text: $sessionTitle)
+                HStack { Spacer(); Button("Cancel") { showRenameSession = false }; Button("Save") { model.renameSession(sessionID, to: sessionTitle); showRenameSession = false }.keyboardShortcut(.defaultAction) }
+            }.padding(22).frame(width: 340)
+        }
         .background(WindowFocusObserver { model.becameActive(sessionID) }.frame(width: 0, height: 0))
         .alert("PipePlot", isPresented: errorPresented) { errorButtons } message: { errorMessage }
         .onKeyPress(keys: [.escape, "a", "d", "f", "w", "s"]) { press in
@@ -98,6 +107,10 @@ struct SessionWindow: View {
                     model.moveToNewChart(id, sessionID: sessionID, after: selectedChartID)
                     return true
                 }
+            Menu {
+                Button("Rename Session…") { sessionTitle = session?.title ?? ""; showRenameSession = true }
+                Button("Move Session to Trash", role: .destructive) { model.deleteSession(sessionID) }
+            } label: { Label("Session", systemImage: "ellipsis.circle") }
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
         .background(.bar)
@@ -139,7 +152,7 @@ struct SessionWindow: View {
                 .disabled(!model.canNavigateForward(session.id)).help("Forward in time navigation")
             Text("Now  \(model.sessionNow(session).formatted(date: .omitted, time: .standard))")
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            Button { model.followNow(session) } label: { Label("Follow Now", systemImage: "dot.scope") }
+            Button { model.followNow(session) } label: { Label("Follow Now", systemImage: "clock") }
                 .buttonStyle(.borderedProminent).tint(session.timeline.followNow ? .accentColor : .gray)
                 .disabled(session.timeline.followNow)
             Menu {
@@ -241,6 +254,7 @@ private struct SelectionInspector: View {
         case .fixed: "Fixed interval"
         case .endFollowsNow: "End follows now"
         case .bothFollowNow: "Fixed duration follows now"
+        case .startFollowsEnd: "Start follows end"
         }
     }
 
@@ -248,6 +262,9 @@ private struct SelectionInspector: View {
         Menu("Boundary") {
             Button("Fix interval") { updateMode(.fixed) }
             Button("Link end to now") { updateMode(.endFollowsNow) }
+            Button("Link start to end at fixed duration") {
+                updateMode(.startFollowsEnd(duration: max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound))))
+            }
             Button("Follow now at fixed duration") {
                 let duration = max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound))
                 updateMode(.bothFollowNow(duration: duration))
@@ -280,11 +297,9 @@ private struct SelectionInspector: View {
         Menu {
             ForEach(charts) { chart in
                 ForEach(chart.streams) { stream in
-                    Menu("\(stream.name) · \(chart.title)") {
-                        ForEach(chart.guides.filter { $0.orientation == .horizontalValue }) { guide in
-                            Button(guide.label?.isEmpty == false ? guide.label! : "Guide at \(guide.value.formatted(.number.precision(.significantDigits(4))))") {
-                                model.setForecast(ForecastConfiguration(streamID: stream.id, guideID: guide.id, selection: selection), session: session)
-                            }
+                    ForEach(chart.guides.filter { $0.orientation == .horizontalValue }) { guide in
+                        Button("\(stream.name) · \(guide.label?.isEmpty == false ? guide.label! : guide.value.formatted(.number.precision(.significantDigits(4))))") {
+                            model.setForecast(ForecastConfiguration(streamID: stream.id, guideID: guide.id, selection: selection), session: session)
                         }
                     }
                 }
@@ -302,6 +317,7 @@ private struct SelectionInspector: View {
         case .fixed: value.start = bounds.lowerBound; value.end = bounds.upperBound
         case .endFollowsNow: value.start = bounds.lowerBound; value.end = now
         case .bothFollowNow(let duration): value.start = now.addingTimeInterval(-duration); value.end = now
+        case .startFollowsEnd(let duration): value.end = bounds.upperBound; value.start = value.end.addingTimeInterval(-duration)
         }
         onSelection(value)
     }
@@ -395,12 +411,13 @@ private struct ChartRow: View {
     let onRename: (StreamID, String) -> Void
     let onMove: (StreamID, ChartID) -> Void
 
-    @State private var showGuideEditor = false
+    @State private var showGuideManager = false
     @State private var guideValue = ""
     @State private var guideLabel = ""
     @State private var guideDate = Date()
     @State private var guideSecond = "0"
     @State private var editingGuide: Guide?
+    @State private var isAddingGuide = false
     @State private var renameStream: StreamDescriptor?
     @State private var renameText = ""
     @State private var renameChartText = ""
@@ -452,6 +469,10 @@ private struct ChartRow: View {
                                 let current = model.sessionNow(session)
                                 onSelection(TimeSelection(start: current.addingTimeInterval(-duration), end: current, mode: .bothFollowNow(duration: duration), selectedStreamIDs: selection.selectedStreamIDs))
                            },
+                           onBackgroundClick: { onSelection(nil) },
+                           onBackgroundDoubleClick: { date in model.addTimeGuide(at: date, sessionID: session.id) },
+                           onGuideSelected: { beginEditingGuide($0) },
+                           onSelectionModeToggle: { toggleSelectionBoundary($0) },
                            selection: session.timeline.selection,
                            forecasts: model.forecastDrawings(for: chart, session: session),
                            onSelectionCommit: { start, end, mode in
@@ -546,7 +567,7 @@ private struct ChartRow: View {
             if start != nil, sharedGestureDomain == nil { sharedGestureDomain = domain }
             if start == nil, gestureBaseDomain == nil { sharedGestureDomain = nil }
         }
-        .sheet(isPresented: $showGuideEditor) { guideSheet }
+        .sheet(isPresented: $showGuideManager) { guideManagerSheet }
         .sheet(item: $renameStream) { stream in
             VStack(alignment: .leading, spacing: 14) {
                 Text("Rename stream").font(.title3.weight(.semibold))
@@ -578,21 +599,7 @@ private struct ChartRow: View {
                 Button("Add time guide at Now") {
                     model.addTimeGuide(at: now, sessionID: session.id)
                 }.keyboardShortcut(isCurrentChart ? KeyboardShortcut("t", modifiers: [.command, .option]) : nil)
-                ForEach(chart.guides) { guide in
-                    Menu("\(guide.label?.isEmpty == false ? guide.label! : guide.orientation == .horizontalValue ? "Value guide" : "Time guide") · \(guide.value.formatted(.number.precision(.significantDigits(4))))") {
-                        Button(guide.orientation == .verticalTime ? "Edit date and label…" : "Edit exact value…") { beginEditingGuide(guide) }
-                        Button("Delete guide", role: .destructive) { onRemoveGuide(guide) }
-                        guideColorMenu(guide)
-                    }
-                }
-                if !session.timeGuides.isEmpty { Divider(); Text("Session time guides") }
-                ForEach(session.timeGuides) { guide in
-                    Menu("\(guide.label?.isEmpty == false ? guide.label! : "Time guide") · \(Date(timeIntervalSince1970: guide.value).formatted(date: .omitted, time: .shortened))") {
-                        Button("Edit date and label…") { beginEditingGuide(guide) }
-                        Button("Delete guide", role: .destructive) { model.removeTimeGuide(guide, sessionID: session.id) }
-                        guideColorMenu(guide)
-                    }
-                }
+                Button("Manage Guides…") { showGuideManager = true; editingGuide = nil }
             } label: { Label("Guides", systemImage: "line.3.horizontal") }.help("Create and edit chart guides")
             Menu {
                 Button("Rename Chart…") { renameChartText = chart.title; showRenameChart = true }
@@ -613,7 +620,7 @@ private struct ChartRow: View {
                 .buttonStyle(.plain).foregroundStyle(chart.settings.linesVisible ? Color.accentColor : .secondary).help("Toggle connecting lines")
             Button(action: onToggleDots) { Image(systemName: "circle.fill") }.buttonStyle(.plain).foregroundStyle(chart.settings.dotsVisible ? Color.accentColor : .secondary).help("Toggle dots")
             Button(action: onTarget) {
-                Label(chart.isTarget ? "Target sink" : "Set target", systemImage: chart.isTarget ? "scope" : "circle.dashed")
+                Label(chart.isTarget ? "Target" : "Set target", systemImage: chart.isTarget ? "scope" : "circle.dashed")
             }.buttonStyle(.bordered).tint(chart.isTarget ? .accentColor : .secondary).controlSize(.small)
         }
         .padding(.horizontal, 15).padding(.top, 13).padding(.bottom, 5)
@@ -695,28 +702,82 @@ private struct ChartRow: View {
         (model.selectedChartIDs[session.id] ?? session.charts.last(where: \.isVisible)?.id) == chart.id
     }
 
-    private var guideSheet: some View {
+    @ViewBuilder private var guideManagerSheet: some View {
+        if let editingGuide { guideEditor(editingGuide) }
+        else if isAddingGuide { newGuideEditor }
+        else {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Guides").font(.title3.weight(.semibold))
+                HStack { Button("Add value guide…") { onAddGuideFromCurrentScale() }; Button("Add time guide at Now") { model.addTimeGuide(at: now, sessionID: session.id) } }
+                List {
+                    Section("Chart guides") {
+                        ForEach(chart.guides) { guide in guideRow(guide, isTime: false) }
+                    }
+                    Section("Session time guides") {
+                        ForEach(session.timeGuides) { guide in guideRow(guide, isTime: true) }
+                    }
+                }.listStyle(.inset)
+                HStack { Spacer(); Button("Done") { showGuideManager = false } }
+            }.padding(20).frame(width: 460, height: 430)
+        }
+    }
+
+    private func guideRow(_ guide: Guide, isTime: Bool) -> some View {
+        HStack {
+            Circle().fill(Color.accentColor).frame(width: 9, height: 9)
+            VStack(alignment: .leading) {
+                Text(guide.label?.isEmpty == false ? guide.label! : (guide.orientation == .horizontalValue ? "Value guide" : "Time guide"))
+                Text(guide.orientation == .verticalTime ? Date(timeIntervalSince1970: guide.value).formatted(date: .abbreviated, time: .shortened) : guide.value.formatted(.number.precision(.significantDigits(5))) )
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Menu {
+                ForEach(0..<9, id: \.self) { index in
+                    Button("Color \(index + 1)") {
+                        var updated = guide; updated.color = PlotCanvas.paletteHex(index)
+                        if isTime { model.updateTimeGuide(updated, sessionID: session.id) } else { onEditGuide(updated) }
+                    }
+                }
+            } label: { Image(systemName: "paintpalette") }.help("Change guide color")
+            Button("Edit") { beginEditingGuide(guide) }
+            Button(role: .destructive) { if isTime { model.removeTimeGuide(guide, sessionID: session.id) } else { onRemoveGuide(guide) } } label: { Image(systemName: "trash") }.help("Delete guide")
+        }
+    }
+
+    private func guideEditor(_ item: Guide) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(editingGuide == nil ? "Add value guide" : (editingGuide?.orientation == .verticalTime ? "Edit time guide" : "Edit value guide")).font(.title3.weight(.semibold))
-            if editingGuide?.orientation == .verticalTime {
+            Text(item.orientation == .verticalTime ? "Edit time guide" : "Edit value guide").font(.title3.weight(.semibold))
+            if item.orientation == .verticalTime {
                 DatePicker("Local date and time", selection: $guideDate, displayedComponents: [.date, .hourAndMinute])
                 TextField("Seconds (0–59.999)", text: $guideSecond).textFieldStyle(.roundedBorder)
             } else {
                 TextField("Value", text: $guideValue).textFieldStyle(.roundedBorder)
             }
             TextField("Label (optional)", text: $guideLabel).textFieldStyle(.roundedBorder)
-            HStack { Spacer(); Button("Cancel") { showGuideEditor = false; editingGuide = nil }; Button(editingGuide == nil ? "Add Guide" : "Save Guide") {
-                let enteredValue = editingGuide?.orientation == .verticalTime ? editedGuideTimestamp() : Double(guideValue)
+            HStack { Button("Back") { editingGuide = nil }; Spacer(); Button("Save Guide") {
+                let enteredValue = item.orientation == .verticalTime ? editedGuideTimestamp() : Double(guideValue)
                 if let value = enteredValue, value.isFinite {
-                    if var guide = editingGuide { guide.value = value; guide.label = guideLabel.isEmpty ? nil : guideLabel; if guide.orientation == .verticalTime { model.updateTimeGuide(guide, sessionID: session.id) } else { onEditGuide(guide) } }
-                    else { onAddGuide(value, guideLabel.isEmpty ? nil : guideLabel) }
+                    var guide = item; guide.value = value; guide.label = guideLabel.isEmpty ? nil : guideLabel
+                    if guide.orientation == .verticalTime { model.updateTimeGuide(guide, sessionID: session.id) } else { onEditGuide(guide) }
                 }
-                showGuideEditor = false; editingGuide = nil
+                editingGuide = nil
             }.keyboardShortcut(.defaultAction) }
         }.padding(22).frame(width: 340)
     }
 
-    private func onAddGuideFromCurrentScale() { editingGuide = nil; guideValue = ""; guideLabel = ""; showGuideEditor = true }
+    private var newGuideEditor: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add value guide").font(.title3.weight(.semibold))
+            TextField("Value", text: $guideValue).textFieldStyle(.roundedBorder)
+            TextField("Label (optional)", text: $guideLabel).textFieldStyle(.roundedBorder)
+            HStack { Button("Back") { isAddingGuide = false }; Spacer(); Button("Add Guide") {
+                if let value = Double(guideValue), value.isFinite { onAddGuide(value, guideLabel.isEmpty ? nil : guideLabel) }
+                isAddingGuide = false
+            }.keyboardShortcut(.defaultAction) }
+        }.padding(22).frame(width: 340)
+    }
+
+    private func onAddGuideFromCurrentScale() { editingGuide = nil; isAddingGuide = true; guideValue = ""; guideLabel = ""; showGuideManager = true }
     private func hoverReadout(stream: StreamDescriptor, sample: StoredSample, offset: TimeInterval) -> String {
         let value = String(format: "%.3g", sample.value)
         let unit = chart.settings.unit.map { " \($0)" } ?? ""
@@ -724,6 +785,7 @@ private struct ChartRow: View {
         return "\(stream.name)  \(value)\(unit)  \(signedOffset)"
     }
     private func beginEditingGuide(_ guide: Guide) {
+        isAddingGuide = false
         editingGuide = guide
         guideLabel = guide.label ?? ""
         if guide.orientation == .verticalTime {
@@ -731,7 +793,31 @@ private struct ChartRow: View {
             let seconds = Double(Calendar.current.component(.second, from: guideDate)) + guide.value.truncatingRemainder(dividingBy: 1)
             guideSecond = String(format: "%.3f", seconds)
         } else { guideValue = "\(guide.value)" }
-        showGuideEditor = true
+        showGuideManager = true
+    }
+    private func toggleSelectionBoundary(_ edge: PlotSelectionEdge) {
+        guard let selection = session.timeline.selection else { return }
+        let bounds = model.resolvedSelectionBounds(selection, session: session)
+        switch edge {
+        case .start:
+            if case .startFollowsEnd = selection.mode { updateSelectionMode(.fixed, bounds: bounds, selection: selection) }
+            else { updateSelectionMode(.startFollowsEnd(duration: max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound))), bounds: bounds, selection: selection) }
+        case .end:
+            switch selection.mode {
+            case .endFollowsNow, .bothFollowNow: updateSelectionMode(.fixed, bounds: bounds, selection: selection)
+            default: updateSelectionMode(.endFollowsNow, bounds: bounds, selection: selection)
+            }
+        }
+    }
+    private func updateSelectionMode(_ mode: SelectionMode, bounds: ClosedRange<Date>, selection: TimeSelection) {
+        var value = selection; value.mode = mode
+        switch mode {
+        case .fixed: value.start = bounds.lowerBound; value.end = bounds.upperBound
+        case .endFollowsNow: value.start = bounds.lowerBound; value.end = model.sessionNow(session)
+        case .bothFollowNow(let duration): let current = model.sessionNow(session); value.start = current.addingTimeInterval(-duration); value.end = current
+        case .startFollowsEnd(let duration): value.end = bounds.upperBound; value.start = bounds.upperBound.addingTimeInterval(-duration)
+        }
+        onSelection(value)
     }
     private func editedGuideTimestamp() -> Double? {
         guard let seconds = Double(guideSecond), seconds >= 0, seconds < 60 else { return nil }

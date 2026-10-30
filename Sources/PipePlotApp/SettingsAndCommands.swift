@@ -76,6 +76,17 @@ struct SettingsView: View {
                 }
                 TextField("Unit label", text: $unit, prompt: Text("e.g. MiB"))
                     .onSubmit { if let chart { model.updateUnit(unit, chart: chart.id) } }
+                Picker("Number scale", selection: Binding(get: { chart?.settings.numericScale ?? .decimal }, set: { value in updateSettings { $0.numericScale = value } })) {
+                    Text("SI (k, M, G)").tag(NumericScale.decimal)
+                    Text("Binary (Ki, Mi, Gi)").tag(NumericScale.binary)
+                }
+                Toggle("Include zero", isOn: Binding(get: { chart?.settings.includeZero ?? false }, set: { value in updateSettings { $0.includeZero = value } }))
+                Picker("Relative value origin", selection: Binding(get: { chart?.settings.referenceGuideID }, set: { value in updateSettings { $0.referenceGuideID = value } })) {
+                    Text("Absolute values").tag(UUID?.none)
+                    ForEach(chart?.guides.filter { $0.orientation == .horizontalValue } ?? []) { guide in
+                        Text(guide.label?.isEmpty == false ? guide.label! : guide.value.formatted(.number.precision(.significantDigits(4)))).tag(Optional(guide.id))
+                    }
+                }
                 HStack {
                     TextField("Minimum", text: $minValue).frame(width: 110)
                     TextField("Maximum", text: $maxValue).frame(width: 110)
@@ -84,12 +95,31 @@ struct SettingsView: View {
                 }
                 Text("Scale and unit belong to the chart. Moving a stream leaves these settings in place.").font(.caption).foregroundStyle(.secondary)
             }
+            Section("Time axis") {
+                Picker("Timezone", selection: Binding(get: { selectedSession.flatMap { model.sessions[$0]?.timeline.timeZone } ?? .local }, set: { value in if let session = selectedSession.flatMap({ model.sessions[$0] }) { model.setTimeZone(value, session: session) } })) {
+                    Text("Local").tag(PlotTimeZone.local); Text("UTC").tag(PlotTimeZone.utc)
+                }
+                Picker("Relative time origin", selection: Binding(get: { selectedSession.flatMap { model.sessions[$0]?.timeline.referenceTimeGuideID } }, set: { value in if let session = selectedSession.flatMap({ model.sessions[$0] }) { model.setTimeReference(value, session: session) } })) {
+                    Text("Absolute time").tag(UUID?.none)
+                    ForEach(selectedSession.flatMap { model.sessions[$0]?.timeGuides } ?? []) { guide in
+                        Text(guide.label?.isEmpty == false ? guide.label! : Date(timeIntervalSince1970: guide.value).formatted(date: .numeric, time: .shortened)).tag(Optional(guide.id))
+                    }
+                }
+            }
+            Section("Guide notifications") {
+                if let chart, let sessionID = selectedSession {
+                    ForEach(chart.guides.filter { $0.orientation == .horizontalValue }) { guide in
+                        GuideAlertSettingsRow(guide: guide, sessionID: sessionID, chartID: chart.id, model: model)
+                    }
+                    if chart.guides.allSatisfy({ $0.orientation != .horizontalValue }) { Text("Add a horizontal value guide to configure notifications.").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
             Section("Storage") {
                 Text("Sessions and samples are stored locally in Application Support/PipePlot.")
                 Text("Closing a session window disconnects its samplers and keeps its captured data.").font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(22).frame(width: 520, height: 350)
+        .padding(22).frame(width: 560, height: 650)
         .onChange(of: selectedChart) { _, _ in loadChartSettings() }
         .onChange(of: selectedSession) { _, _ in selectedChart = charts.first?.id; loadChartSettings() }
     }
@@ -97,6 +127,38 @@ struct SettingsView: View {
         guard let chart else { return }
         unit = chart.settings.unit ?? ""
         if case let .fixed(minimum, maximum) = chart.settings.yScale { minValue = "\(minimum)"; maxValue = "\(maximum)" } else { minValue = ""; maxValue = "" }
+    }
+    private func updateSettings(_ edit: (inout AxisSettings) -> Void) {
+        guard let chart else { return }; var value = chart.settings; edit(&value); model.update(value, chart.id)
+    }
+}
+
+private struct GuideAlertSettingsRow: View {
+    let guide: Guide
+    let sessionID: SessionID
+    let chartID: ChartID
+    let model: PipePlotAppModel
+    @State private var direction: CrossingDirection = .both
+    @State private var hysteresis = "0"
+    @State private var cooldown = "10"
+    private var enabled: Bool { guide.alert != nil }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(guide.label?.isEmpty == false ? guide.label! : "Guide at \(guide.value.formatted(.number.precision(.significantDigits(4))))", isOn: Binding(get: { enabled }, set: { value in
+                var next = guide; next.alert = value ? GuideAlert(direction: direction, hysteresis: Double(hysteresis) ?? 0, cooldown: Double(cooldown) ?? 10) : nil
+                model.updateGuide(next, chartID: chartID, sessionID: sessionID)
+            }))
+            if enabled {
+                Picker("Crossing", selection: $direction) { Text("Rising").tag(CrossingDirection.rising); Text("Falling").tag(CrossingDirection.falling); Text("Both").tag(CrossingDirection.both) }
+                    .onChange(of: direction) { _, value in save(direction: value) }
+                HStack { TextField("Hysteresis", text: $hysteresis).onSubmit { save() }; TextField("Cooldown (s)", text: $cooldown).onSubmit { save() } }
+            }
+        }.onAppear(perform: loadAlert).onChange(of: guide.alert) { _, _ in loadAlert() }
+    }
+    private func loadAlert() { direction = guide.alert?.direction ?? .both; hysteresis = "\(guide.alert?.hysteresis ?? 0)"; cooldown = "\(guide.alert?.cooldown ?? 10)" }
+    private func save(direction: CrossingDirection? = nil) {
+        var next = guide; next.alert = GuideAlert(direction: direction ?? self.direction, hysteresis: Double(hysteresis) ?? 0, cooldown: Double(cooldown) ?? 10)
+        model.updateGuide(next, chartID: chartID, sessionID: sessionID)
     }
 }
 
@@ -106,8 +168,8 @@ struct PipePlotCommands: Commands {
         guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isEditable else { return nil }
         return editor.undoManager
     }
-    private var undoName: String? { model.activeSessionID.flatMap { model.store.undoActionName(sessionID: $0) } }
-    private var redoName: String? { model.activeSessionID.flatMap { model.store.redoActionName(sessionID: $0) } }
+    private var undoName: String? { _ = model.editRevision; return model.activeSessionID.flatMap { model.store.undoActionName(sessionID: $0) } }
+    private var redoName: String? { _ = model.editRevision; return model.activeSessionID.flatMap { model.store.redoActionName(sessionID: $0) } }
     private var canUndo: Bool { textUndo?.canUndo ?? (undoName != nil) }
     private var canRedo: Bool { textUndo?.canRedo ?? (redoName != nil) }
     private var undoTitle: String { textUndo?.undoMenuItemTitle ?? undoName.map { "Undo \($0)" } ?? "Undo" }
