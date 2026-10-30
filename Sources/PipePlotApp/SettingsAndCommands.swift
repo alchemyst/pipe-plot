@@ -90,7 +90,7 @@ struct SettingsView: View {
                 HStack {
                     TextField("Minimum", text: $minValue).frame(width: 110)
                     TextField("Maximum", text: $maxValue).frame(width: 110)
-                    Button("Set Y range") { if let chart, let min = Double(minValue), let max = Double(maxValue) { model.updateScale(min: min, max: max, chart: chart.id) } }
+                    Button("Set Y range") { if let chart, let min = NumericText.parse(minValue, unit: chart.settings.unit), let max = NumericText.parse(maxValue, unit: chart.settings.unit) { model.updateScale(min: min, max: max, chart: chart.id) } }
                     Button("Auto") { if let chart { model.updateScale(min: 1, max: 0, chart: chart.id) } }
                 }
                 Text("Scale and unit belong to the chart. Moving a stream leaves these settings in place.").font(.caption).foregroundStyle(.secondary)
@@ -132,7 +132,7 @@ struct SettingsView: View {
     }
 }
 
-private struct GuideAlertSettingsRow: View {
+struct GuideAlertSettingsRow: View {
     let guide: Guide
     let unit: String?
     let sessionID: SessionID
@@ -141,7 +141,10 @@ private struct GuideAlertSettingsRow: View {
     @State private var direction: CrossingDirection = .both
     @State private var hysteresis = "0"
     @State private var cooldown = "10"
-    private var enabled: Bool { guide.alert != nil }
+    private var currentGuide: Guide {
+        model.sessions[sessionID]?.charts.first(where: { $0.id == chartID })?.guides.first(where: { $0.id == guide.id }) ?? guide
+    }
+    private var enabled: Bool { currentGuide.alert != nil }
     private var parsedHysteresis: Double? { NumericText.parse(hysteresis, unit: unit) }
     private var parsedCooldown: Double? { NumericText.parse(cooldown, unit: "s") }
     private var validationMessage: String? {
@@ -151,9 +154,9 @@ private struct GuideAlertSettingsRow: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Toggle(guide.label?.isEmpty == false ? guide.label! : "Guide at \(guide.value.formatted(.number.precision(.significantDigits(4))))", isOn: Binding(get: { enabled }, set: { value in
-                if !value { var next = guide; next.alert = nil; model.updateGuide(next, chartID: chartID, sessionID: sessionID) }
-                else if let parsedHysteresis, parsedHysteresis >= 0, let parsedCooldown, parsedCooldown >= 0 { var next = guide; next.alert = GuideAlert(direction: direction, hysteresis: parsedHysteresis, cooldown: parsedCooldown); model.updateGuide(next, chartID: chartID, sessionID: sessionID) }
+            Toggle(currentGuide.label?.isEmpty == false ? currentGuide.label! : "Guide at \(NumericText.format(currentGuide.value, scale: model.sessions[sessionID]?.charts.first(where: { $0.id == chartID })?.settings.numericScale ?? .decimal, unit: unit))", isOn: Binding(get: { enabled }, set: { value in
+                if !value { var next = currentGuide; next.alert = nil; model.updateGuide(next, chartID: chartID, sessionID: sessionID) }
+                else if let parsedHysteresis, parsedHysteresis >= 0, let parsedCooldown, parsedCooldown >= 0 { var next = currentGuide; next.alert = GuideAlert(direction: direction, hysteresis: parsedHysteresis, cooldown: parsedCooldown); model.updateGuide(next, chartID: chartID, sessionID: sessionID) }
             }))
             if enabled {
                 Picker("Crossing", selection: $direction) { Text("Rising").tag(CrossingDirection.rising); Text("Falling").tag(CrossingDirection.falling); Text("Both").tag(CrossingDirection.both) }
@@ -164,12 +167,12 @@ private struct GuideAlertSettingsRow: View {
                 }
                 if let validationMessage { Text(validationMessage).font(.caption).foregroundStyle(.red) }
             }
-        }.onAppear(perform: loadAlert).onChange(of: guide.alert) { _, _ in loadAlert() }
+        }.onAppear(perform: loadAlert).onChange(of: currentGuide.alert) { _, _ in loadAlert() }
     }
-    private func loadAlert() { direction = guide.alert?.direction ?? .both; hysteresis = "\(guide.alert?.hysteresis ?? 0)"; cooldown = "\(guide.alert?.cooldown ?? 10)" }
+    private func loadAlert() { direction = currentGuide.alert?.direction ?? .both; hysteresis = "\(currentGuide.alert?.hysteresis ?? 0)"; cooldown = "\(currentGuide.alert?.cooldown ?? 10)" }
     private func save(direction: CrossingDirection? = nil) {
         guard let hysteresis = parsedHysteresis, hysteresis >= 0, let cooldown = parsedCooldown, cooldown >= 0 else { return }
-        var next = guide; next.alert = GuideAlert(direction: direction ?? self.direction, hysteresis: hysteresis, cooldown: cooldown)
+        var next = currentGuide; next.alert = GuideAlert(direction: direction ?? self.direction, hysteresis: hysteresis, cooldown: cooldown)
         model.updateGuide(next, chartID: chartID, sessionID: sessionID)
     }
 }

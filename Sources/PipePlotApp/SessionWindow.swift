@@ -744,7 +744,7 @@ private struct ChartRow: View {
             Circle().fill(Color.accentColor).frame(width: 9, height: 9)
             VStack(alignment: .leading) {
                 Text(guide.label?.isEmpty == false ? guide.label! : (guide.orientation == .horizontalValue ? "Value guide" : "Time guide"))
-                Text(guide.orientation == .verticalTime ? TimeText.format(Date(timeIntervalSince1970: guide.value), zone: session.timeline.timeZone ?? .local, reference: session.timeGuides.first(where: { $0.id == session.timeline.referenceTimeGuideID }).map { Date(timeIntervalSince1970: $0.value) }, includeDate: true) : guide.value.formatted(.number.precision(.significantDigits(5))) )
+                Text(guide.orientation == .verticalTime ? TimeText.format(Date(timeIntervalSince1970: guide.value), zone: session.timeline.timeZone ?? .local, reference: session.timeGuides.first(where: { $0.id == session.timeline.referenceTimeGuideID }).map { Date(timeIntervalSince1970: $0.value) }, includeDate: true) : NumericText.format(guide.value, scale: chart.settings.numericScale ?? .decimal, unit: chart.settings.unit) )
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -768,20 +768,25 @@ private struct ChartRow: View {
                 DatePicker(session.timeline.timeZone == .utc ? "UTC date and time" : "Local date and time", selection: $guideDate, displayedComponents: [.date, .hourAndMinute])
                     .environment(\.calendar, guideCalendar)
                 TextField("Seconds (0–59.999)", text: $guideSecond).textFieldStyle(.roundedBorder)
+                if editedGuideTimestamp() == nil { Text("Enter seconds from 0 up to, but not including, 60.").font(.caption).foregroundStyle(.red) }
             } else {
                 TextField("Value", text: $guideValue).textFieldStyle(.roundedBorder)
                     .onChange(of: guideValue) { _, _ in validateGuideValue() }
                 if let guideEntryError { Text(guideEntryError).font(.caption).foregroundStyle(.red) }
             }
             TextField("Label (optional)", text: $guideLabel).textFieldStyle(.roundedBorder)
+            if item.orientation == .horizontalValue {
+                GuideAlertSettingsRow(guide: item, unit: chart.settings.unit, sessionID: session.id, chartID: chart.id, model: model)
+            }
             HStack { Button("Back") { editingGuide = nil }; Spacer(); Button("Save Guide") {
                 let enteredValue = item.orientation == .verticalTime ? editedGuideTimestamp() : NumericText.parse(guideValue, unit: chart.settings.unit)
                 if let value = enteredValue, value.isFinite {
-                    var guide = item; guide.value = value; guide.label = guideLabel.isEmpty ? nil : guideLabel
+                    var guide = item.orientation == .verticalTime ? (session.timeGuides.first(where: { $0.id == item.id }) ?? item) : (chart.guides.first(where: { $0.id == item.id }) ?? item)
+                    guide.value = value; guide.label = guideLabel.isEmpty ? nil : guideLabel
                     if guide.orientation == .verticalTime { model.updateTimeGuide(guide, sessionID: session.id) } else { onEditGuide(guide) }
                 }
                 editingGuide = nil
-            }.disabled(item.orientation == .horizontalValue && NumericText.parse(guideValue, unit: chart.settings.unit) == nil).keyboardShortcut(.defaultAction) }
+            }.disabled(item.orientation == .verticalTime ? editedGuideTimestamp() == nil : NumericText.parse(guideValue, unit: chart.settings.unit) == nil).keyboardShortcut(.defaultAction) }
         }.padding(22).frame(width: 340)
     }
 
