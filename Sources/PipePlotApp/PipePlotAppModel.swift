@@ -31,6 +31,10 @@ final class PipePlotAppModel {
     private var terminating = false
     private var navigationBack: [SessionID: [TimelineState]] = [:]
     private var navigationForward: [SessionID: [TimelineState]] = [:]
+    // Unknown state allows model-only clients; attached windows immediately report
+    // their actual state. Suspension never changes capture or persistent session state.
+    private var suspendedDisplays: Set<SessionID> = []
+    @ObservationIgnored private(set) var displayRefreshCount = 0
     let queries = BackgroundQueries()
     let refreshTimer = Timer.publish(every: 0.75, on: .main, in: .common).autoconnect()
 
@@ -212,7 +216,26 @@ final class PipePlotAppModel {
         }
         catch { errorMessage = error.localizedDescription }
     }
+    func isDisplayActive(_ id: SessionID) -> Bool { !suspendedDisplays.contains(id) }
+
+    func setDisplayActive(_ active: Bool, for id: SessionID) {
+        if active {
+            guard suspendedDisplays.remove(id) != nil else { return }
+            // One current snapshot, never replay samples or alter navigation modes.
+            tick(id)
+        } else {
+            suspendedDisplays.insert(id)
+        }
+    }
+
+    private func isDisplayActive(for stream: StreamID) -> Bool {
+        guard let session = sessions.values.first(where: { $0.charts.contains(where: { $0.streams.contains(where: { $0.id == stream }) }) }) else { return true }
+        return isDisplayActive(session.id)
+    }
+
     func tick(_ id: SessionID) {
+        guard isDisplayActive(id) else { return }
+        displayRefreshCount &+= 1
         if sessions[id]?.timeline.clockStoppedAt == nil { clockPulse = Date() }
         refresh(id)
     }
@@ -231,6 +254,7 @@ final class PipePlotAppModel {
     }
 
     func visibleSamples(for chart: ChartSnapshot, session: SessionSnapshot, range requestedRange: ClosedRange<Date>? = nil) -> (samples: [StreamID: [StoredSample]], current: Set<StreamID>) {
+        guard isDisplayActive(session.id) else { return ([:], []) }
         let range = requestedRange ?? domain(for: session)
         var current: Set<StreamID> = []
         let samples = Dictionary(uniqueKeysWithValues: chart.streams.map { stream in
@@ -275,6 +299,7 @@ final class PipePlotAppModel {
 
     func isCalculatingStats(_ stream: StreamID) -> Bool { queries.isCalculatingStatistics(stream) }
     func stats(for stream: StreamID, in selection: TimeSelection) -> SelectionStatistics? {
+        guard isDisplayActive(for: stream) else { return nil }
         let range = resolvedRange(selection, now: sessionNow(for: stream))
         return queries.stats(stream, key: queryKey(stream, range: range), store: queryStore) { [weak self] in self?.errorMessage = $0.localizedDescription }
     }
@@ -301,9 +326,11 @@ final class PipePlotAppModel {
         }
     }
     func nearestSample(_ stream: StreamID, at date: Date) -> StoredSample? {
-        queries.nearestSample(stream, key: queryKey(stream, range: date...date), store: queryStore)
+        guard isDisplayActive(for: stream) else { return nil }
+        return queries.nearestSample(stream, key: queryKey(stream, range: date...date), store: queryStore)
     }
     func fit(for stream: StreamID, selection: TimeSelection, cacheID: UUID? = nil) -> LinearFit? {
+        guard isDisplayActive(for: stream) else { return nil }
         let range = resolvedRange(selection, now: sessionNow(for: stream))
         return queries.fit(stream, cacheID: cacheID ?? stream, key: queryKey(stream, range: range), store: queryStore, completed: { [weak self] in
             guard let self else { return }
@@ -358,6 +385,7 @@ final class PipePlotAppModel {
         perform { try store.setForecasts(configurations, sessionID: session.id) }
     }
     func refreshForecast(_ session: SessionSnapshot) {
+        guard isDisplayActive(session.id) else { return }
         let configurations = session.isDeleted ? [] : (session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? [])
         let previous = allForecastStatuses[session.id] ?? []
         let statuses = configurations.map { configuration -> ForecastStatus in
@@ -453,6 +481,7 @@ final class PipePlotAppModel {
     func openSession(_ id: SessionID) { do { try store.setSessionOpen(true, sessionID: id); openedSessionIDs.insert(id); refresh(id) } catch { errorMessage = error.localizedDescription } }
     func windowClosed(_ id: SessionID) {
         guard !terminating else { return }
+        suspendedDisplays.remove(id)
         openedSessionIDs.remove(id)
         defer { connectionRegistry.closeConnections(for: id) }
         do {

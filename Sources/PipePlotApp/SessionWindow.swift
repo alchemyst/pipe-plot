@@ -6,6 +6,7 @@ import PipePlotCore
 struct SessionWindow: View {
     let sessionID: SessionID
     @Bindable var model: PipePlotAppModel
+    @State private var displayActive = false
     @State private var selectedChartID: ChartID?
     @State private var hoverDate: Date?
     @State private var dragStart: Date?
@@ -41,7 +42,18 @@ struct SessionWindow: View {
                 HStack { Spacer(); Button("Cancel") { showRenameSession = false }; Button("Save") { model.renameSession(sessionID, to: sessionTitle); showRenameSession = false }.keyboardShortcut(.defaultAction) }
             }.padding(22).frame(width: 340)
         }
-        .background(WindowFocusObserver { model.becameActive(sessionID) }.frame(width: 0, height: 0))
+        .background(SessionWindowObserver(onFocus: { model.becameActive(sessionID) }, onVisibility: { active in
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                model.setDisplayActive(active, for: sessionID)
+                displayActive = active
+                if !active {
+                    hoverDate = nil
+                    gestures = SessionGesturePreview()
+                }
+            }
+        }).frame(width: 0, height: 0))
         .alert("PipePlot", isPresented: errorPresented) { errorButtons } message: { errorMessage }
         .onKeyPress(keys: [.escape, "a", "d", "f", "w", "s"]) { press in
             guard !isEditingText, let session else { return .ignored }
@@ -81,13 +93,15 @@ struct SessionWindow: View {
             } else if session.charts.isEmpty {
                 ContentUnavailableView("No charts yet", systemImage: "chart.xyaxis.line", description: Text("Create a chart or pipe values into pp."))
             } else {
-                sharedRuler(session)
+                if displayActive { sharedRuler(session) }
+                // Retain row identity (including open editors) while their canvases
+                // and query entry points are suspended.
                 chartRows(session)
-                if let selection = session.timeline.selection {
+                if displayActive, let selection = session.timeline.selection {
                     SelectionInspector(session: session, selection: selection, model: model) { model.setSelection($0, session: session) }
                 }
             }
-            timelineBar(session)
+            if displayActive { timelineBar(session) }
         } else {
             ProgressView().task { model.refresh(sessionID) }
         }
@@ -480,6 +494,7 @@ private struct ChartRow: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             ZStack(alignment: .topLeading) {
+                if model.isDisplayActive(session.id) {
                 PlotCanvas(chart: plotChart, session: plotSession, samples: samples, currentDisplays: currentDisplays, domain: plotDomain, now: now, hoverDate: $hoverDate, selectionStart: $sharedSelectionStart, selectionPreview: $sharedSelectionEnd, selectionLinkedPreview: $sharedSelectionLinked,
                            onFollowSelectionDuration: {
                                 guard let selection = session.timeline.selection else { return }
@@ -543,6 +558,9 @@ private struct ChartRow: View {
                     .frame(height: 210)
                     .padding(.horizontal, 12)
                     .padding(.top, 6)
+                } else {
+                    Color.clear.frame(height: 216)
+                }
                 if chart.streams.isEmpty {
                     Text("Waiting for a pipeline…  Run `sampler | pp` to add data here.")
                         .font(.callout).foregroundStyle(.secondary)
@@ -935,25 +953,5 @@ private struct ReassociationSheet: View {
 
     private func candidateChartTitle(_ streamID: StreamID) -> String {
         session.charts.first(where: { $0.streams.contains(where: { $0.id == streamID }) })?.title ?? "Chart"
-    }
-}
-
-private struct WindowFocusObserver: NSViewRepresentable {
-    let onFocus: () -> Void
-    func makeNSView(context: Context) -> FocusView { let view = FocusView(); view.onFocus = onFocus; return view }
-    func updateNSView(_ nsView: FocusView, context: Context) { nsView.onFocus = onFocus; nsView.observeWindow() }
-    static func dismantleNSView(_ nsView: FocusView, coordinator: ()) { nsView.stopObserving() }
-
-    final class FocusView: NSView {
-        var onFocus: (() -> Void)?
-        private var token: NSObjectProtocol?
-        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); observeWindow() }
-        func observeWindow() {
-            guard let window, token == nil else { return }
-            token = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in self?.onFocus?() }
-            if window.isKeyWindow { onFocus?() }
-        }
-        func stopObserving() { if let token { NotificationCenter.default.removeObserver(token) }; token = nil }
-        deinit { stopObserving() }
     }
 }

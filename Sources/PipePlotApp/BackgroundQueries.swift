@@ -17,6 +17,8 @@ final class BackgroundQueries {
     @ObservationIgnored private var statisticsPending: Set<StreamID> = []
     @ObservationIgnored private var fitPending: Set<StreamID> = []
 
+    @ObservationIgnored private(set) var submittedQueryCount = 0
+
     struct QueryKey: Equatable {
         let start: Date
         let end: Date
@@ -27,6 +29,7 @@ final class BackgroundQueries {
         _ = revision
         if let entry = displays[id], entry.0 == key { return entry.1 }
         if displayPending.insert(id).inserted {
+            submittedQueryCount &+= 1
             queue.async { [weak self] in
                 let result = Result { try store.displaySamples(streamID: id, from: key.start, to: key.end, bucketCount: 800) }
                 DispatchQueue.main.async {
@@ -49,6 +52,7 @@ final class BackgroundQueries {
         _ = revision
         if let entry = statistics[id], entry.0 == key { return entry.1 }
         if statisticsPending.insert(id).inserted {
+            submittedQueryCount &+= 1
             queue.async { [weak self] in
                 let result = Result { try store.statistics(streamID: id, from: key.start, to: key.end) }
                 DispatchQueue.main.async {
@@ -65,6 +69,7 @@ final class BackgroundQueries {
         _ = revision
         if let entry = nearest[id], entry.0 == key { return entry.1 }
         if nearestPending.insert(id).inserted {
+            submittedQueryCount &+= 1
             queue.async { [weak self] in
                 let sample = try? store.nearestSample(streamID: id, at: key.start)
                 DispatchQueue.main.async {
@@ -79,6 +84,7 @@ final class BackgroundQueries {
     func fit(_ id: StreamID, cacheID: UUID, key: QueryKey, store: SampleStore, completed: @escaping () -> Void, failed: @escaping (Error) -> Void) -> LinearFit? {
         if let entry = fits[cacheID], entry.0 == key { return entry.1 }
         if fitPending.insert(cacheID).inserted {
+            submittedQueryCount &+= 1
             queue.async { [weak self] in
                 let result = Result { try store.linearFit(streamID: id, from: key.start, to: key.end) }
                 DispatchQueue.main.async {
