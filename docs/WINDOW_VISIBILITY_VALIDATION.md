@@ -38,3 +38,16 @@ This harness bypasses IPC and disables delivered system notifications by using a
 Regression tests additionally verify zero hidden query submissions, deferred forecast fitting, current data after reveal, unchanged timeline/selection modes and chart target, and producer disconnection with retained samples on deliberate close.
 
 Final checks: `PIPEPLOT_MEASURE_WINDOWS=1 swift test` passed all 85 package tests, `./scripts/test-transport.sh` passed all eight independent transport regressions, and `swift build -c release` passed.
+
+## UI-session recheck — 2026-10-31
+
+Rechecked after shared locator/brace and native command changes on an M2 Pro MacBook Pro (12 cores, 16 GB), macOS 27.2 (26B123), debug test build. `PIPEPLOT_MEASURE_WINDOWS=1 swift test` passed all 88 tests, including the four-window native measurement and hide/reveal/collection assertions.
+
+| Window state | Input | Wall seconds | CPU seconds | CPU % of one core | Queries | Refreshes | Rows per session |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Four visible | Idle | 4.027 | 0.1803 | 4.48 | 20 | 20 | 0 |
+| Four visible | Ingest | 4.053 | 0.5488 | 13.54 | 24 | 24 | 71 |
+| One visible, three minimised | Idle | 4.044 | 0.1906 | 4.71 | 5 | 5 | 0 |
+| One visible, three minimised | Ingest | 4.053 | 0.6642 | 16.39 | 6 | 6 | 67 |
+
+The display-query/refresh gate still scales with visible windows. CPU was higher in the minimised ingest interval in this run, so these short measurements **do not establish a CPU improvement**. Capture/persistence continue in all windows. Other desktop work and a separate sparse IPC producer were active; this is not an isolated resource-budget benchmark. The native harness again verified orderOut, app hide/unhide, deminiaturisation and raw sample retention while hidden.
