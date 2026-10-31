@@ -232,7 +232,10 @@ struct PlotCanvas: View {
                 let yPos = y(guide.value, range: valueRange, in: plot)
                 var path = Path(); path.move(to: CGPoint(x: plot.minX, y: yPos)); path.addLine(to: CGPoint(x: plot.maxX, y: yPos))
                 context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
-                if let label = guide.label, !label.isEmpty { context.draw(Text("\(label)  \(guide.value.formatted(.number.precision(.significantDigits(3))))").font(.system(size: 10, weight: .medium)).foregroundColor(color), at: CGPoint(x: plot.maxX - 5, y: yPos - 8), anchor: .trailing) }
+                if let label = guide.label, !label.isEmpty {
+                    drawBadge("\(label)  \(NumericText.format(guide.value, scale: numericScale, unit: chart.settings.unit))",
+                              color: color, at: CGPoint(x: plot.maxX, y: yPos - 20), in: plot, context: context, trailing: true)
+                }
             } else {
                 let date = Date(timeIntervalSince1970: guide.value)
                 let xPos = x(date, in: plot)
@@ -302,6 +305,16 @@ struct PlotCanvas: View {
 
     }
 
+    private func drawBadge(_ label: String, color: Color, at origin: CGPoint, in plot: CGRect,
+                           context: GraphicsContext, trailing: Bool = false) {
+        let text = context.resolve(Text(label).font(.system(size: 10, weight: .medium)).foregroundColor(color))
+        let size = text.measure(in: CGSize(width: max(1, plot.width - 10), height: .greatestFiniteMagnitude))
+        let preferred = CGPoint(x: trailing ? origin.x - size.width - 10 : origin.x, y: origin.y)
+        let rect = PlotAnnotationLayout.badge(size: size, preferredOrigin: preferred, plot: plot)
+        context.fill(Path(roundedRect: rect, cornerRadius: 3), with: .color(.black.opacity(0.8)))
+        context.draw(text, in: rect.insetBy(dx: 5, dy: 2))
+    }
+
     private func drawSelection(from start: Date, to end: Date, linked: Bool, in plot: CGRect, context: GraphicsContext) {
             let a = x(start, in: plot), b = x(end, in: plot)
             let rect = CGRect(x: min(a,b), y: plot.minY, width: abs(b-a), height: plot.height)
@@ -318,27 +331,9 @@ struct PlotCanvas: View {
         values.append(contentsOf: forecasts.filter { forecast in
             forecast.value.isFinite && chart.streams.contains(where: { $0.id == forecast.streamID })
         }.map(\.value))
-        guard let minimum = values.min(), let maximum = values.max() else { return 0...1 }
-        let scale = max(abs(minimum), abs(maximum), 1)
-        let lower = minimum / scale
-        let upper = maximum / scale
-        var paddedLower: Double
-        var paddedUpper: Double
-        if upper > lower {
-            let padding = (upper - lower) * 0.08
-            paddedLower = max(-1, lower - padding)
-            paddedUpper = min(1, upper + padding)
-        } else if upper >= 1 {
-            paddedLower = 0.92; paddedUpper = 1
-        } else if lower <= -1 {
-            paddedLower = -1; paddedUpper = -0.92
-        } else {
-            let delta = max(abs(lower) * 0.08, 0.02)
-            paddedLower = max(-1, lower - delta); paddedUpper = min(1, upper + delta)
-        }
-        if paddedLower >= paddedUpper { return -1...1 }
-        return (paddedLower * scale)...(paddedUpper * scale)
+        return PlotValueRange.automatic(values)
     }
+
     private func x(_ date: Date, in rect: CGRect) -> CGFloat { rect.minX + rect.width * CGFloat(date.timeIntervalSince(domain.lowerBound) / timeSpan) }
     private func y(_ value: Double, range: ClosedRange<Double>, in rect: CGRect) -> CGFloat {
         let scale = max(abs(range.lowerBound), abs(range.upperBound), abs(value.isFinite ? value : 0), 1)
