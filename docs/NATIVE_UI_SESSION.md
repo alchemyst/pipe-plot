@@ -27,3 +27,11 @@ Hide from Layout removes a stream's legend, marks, value labels, hover readout a
 Native release check, Session 26: hid Line 1 and Line 2 during `pp --test 2`, saw the all-hidden message, restored Line 1 through the nested chart menu, then Cmd-Z hid it and Cmd-Shift-Z restored it. Now advanced throughout (12:29:13–12:29:51). The restored plot includes samples captured during hiding.
 
 `StreamLayoutTests.testHiddenLastStreamKeepsCaptureStylePersistenceAndReplay` passed, including legacy decoding, persistence, last-stream target/row retention, style and samples across undo/redo. Debug/release build and install passed.
+
+## #8 — insertion and merge feedback (pointer acceptance outstanding)
+
+Whole chart rows now accept merge drops with a highlighted outline and destination label. Separators before/between/after rows accept insertion drops with a New chart here preview; Add Chart remains a destination. Invalid/cancelled drops clear the preview. Stream menus retain Move to Chart/New Chart and now offer Insert as New Chart Before. The store accepts a before anchor and correctly resolves the source after inserting before it.
+
+Native Session 32: Insert as New Chart Before → Chart 1 placed Line 1 in a new Chart 2 above Chart 1, retained live input in both, and Cmd-Z/Cmd-Shift-Z removed/restored the entire row move in one action. The targeted insertion regression passed, including source collapse, chart-owned unit/guide retention and later samples through replay.
+
+Pointer limitation: repeated computer-use drags did not yield an accepted native drop. A temporary native grip diagnostic received down/drag events, but the native drag session did not finish until another click and ended with operation 0. This does not establish whether the bridge or application drop handling is responsible. The diagnostic grip and all instrumentation were removed; the existing SwiftUI stream drag source is retained. Hover preview, successful pointer merge/insertion and pointer cancellation therefore remain unverified. **Do not close #8 on this evidence.**

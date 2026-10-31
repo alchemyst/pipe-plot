@@ -120,9 +120,7 @@ struct SessionWindow: View {
             Button { createChart() } label: { Label("Add Chart", systemImage: "chart.bar.xaxis") }
                 .help("Create a chart below and make it the Target (⌘⇧D)")
                 .dropDestination(for: String.self) { items, _ in
-                    guard let rawID = items.first, let id = UUID(uuidString: rawID) else { return false }
-                    model.moveToNewChart(id, sessionID: sessionID, after: selectedChartID)
-                    return true
+                    return model.dropStream(items, sessionID: sessionID, after: selectedChartID)
                 }
             Menu {
                 Button("Rename Session…") { sessionTitle = session?.title ?? ""; showRenameSession = true }
@@ -135,11 +133,13 @@ struct SessionWindow: View {
 
     private func chartRows(_ session: SessionSnapshot) -> some View {
         ScrollView {
-            LazyVStack(spacing: 12) {
+            LazyVStack(spacing: 4) {
                 ForEach(visibleCharts) { chart in
+                    StreamInsertionTarget(sessionID: session.id, before: chart.id, after: nil, model: model)
                     ChartRowHost(chart: chart, session: session, model: model, hoverDate: $hoverDate,
                                  gestures: gestures, selectedChartID: $selectedChartID)
                 }
+                StreamInsertionTarget(sessionID: session.id, before: nil, after: visibleCharts.last?.id, model: model)
             }.padding(16)
         }.background(Color(nsColor: .underPageBackgroundColor))
     }
@@ -393,6 +393,29 @@ private struct SelectionInspector: View {
     }
 }
 
+private struct StreamInsertionTarget: View {
+    let sessionID: SessionID
+    let before: ChartID?
+    let after: ChartID?
+    let model: PipePlotAppModel
+    @State private var targeted = false
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 3).fill(targeted ? Color.accentColor : Color.secondary.opacity(0.18)).frame(height: targeted ? 4 : 1)
+            if targeted {
+                Text("New chart here").font(.caption.weight(.semibold)).padding(.horizontal, 10)
+                    .background(.regularMaterial, in: Capsule())
+            }
+        }.frame(height: 20).contentShape(Rectangle())
+            .accessibilityLabel("Drop stream here to insert a new chart")
+            .dropDestination(for: String.self) { items, _ in
+                targeted = false
+                return model.dropStream(items, sessionID: sessionID, before: before, after: after)
+            } isTargeted: { targeted = $0 }
+    }
+}
+
 private struct ChartRowHost: View {
     let chart: ChartSnapshot
     let session: SessionSnapshot
@@ -400,6 +423,7 @@ private struct ChartRowHost: View {
     @Binding var hoverDate: Date?
     let gestures: SessionGesturePreview
     @Binding var selectedChartID: ChartID?
+    @State private var mergeTargeted = false
 
     var body: some View {
         let display = model.visibleSamples(for: chart, session: session, range: gestures.domain)
@@ -420,7 +444,17 @@ private struct ChartRowHost: View {
                  onRename: { stream, name in model.rename(stream, to: name) },
                  onMove: { stream, destination in model.move(stream, to: destination) })
             .onTapGesture { selectedChartID = chart.id; model.selectChart(chart.id, sessionID: session.id) }
-            .overlay(RoundedRectangle(cornerRadius: 13).stroke(selectedChartID == chart.id ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 2))
+            .overlay(RoundedRectangle(cornerRadius: 13).stroke(mergeTargeted ? Color.accentColor : (selectedChartID == chart.id ? Color.accentColor.opacity(0.5) : .clear), lineWidth: mergeTargeted ? 4 : 2))
+            .overlay(alignment: .topLeading) {
+                if mergeTargeted {
+                    Text("Merge stream into \(chart.title)").font(.caption.weight(.semibold)).padding(8)
+                        .background(.regularMaterial, in: Capsule()).padding(8).allowsHitTesting(false)
+                }
+            }
+            .dropDestination(for: String.self) { items, _ in
+                mergeTargeted = false
+                return model.dropStream(items, sessionID: session.id, onto: chart.id)
+            } isTargeted: { mergeTargeted = $0 }
     }
 }
 
@@ -728,17 +762,14 @@ private struct ChartRow: View {
                     .background(.quaternary.opacity(0.6), in: Capsule())
                     .background(SnapshotContextMenu { streamActions(stream) })
                     .draggable(stream.id.uuidString)
+
                 }
                 if layoutStreams.isEmpty { Text(chart.streams.isEmpty ? "No streams" : "\(hiddenStreams.count) hidden stream(s) · restore from Chart actions").font(.caption).foregroundStyle(.secondary) }
             }.padding(.horizontal, 14).padding(.vertical, 9)
         }.scrollIndicators(.hidden)
-            .dropDestination(for: String.self) { items, _ in
-                guard let rawID = items.first, let id = UUID(uuidString: rawID) else { return false }
-                onMove(id, chart.id)
-                return true
-            }
-            .help("Drop a stream here to move it to this chart")
+            .help("Drag a stream onto a chart to merge, or onto a separator to insert a row")
     }
+
 
     private func streamActions(_ stream: StreamDescriptor) -> [SnapshotMenuItem] {
         [.command("Rename…") { renameText = stream.name; renameStream = stream },
@@ -746,6 +777,9 @@ private struct ChartRow: View {
              .command(destination.title) { onMove(stream.id, destination.id) }
          }),
          .command("Move to New Chart") { model.moveToNewChart(stream.id, sessionID: session.id, after: chart.id) },
+         .submenu("Insert as New Chart Before", session.charts.filter(\.isVisible).map { destination in
+             .command(destination.title) { _ = model.dropStream([stream.id.uuidString], sessionID: session.id, before: destination.id) }
+         }),
          .command("Continue / Reassociate Group…") { reassociationSource = stream },
          .command("Hide from Layout") { model.setStreamLayoutHidden(true, streamID: stream.id) }]
     }

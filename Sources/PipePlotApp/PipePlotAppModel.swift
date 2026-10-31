@@ -172,6 +172,22 @@ final class PipePlotAppModel {
             refreshAll()
         } catch { errorMessage = error.localizedDescription; refresh(sessionID) }
     }
+    func dropStream(_ items: [String], sessionID: SessionID, onto destination: ChartID? = nil, before: ChartID? = nil, after: ChartID? = nil) -> Bool {
+        guard items.count == 1, let id = UUID(uuidString: items[0]),
+              let session = try? store.snapshot(sessionID: sessionID),
+              let source = session.charts.first(where: { $0.streams.contains(where: { $0.id == id }) }) else { return false }
+        do {
+            if let destination {
+                guard destination != source.id, session.charts.contains(where: { $0.id == destination && $0.isVisible }) else { return false }
+                try store.moveStream(id, to: destination)
+            } else {
+                _ = try store.moveStreamToNewChart(id, after: after, before: before)
+            }
+            refreshAll()
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
+    }
+
     func renameSession(_ id: SessionID, to title: String) { perform { try store.renameSession(id, to: title) } }
     func renameChart(_ id: ChartID, to title: String) { perform { try store.renameChart(id, to: title) } }
     func reorderChart(_ id: ChartID, to index: Int) { perform { try store.reorderChart(id, to: index) } }

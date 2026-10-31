@@ -325,12 +325,17 @@ public final class PipePlotStore {
     /// Creates a chart immediately after the stream's current chart and moves the stream
     /// as one undoable model action. The app-wide target is preserved unless source collapse
     /// requires its normal fallback.
-    @discardableResult public func moveStreamToNewChart(_ streamID:StreamID,after afterChartID:ChartID?=nil) throws -> ChartSnapshot {
+    @discardableResult public func moveStreamToNewChart(_ streamID:StreamID,after afterChartID:ChartID?=nil,before beforeChartID:ChartID?=nil) throws -> ChartSnapshot {
         lock.lock(); defer{lock.unlock()}
         guard let (si,sourceIndex)=streamIndices(streamID), let sourcePosition=sessions[si].charts[sourceIndex].streams.firstIndex(where:{$0.id==streamID}) else { throw DomainError.unknownStream }
         let sourceID=sessions[si].charts[sourceIndex].id
         let insertionAnchor=afterChartID.flatMap{aid in sessions[si].charts.firstIndex(where:{$0.id==aid})} ?? sourceIndex
-        let chartIndex=insertionAnchor+1, id=UUID()
+        let chartIndex: Int
+        if let beforeChartID {
+            guard let index = sessions[si].charts.firstIndex(where: { $0.id == beforeChartID }) else { throw DomainError.unknownChart }
+            chartIndex = index
+        } else { chartIndex = insertionAnchor + 1 }
+        let id=UUID()
         var chart=ChartRecord(id:id,title:"Chart \(sessions[si].charts.count+1)",streams:[],settings:AxisSettings(),guides:[],isVisible:true)
         let oldTarget=targetChartID, wasVisible=sessions[si].charts[sourceIndex].isVisible
         var stream=sessions[si].charts[sourceIndex].streams.remove(at:sourcePosition)
@@ -339,8 +344,8 @@ public final class PipePlotStore {
         if stream.linesVisible == nil { stream.linesVisible=sessions[si].charts[sourceIndex].settings.linesVisible }
         chart.streams.append(stream)
         sessions[si].charts.insert(chart,at:chartIndex)
-        if sessions[si].charts[sourceIndex].streams.isEmpty {
-            sessions[si].charts[sourceIndex].isVisible=false
+        if let updatedSource = sessions[si].charts.firstIndex(where: { $0.id == sourceID }), sessions[si].charts[updatedSource].streams.isEmpty {
+            sessions[si].charts[updatedSource].isVisible=false
             if targetChartID==sourceID { fallbackTarget() }
         }
         record(.moveToNewChart(streamID,from:sourceID,chart:chart,index:chartIndex,streamIndex:sourcePosition,sourceWasVisible:wasVisible,targetBefore:oldTarget,targetAfter:targetChartID),in:sessions[si].id)
