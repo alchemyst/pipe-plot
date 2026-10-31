@@ -160,6 +160,7 @@ struct PlotCanvas: View {
         }
 
         context.clip(to: Path(plot))
+        var extremaLabels: [CGRect] = []
         for (index, stream) in chart.streams.enumerated() {
             let data = samples[stream.id] ?? []
             guard !data.isEmpty else { continue }
@@ -202,9 +203,23 @@ struct PlotCanvas: View {
                     let point = CGPoint(x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
                     let symbol = extremum.kind == .peak ? "▲" : "▼"
                     let name = chart.streams.count > 1 ? "\(stream.name) " : ""
-                    let verticalOffset: CGFloat = extremum.kind == .peak ? -9 : 9
-                    context.draw(Text("\(symbol) \(name)\(NumericText.format(sample.value, scale: chart.settings.numericScale ?? .decimal, unit: chart.settings.unit))")
-                        .font(.system(size: 9, weight: .semibold)).foregroundColor(color), at: CGPoint(x: point.x + 5, y: point.y + verticalOffset), anchor: .leading)
+                    let label = Text("\(symbol) \(name)\(NumericText.format(sample.value, scale: numericScale, unit: chart.settings.unit))")
+                        .font(.system(size: 9, weight: .semibold)).foregroundColor(color)
+                    let resolved = context.resolve(label)
+                    let labelSize = resolved.measure(in: plot.size)
+                    let width = min(plot.width, labelSize.width + 6)
+                    let height = labelSize.height + 4
+                    let preferredY = extremum.kind == .peak ? point.y - height - 5 : point.y + 5
+                    let alternateY = extremum.kind == .peak ? point.y + 5 : point.y - height - 5
+                    for candidateY in [preferredY, alternateY] {
+                        let rect = CGRect(x: min(max(point.x - width / 2, plot.minX), plot.maxX - width),
+                                          y: min(max(candidateY, plot.minY), plot.maxY - height), width: width, height: height)
+                        guard !extremaLabels.contains(where: { $0.intersects(rect.insetBy(dx: -2, dy: -2)) }) else { continue }
+                        context.fill(Path(roundedRect: rect, cornerRadius: 3), with: .color(.black.opacity(0.75)))
+                        context.draw(resolved, at: CGPoint(x: rect.midX, y: rect.midY), anchor: .center)
+                        extremaLabels.append(rect)
+                        break
+                    }
                 }
             }
             if let last = data.last {
