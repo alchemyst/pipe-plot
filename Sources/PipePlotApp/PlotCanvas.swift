@@ -226,24 +226,6 @@ struct PlotCanvas: View {
 
         }
 
-        // Place labels after collecting extrema so neither kind obscures the other.
-        var labelRects = extremaLabels
-        for (index, stream) in chart.streams.enumerated() {
-            guard currentDisplays.contains(stream.id), let last = samples[stream.id]?.last,
-                  last.timestamp == stream.lastSampleAt, domain.contains(last.timestamp) else { continue }
-            let point = CGPoint(x: x(last.timestamp, in: plot), y: y(last.value, range: valueRange, in: plot))
-            guard point.x >= plot.minX, point.x <= plot.maxX,
-                  point.y >= plot.minY, point.y <= plot.maxY else { continue }
-            let name = chart.streams.count > 1 ? "\(stream.name) " : ""
-            let label = Text(name + NumericText.format(last.value, scale: numericScale, unit: chart.settings.unit))
-                .font(.system(size: 9, weight: .medium)).foregroundColor(Self.color(for: stream, fallback: index))
-            let resolved = context.resolve(label)
-            let size = resolved.measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
-            guard let rect = LatestLabelLayout.place(point: point, size: size, plot: plot, occupied: labelRects) else { continue }
-            context.draw(resolved, at: CGPoint(x: rect.minX, y: rect.midY), anchor: .leading)
-            labelRects.append(rect)
-        }
-
         for guide in chart.guides + session.timeGuides {
             let color = Color(hex: guide.color)
             if guide.orientation == .horizontalValue {
@@ -299,6 +281,25 @@ struct PlotCanvas: View {
             var path = Path(); path.move(to: CGPoint(x: xPos, y: plot.minY)); path.addLine(to: CGPoint(x: xPos, y: plot.maxY))
             context.stroke(path, with: .color(.primary.opacity(0.6)), style: StrokeStyle(lineWidth: 1, dash: [3,3]))
         }
+        // Place labels after collecting extrema so neither kind obscures the other.
+        var labelRects = extremaLabels
+        for (index, stream) in chart.streams.enumerated() {
+            guard currentDisplays.contains(stream.id), let last = samples[stream.id]?.last,
+                  last.timestamp == stream.lastSampleAt, domain.contains(last.timestamp) else { continue }
+            let point = CGPoint(x: x(last.timestamp, in: plot), y: y(last.value, range: valueRange, in: plot))
+            guard point.x >= plot.minX, point.x <= plot.maxX,
+                  point.y >= plot.minY, point.y <= plot.maxY else { continue }
+            let name = chart.streams.count > 1 ? "\(stream.name) " : ""
+            let label = Text(name + NumericText.format(last.value, scale: numericScale, unit: chart.settings.unit))
+                .font(.system(size: 9, weight: .medium)).foregroundColor(Self.color(for: stream, fallback: index))
+            let resolved = context.resolve(label)
+            let size = resolved.measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+            guard let rect = LatestLabelLayout.place(point: point, size: size, plot: plot, occupied: labelRects) else { continue }
+            context.fill(Path(rect), with: .color(.black.opacity(0.8)))
+            context.draw(resolved, at: CGPoint(x: rect.minX, y: rect.midY), anchor: .leading)
+            labelRects.append(rect)
+        }
+
     }
 
     private func drawSelection(from start: Date, to end: Date, linked: Bool, in plot: CGRect, context: GraphicsContext) {
