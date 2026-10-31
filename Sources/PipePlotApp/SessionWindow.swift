@@ -495,6 +495,7 @@ private struct ChartRow: View {
                            selection: session.timeline.selection,
                            forecasts: model.forecastDrawings(for: chart, session: session),
                            draggingGuideID: sharedGuidePreview?.id,
+                           trainingRanges: model.forecastTrainingRanges(for: chart, session: session),
                            onSelectionCommit: { start, end, mode in
                                 guard let start, let end else { onSelection(nil); return }
                                 onSelection(TimeSelection(start: start, end: end, mode: mode ?? .fixed, selectedStreamIDs: Set(chart.streams.map(\.id))))

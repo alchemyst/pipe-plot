@@ -20,6 +20,7 @@ struct PlotCanvas: View {
     let selection: TimeSelection?
     let forecasts: [ForecastDrawing]
     var draggingGuideID: UUID? = nil
+    var trainingRanges: [ForecastTrainingRange] = []
     let onSelectionCommit: (Date?, Date?, SelectionMode?) -> Void
     let onGuide: (Guide, PlotGesturePhase) -> Void
     let onPan: (CGSize, PlotGesturePhase, CGFloat) -> Void
@@ -31,9 +32,7 @@ struct PlotCanvas: View {
         GeometryReader { geometry in
             let plot = plotRect(for: geometry.size)
             ZStack(alignment: .topLeading) {
-                Canvas(opaque: false, colorMode: .linear) { context, size in
-                    draw(in: context, size: size)
-                }
+                drawingCanvas
                 PlotInteractionOverlay(
                     guides: chart.guides + session.timeGuides,
                     selectionRange: currentSelectionRange,
@@ -99,6 +98,13 @@ struct PlotCanvas: View {
                     .position(x: x(selection!.start, in: plot), y: plot.maxY - 8)
                 }
             }
+        }
+    }
+
+    /// The same drawing surface can be rendered without the AppKit gesture overlay for visual review.
+    var drawingCanvas: some View {
+        Canvas(opaque: false, colorMode: .linear) { context, size in
+            draw(in: context, size: size)
         }
     }
 
@@ -227,6 +233,10 @@ struct PlotCanvas: View {
 
         }
 
+        var annotationRects: [CGRect] = []
+        if domain.contains(now) {
+            annotationRects.append(CGRect(x: min(plot.maxX - 42, x(now, in: plot) - 42), y: plot.minY, width: 42, height: 18))
+        }
         for guide in chart.guides + session.timeGuides {
             let color = Color(hex: guide.color)
             if guide.orientation == .horizontalValue {
@@ -235,8 +245,8 @@ struct PlotCanvas: View {
                 context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
                 if draggingGuideID == guide.id || !(guide.label ?? "").isEmpty {
                     let label = GuideReadout.horizontal(guide, settings: chart.settings, dragging: draggingGuideID == guide.id)
-                    drawBadge(label,
-                              color: color, at: CGPoint(x: plot.maxX, y: yPos - 20), in: plot, context: context, trailing: true)
+                    annotationRects.append(drawBadge(label,
+                              color: color, at: CGPoint(x: plot.maxX, y: yPos - 20), in: plot, context: context, trailing: true, occupied: annotationRects))
                 }
             } else {
                 let date = Date(timeIntervalSince1970: guide.value)
@@ -245,7 +255,7 @@ struct PlotCanvas: View {
                 context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
                 let label = GuideReadout.vertical(guide, timeline: session.timeline, reference: referenceTime,
                                                   dragging: draggingGuideID == guide.id, includeDate: timeSpan > 86_400)
-                drawBadge(label, color: color, at: CGPoint(x: xPos + 5, y: plot.minY + 2), in: plot, context: context)
+                annotationRects.append(drawBadge(label, color: color, at: CGPoint(x: xPos + 5, y: plot.minY + 2), in: plot, context: context, occupied: annotationRects))
             }
         }
         for forecast in forecasts {
@@ -271,6 +281,22 @@ struct PlotCanvas: View {
         } else if let (start, end) = savedSelection {
             drawSelection(from: start, to: end, linked: selection?.mode != .fixed, in: plot, context: context)
         }
+        // Separate labelled lanes distinguish saved fits from the active selection and dashed extrapolation.
+        for (index, training) in trainingRanges.enumerated() {
+            guard training.range.overlaps(domain) else { continue }
+            let color = chart.streams.first(where: { $0.id == training.streamID }).map { Self.color(for: $0, fallback: 0) } ?? .orange
+            let left = x(max(training.range.lowerBound, domain.lowerBound), in: plot)
+            let right = x(min(training.range.upperBound, domain.upperBound), in: plot)
+            let laneY = min(plot.maxY - 8, plot.minY + 38 + CGFloat(index) * 24)
+            var bracket = Path()
+            bracket.move(to: CGPoint(x: left, y: laneY - 4))
+            bracket.addLine(to: CGPoint(x: left, y: laneY))
+            bracket.addLine(to: CGPoint(x: right, y: laneY))
+            bracket.addLine(to: CGPoint(x: right, y: laneY - 4))
+            context.stroke(bracket, with: .color(color), lineWidth: 2)
+            annotationRects.append(drawBadge(training.label + (training.linked ? " · linked" : ""), color: color,
+                      at: CGPoint(x: left, y: laneY - 20), in: plot, context: context, occupied: annotationRects))
+        }
         if domain.contains(now) {
             let nowX = x(now, in: plot)
             var path = Path(); path.move(to: CGPoint(x: nowX, y: plot.minY)); path.addLine(to: CGPoint(x: nowX, y: plot.maxY))
@@ -283,7 +309,7 @@ struct PlotCanvas: View {
             context.stroke(path, with: .color(.primary.opacity(0.6)), style: StrokeStyle(lineWidth: 1, dash: [3,3]))
         }
         // Place labels after collecting extrema so neither kind obscures the other.
-        var labelRects = extremaLabels
+        var labelRects = extremaLabels + annotationRects
         for (index, stream) in chart.streams.enumerated() {
             guard currentDisplays.contains(stream.id), let last = samples[stream.id]?.last,
                   last.timestamp == stream.lastSampleAt, domain.contains(last.timestamp) else { continue }
@@ -304,13 +330,14 @@ struct PlotCanvas: View {
     }
 
     private func drawBadge(_ label: String, color: Color, at origin: CGPoint, in plot: CGRect,
-                           context: GraphicsContext, trailing: Bool = false) {
+                           context: GraphicsContext, trailing: Bool = false, occupied: [CGRect] = []) -> CGRect {
         let text = context.resolve(Text(label).font(.system(size: 10, weight: .medium)).foregroundColor(color))
         let size = text.measure(in: CGSize(width: max(1, plot.width - 10), height: .greatestFiniteMagnitude))
         let preferred = CGPoint(x: trailing ? origin.x - size.width - 10 : origin.x, y: origin.y)
-        let rect = PlotAnnotationLayout.badge(size: size, preferredOrigin: preferred, plot: plot)
+        let rect = PlotAnnotationLayout.badge(size: size, preferredOrigin: preferred, plot: plot, occupied: occupied)
         context.fill(Path(roundedRect: rect, cornerRadius: 3), with: .color(.black.opacity(0.8)))
         context.draw(text, in: rect.insetBy(dx: 5, dy: 2))
+        return rect
     }
 
     private func drawSelection(from start: Date, to end: Date, linked: Bool, in plot: CGRect, context: GraphicsContext) {

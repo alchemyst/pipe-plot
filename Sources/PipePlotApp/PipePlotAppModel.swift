@@ -388,6 +388,20 @@ final class PipePlotAppModel {
         allForecastStatuses[session.id] = statuses
         forecastStatuses[session.id] = statuses.first
     }
+    func forecastTrainingRanges(for chart: ChartSnapshot, session: SessionSnapshot) -> [ForecastTrainingRange] {
+        let configurations = session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? []
+        return configurations.compactMap { configuration in
+            guard let stream = chart.streams.first(where: { $0.id == configuration.streamID }) else { return nil }
+            let guide = chart.guides.first { $0.id == configuration.guideID }
+            let target = guide?.label.flatMap { $0.isEmpty ? nil : $0 }
+                ?? guide.map { NumericText.format($0.value, scale: chart.settings.numericScale ?? .decimal, unit: chart.settings.unit) }
+                ?? "missing target"
+            return ForecastTrainingRange(id: configuration.id, streamID: stream.id,
+                label: "\(stream.name) → \(target) · training",
+                range: resolvedRange(configuration.selection, now: sessionNow(session)),
+                linked: configuration.selection.mode != .fixed)
+        }
+    }
     func forecastDrawings(for chart: ChartSnapshot, session: SessionSnapshot) -> [ForecastDrawing] {
         (allForecastStatuses[session.id] ?? []).compactMap { status in
             guard chart.streams.contains(where: { $0.id == status.configuration.streamID }),
@@ -547,6 +561,14 @@ struct ForecastStatus {
         self.configuration = configuration; self.fit = fit; self.guide = guide
         self.crossing = crossing; self.message = message; self.fitSampleCount = fitSampleCount; self.fitRange = fitRange
     }
+}
+
+struct ForecastTrainingRange: Identifiable {
+    let id: UUID
+    let streamID: StreamID
+    let label: String
+    let range: ClosedRange<Date>
+    let linked: Bool
 }
 
 struct ForecastDrawing {
