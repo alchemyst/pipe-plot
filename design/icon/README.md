@@ -1,0 +1,15 @@
+# PipePlot icon prototype
+
+Run `just icon` from the project to regenerate the pipe render, transparent compositing layers, 1024 px preview, iconset and macOS `.icns`. Alternatively, run `python3 design/icon/build.py` from the repository root. This requires POV-Ray, Python 3 with Pillow, and macOS `iconutil`. Install Pillow in a suitable Python environment if needed (`python3 -m pip install Pillow`). The build writes into this directory.
+
+`pipe.pov` holds the geometry, camera, metal and lights. `build.py` controls placement, chart, simulated glass, supersampling and export. `01-pipe.png`, `02-chart.png` and `03-glass-preview.png` are transparent full-canvas layers; `pipe.png` is the raw render. The iconset contains 16, 32, 128, 256 and 512 point images at 1x and 2x. `PipePlot.icns` is a static composite.
+
+The glass is a drawn approximation, not Apple's dynamic Liquid Glass, and the preview includes an outer mask. For a native layered icon, create a separate Icon Composer document from unmasked artwork, opt the pipe render out of glass, and make a simple enclosure shape with Icon Composer's glass controls. Recheck positions, appearance variants and small sizes there. The current layers are a starting point, not a finished `.icon` document; the composite includes a baked glow and the glass preview has baked highlights. The static `.icns` is included in the app bundle by `just bundle` or `just install`.
+
+## Concept proportions
+
+Measured from the supplied 1312 × 1200 concept, relative to the rounded icon's approximate bounds (151,90)–(1158,1086), and mapped to the preview's 1024 canvas: flange roughly (73,267)–(182,725); exposed pipe roughly (145,390)–(406,589); box roughly (406,279)–(950,720). These are visual estimates, not exact geometric boundaries. The generated pipe alpha bounds are approximately (70,267)–(411,725), its shaft is 198 pixels high, and the glass outline is centered on the target box bounds. Antialiasing adds a few pixels to exported alpha bounds. The pipe's and box's finishes remain a static approximation of the concept.
+
+The stainless finish uses a reflection-only studio environment, broad lights and a fine stretched normal pattern. These are all in `pipe.pov`; the reflection environment is hidden from camera rays so the isolated PNG retains transparency. This is a stylized approximation of brushed metal.
+
+The chart grid (`02-chart.png`) and glass preview (`03-glass-preview.png`) are separate full-canvas layers. `build.py` generates a shared POV-Ray scene for the pipe and plot (`shared-generated.pov`), allowing the pipe to occlude the tube and its reflective surface to see it. It also renders a separate tube mask (`04-plot-3d.png`) for image-space bloom, which does not physically illuminate surrounding objects. A warm studio light approximates illumination from the plot; the tube uses an ambient finish rather than acting as a physical light source. `05-shared-scene.png` is the aligned shared render. The bloom and glass are baked into the static composite.

@@ -12,6 +12,9 @@ private struct Options {
     var listing = false
     var testColumns: Int?
     var event = false
+    var watchCommand: String?
+    var interval: TimeInterval = 2
+    var intervalSpecified = false
 }
 
 private enum CLIError: Error, LocalizedError {
@@ -56,6 +59,15 @@ private func parseOptions(_ arguments: [String]) throws -> Options {
             guard (1...32).contains(columns) else { throw CLIError.usage("--test column count must be between 1 and 32\n\(usage)") }
             options.testColumns = columns
         case "--event": options.event = true
+        case "--watch":
+            index += 1
+            guard index < arguments.count, !arguments[index].isEmpty else { throw CLIError.usage("--watch needs a shell command\n\(usage)") }
+            options.watchCommand = arguments[index]
+        case "--interval":
+            index += 1
+            guard index < arguments.count, let value = Double(arguments[index]), value.isFinite, value > 0, value <= 86400 else { throw CLIError.usage("--interval must be a number of seconds greater than zero and at most 86400\n\(usage)") }
+            options.interval = value
+            options.intervalSpecified = true
         default:
             if argument == "ls" && arguments.count == 1 { options.listing = true }
             else if argument.hasPrefix("-") { throw CLIError.usage("unknown option: \(argument)\n\(usage)") }
@@ -73,6 +85,8 @@ private func parseOptions(_ arguments: [String]) throws -> Options {
     if options.event && (options.testColumns != nil || options.names != nil || options.unit != nil) {
         throw CLIError.usage("--event cannot be combined with numeric test, line naming, or unit options\n\(usage)")
     }
+    if options.watchCommand != nil && (options.testColumns != nil || options.event) { throw CLIError.usage("--watch cannot be combined with --test or --event\n\(usage)") }
+    if options.intervalSpecified && options.watchCommand == nil { throw CLIError.usage("--interval requires --watch\n\(usage)") }
     return options
 }
 
@@ -87,6 +101,8 @@ Usage:
   sampler | pp 2 memory [free ...]     attach named lines in session 2
   pp ls                                list sessions, charts and lines
   pp --test [columns]                  generate one sine sample per second (default 1)
+  pp --watch 'command'                 run a shell command repeatedly (default 2 seconds)
+  pp --watch 'command' --interval 0.5  wait 0.5 seconds between runs
   Options: --fresh starts a new group; --label LABEL describes the sampler.
 """
 
@@ -274,6 +290,8 @@ private func runSampler(_ options: Options) throws {
     let parser = InputParser()
     let interrupt = InterruptMonitor()
     let sine = options.testColumns.map(SineSampler.init(columns:))
+    let watcher = options.watchCommand.map { WatchSampler(command: $0, interval: options.interval) }
+    defer { watcher?.stop() }
     var readyConnection: SocketConnection? = nil
     var columnCount: Int? = nil
     var messageCount = 0
@@ -372,13 +390,16 @@ private func runSampler(_ options: Options) throws {
     var inputEnded = false
     var nextTestSample = Date()
     while !inputEnded && !interrupt.interrupted {
+        if let watcher {
+            if let data = try watcher.next() { try consume(parser.append(data)) }
+        }
         if let sine, Date() >= nextTestSample {
             try consume(parser.append(Data(sine.row().utf8)))
             nextTestSample = Date().addingTimeInterval(1)
             continue
         }
         var descriptors: [pollfd] = []
-        let inputIndex: Int? = sine == nil ? descriptors.count : nil
+        let inputIndex: Int? = sine == nil && watcher == nil ? descriptors.count : nil
         if inputIndex != nil { descriptors.append(pollfd(fd: inputDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)) }
         let socketIndex: Int?
         if let connection = readyConnection {
@@ -387,7 +408,7 @@ private func runSampler(_ options: Options) throws {
         } else {
             socketIndex = nil
         }
-        let timeout: Int32 = sine != nil ? 100 : (readyConnection == nil ? -1 : 250)
+        let timeout: Int32 = sine != nil || watcher != nil ? 100 : (readyConnection == nil ? -1 : 250)
         let result = Darwin.poll(&descriptors, nfds_t(descriptors.count), timeout)
         if result < 0 {
             if errno == EINTR { continue }

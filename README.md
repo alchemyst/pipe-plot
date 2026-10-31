@@ -4,14 +4,18 @@ Native macOS plots for temporary numeric streams. Pipe a sampler into `pp`; each
 
 ## Build and install
 
-Requires Apple Silicon, macOS 27, and Xcode's Swift toolchain. No third-party Swift packages are required.
+Requires Apple Silicon, macOS 27, Xcode's Swift toolchain, and [just](https://just.systems/). No third-party Swift packages are required.
 
 ```sh
-swift test
-./scripts/install-local.sh
+just test
+just install
 ```
 
-This builds an ad-hoc signed `~/Applications/PipePlot.app` and installs `~/.local/bin/pp`. Add `~/.local/bin` to your shell's `PATH` if it is not already present. You can also invoke `~/.local/bin/pp` directly. Build without installing using `./scripts/build-app-bundle.sh`.
+`just install` builds and installs an ad-hoc signed `~/Applications/PipePlot.app` and `~/.local/bin/pp` together. Add `~/.local/bin` to your shell's `PATH` if it is not already present. You can also invoke `~/.local/bin/pp` directly. Building alone does not update either installed copy; run `just install` again after changes.
+
+Use `just` to list the project commands. `just build` compiles the release binaries, `just bundle` builds the app in `.build/pipeplot-stage/` without installing it, and `just check` runs the package tests and independent transport regression tests. The smoke and cold-pipeline scripts in `scripts/` exercise an installed app and create sessions, so they are not part of `just check`.
+
+`just icon` regenerates the static icon assets and requires POV-Ray, Python with Pillow, and macOS `iconutil`; see [the icon build notes](design/icon/README.md). Ordinary builds use the existing icon and do not require those tools. The underlying Swift and shell commands can also be run directly without `just`.
 
 ## Capture
 
@@ -32,6 +36,8 @@ pp --test 2
 The target sink is explicit and shared across windows. Changing focus never redirects a producer. Cmd-N creates a new session; Cmd-Shift-D creates and targets a chart. Existing producers retain their assigned streams.
 
 `pp --test [columns]` generates a local sine-wave stream at one row per second (one column by default, up to 32). It uses the same target, chart, and session routing options as a pipeline. Press Ctrl-C to finish and retain the generated samples; no producer process is started.
+
+`pp --watch 'command'` runs a command repeatedly using `/bin/sh -c` and plots its standard output using the normal numeric row parser. For example, `pp --watch 'sysctl -n vm.loadavg | awk "{print \$2}"' --interval 5 -n load` samples every five seconds. The default interval is two seconds, measured after each command finishes, so runs never overlap. Output without a final newline is accepted; multiple numeric lines produce multiple samples. Standard error is displayed in the terminal, and a nonzero command exit stops polling with an error. Press Ctrl-C to stop the command and finish the capture. The command's standard input is `/dev/null`. Use shell quoting as you would for any command string, and make sure its output is numeric.
 
 `pp --event` reads UTF-8 text lines and adds one session-wide vertical time guide for each nonblank line. Each event is timestamped when `pp` receives the line; CRLF is accepted, and a final line without a newline is kept. A line is limited to 64 KiB; invalid UTF-8, NUL bytes, and oversized lines are rejected with a diagnostic on standard error. Event connections create no numeric streams. They use the current target by default; `-c` or `-s` routes to a new chart or session, and `pp --event 2` attaches to session 2. It cannot be combined with `--test`, numeric line names, or `--unit`. The session clock advances while any producer or event connection remains active and freezes when the last one ends.
 
