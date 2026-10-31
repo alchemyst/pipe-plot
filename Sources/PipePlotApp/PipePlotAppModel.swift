@@ -279,10 +279,12 @@ final class PipePlotAppModel {
         return queries.stats(stream, key: queryKey(stream, range: range), store: queryStore) { [weak self] in self?.errorMessage = $0.localizedDescription }
     }
     func setTimeZone(_ zone: PlotTimeZone, session: SessionSnapshot) {
-        var timeline = session.timeline; timeline.timeZone = zone; saveTimeline(timeline, session.id)
+        do { try store.setTimeZone(zone, sessionID: session.id); refresh(session.id) }
+        catch { errorMessage = error.localizedDescription }
     }
     func setTimeReference(_ guide: UUID?, session: SessionSnapshot) {
-        var timeline = session.timeline; timeline.referenceTimeGuideID = guide; saveTimeline(timeline, session.id)
+        do { try store.setTimeReference(guide, sessionID: session.id); refresh(session.id) }
+        catch { errorMessage = error.localizedDescription }
     }
     func resolvedSelectionBounds(_ selection: TimeSelection, session: SessionSnapshot) -> ClosedRange<Date> {
         switch selection.mode {
@@ -396,7 +398,13 @@ final class PipePlotAppModel {
     }
     func forecastDrawing(for chart: ChartSnapshot, session: SessionSnapshot) -> ForecastDrawing? { forecastDrawings(for: chart, session: session).first }
     private func saveTimeline(_ timeline: TimelineState, _ id: SessionID) {
-        do { try store.updateTimeline(timeline, sessionID: id); refresh(id) } catch { errorMessage = error.localizedDescription }
+        do {
+            // Navigation restores only viewport fields, using current persisted preferences.
+            guard var current = try store.snapshot(sessionID: id)?.timeline else { return }
+            current.visibleStart = timeline.visibleStart; current.visibleEnd = timeline.visibleEnd
+            current.followNow = timeline.followNow; current.historySpan = timeline.historySpan
+            try store.updateTimeline(current, sessionID: id); refresh(id)
+        } catch { errorMessage = error.localizedDescription }
     }
     func navigate(_ timeline: TimelineState, session: SessionSnapshot) {
         navigationBack[session.id, default: []].append(session.timeline)
