@@ -387,6 +387,24 @@ final class PipePlotAppModel {
         do { try store.setSelection(selection, sessionID: session.id); refresh(session.id) }
         catch { errorMessage = error.localizedDescription }
     }
+    func toggleSelectionBoundary(_ edge: PlotSelectionEdge, session: SessionSnapshot) {
+        guard var selection = session.timeline.selection else { return }
+        let bounds = resolvedSelectionBounds(selection, session: session)
+        let duration = max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound))
+        switch (edge, selection.mode) {
+        case (.start, .fixed): selection.mode = .startFollowsEnd(duration: duration)
+        case (.start, .startFollowsEnd): selection.mode = .fixed
+        case (.start, .endFollowsNow): selection.mode = .bothFollowNow(duration: duration)
+        case (.start, .bothFollowNow): selection.mode = .endFollowsNow
+        case (.end, .fixed): selection.mode = .endFollowsNow
+        case (.end, .endFollowsNow): selection.mode = .fixed
+        case (.end, .startFollowsEnd): selection.mode = .bothFollowNow(duration: duration)
+        case (.end, .bothFollowNow): selection.mode = .startFollowsEnd(duration: duration)
+        }
+        selection.start = bounds.lowerBound; selection.end = bounds.upperBound
+        setSelection(selection, session: session)
+    }
+
     func setForecast(_ forecast: ForecastConfiguration?, session: SessionSnapshot) {
         do {
             var configurations = session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? []

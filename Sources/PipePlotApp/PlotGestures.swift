@@ -7,6 +7,7 @@ import PipePlotCore
 /// and pan gestures; rendering and model commits stay with the caller.
 struct PlotInteractionOverlay: NSViewRepresentable {
     let guides: [Guide]
+    var guideHitRects: [UUID: CGRect] = [:]
     let selectionRange: ClosedRange<Date>?
     let selectionMode: SelectionMode?
     let now: Date
@@ -27,6 +28,7 @@ struct PlotInteractionOverlay: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PlotInteractionView {
         let view = PlotInteractionView()
+        view.guideHitRects = guideHitRects
         view.update(guides: guides, selectionRange: selectionRange, selectionMode: selectionMode, now: now, plotBounds: plotBounds, timeAtX: timeAtX,
                     valueAtY: valueAtY, xAtTime: xAtTime, yAtValue: yAtValue,
                     onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover,
@@ -36,6 +38,7 @@ struct PlotInteractionOverlay: NSViewRepresentable {
     }
 
     func updateNSView(_ view: PlotInteractionView, context: Context) {
+        view.guideHitRects = guideHitRects
         view.update(guides: guides, selectionRange: selectionRange, selectionMode: selectionMode, now: now, plotBounds: plotBounds, timeAtX: timeAtX,
                     valueAtY: valueAtY, xAtTime: xAtTime, yAtValue: yAtValue,
                     onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover,
@@ -56,6 +59,7 @@ final class PlotInteractionView: NSView {
     }
 
     private var guides: [Guide] = []
+    var guideHitRects: [UUID: CGRect] = [:]
     private var selectionRange: ClosedRange<Date>?
     private var selectionMode: SelectionMode?
     private var now = Date()
@@ -340,7 +344,8 @@ final class PlotInteractionView: NSView {
     private func localPoint(_ event: NSEvent) -> CGPoint { convert(event.locationInWindow, from: nil) }
 
     private func hitGuide(at point: CGPoint) -> Guide? {
-        guides.min { distance($0, to: point) < distance($1, to: point) }
+        if let flag = guides.first(where: { guideHitRects[$0.id]?.contains(point) == true }) { return flag }
+        return guides.min { distance($0, to: point) < distance($1, to: point) }
             .flatMap { distance($0, to: point) <= 8 ? $0 : nil }
     }
 

@@ -408,7 +408,7 @@ struct PlotCanvas: View {
     }
 }
 
-private extension Color {
+extension Color {
     init(hex: String) {
         let value = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         var number: UInt64 = 0

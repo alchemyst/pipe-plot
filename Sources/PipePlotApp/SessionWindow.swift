@@ -13,6 +13,7 @@ struct SessionWindow: View {
     @State private var gestures = SessionGesturePreview()
     @State private var showRenameSession = false
     @State private var sessionTitle = ""
+    @State private var editingLocator: Guide?
 
     private var session: SessionSnapshot? { model.sessions[sessionID] }
     private var visibleCharts: [ChartSnapshot] { session?.charts.filter(\.isVisible) ?? [] }
@@ -41,6 +42,9 @@ struct SessionWindow: View {
                 TextField("Session name", text: $sessionTitle)
                 HStack { Spacer(); Button("Cancel") { showRenameSession = false }; Button("Save") { model.renameSession(sessionID, to: sessionTitle); showRenameSession = false }.keyboardShortcut(.defaultAction) }
             }.padding(22).frame(width: 340)
+        }
+        .sheet(item: $editingLocator) { guide in
+            TimeLocatorEditor(guide: guide, zone: session?.timeline.timeZone ?? .local, save: { model.updateTimeGuide($0, sessionID: sessionID) }, close: { editingLocator = nil })
         }
         .background(SessionWindowObserver(onFocus: { model.becameActive(sessionID) }, onVisibility: { active in
             var transaction = Transaction()
@@ -191,7 +195,46 @@ struct SessionWindow: View {
 
     private func sharedRuler(_ session: SessionSnapshot) -> some View {
         let range = gestures.domain ?? model.domain(for: session)
-        return SharedTimeRuler(range: range, timeZone: session.timeline.timeZone ?? .local, reference: timeReference(session))
+        let bounds: ClosedRange<Date>? = {
+            if let start = gestures.selectionStart, let end = gestures.selectionEnd { return min(start, end)...max(start, end) }
+            return session.timeline.selection.map { model.resolvedSelectionBounds($0, session: session) }
+        }()
+        var guides = session.timeGuides
+        if let preview = gestures.guide, preview.orientation == .verticalTime {
+            guides.removeAll { $0.id == preview.id }; guides.append(preview)
+        }
+        return TimelineLocators(range: range, timeZone: session.timeline.timeZone ?? .local, reference: timeReference(session),
+            guides: guides, selection: bounds, selectionMode: session.timeline.selection?.mode, now: model.sessionNow(session), hover: hoverDate,
+            onHover: { hoverDate = $0 }, onGuide: { guide, phase in
+                switch phase {
+                case .began, .changed: gestures.guide = guide; gestures.guideChartID = nil
+                case .ended: gestures.guide = nil; model.updateTimeGuide(guide, sessionID: sessionID)
+                case .cancelled: gestures.guide = nil
+                }
+            }, onGuideSelected: { editingLocator = $0 },
+            onSelection: { start, end, edge, linked, phase in
+                switch phase {
+                case .began, .changed:
+                    gestures.selectionStart = start; gestures.selectionEnd = end; gestures.selectionLinked = linked
+                case .cancelled:
+                    gestures.selectionStart = nil; gestures.selectionEnd = nil; gestures.selectionLinked = false
+                case .ended:
+                    gestures.selectionStart = nil; gestures.selectionEnd = nil; gestures.selectionLinked = false
+                    guard end.timeIntervalSince(start) > 0.5 else { return }
+                    let duration = end.timeIntervalSince(start)
+                    var mode: SelectionMode = linked ? .endFollowsNow : .fixed
+                    switch (edge, session.timeline.selection?.mode) {
+                    case (.start, .endFollowsNow?): mode = .endFollowsNow
+                    case (.start, .startFollowsEnd?): mode = .startFollowsEnd(duration: duration)
+                    case (.start, .bothFollowNow?): mode = .bothFollowNow(duration: duration)
+                    case (.end, .startFollowsEnd?): mode = linked ? .bothFollowNow(duration: duration) : .startFollowsEnd(duration: duration)
+                    case (.end, .bothFollowNow?) where linked: mode = .bothFollowNow(duration: duration)
+                    default: break
+                    }
+                    model.setSelection(TimeSelection(start: start, end: end, mode: mode, selectedStreamIDs: session.timeline.selection?.selectedStreamIDs ?? []), session: session)
+                }
+            }, onToggle: { model.toggleSelectionBoundary($0, session: session) },
+            onClear: { model.setSelection(nil, session: session) }, onAddGuide: { model.addTimeGuide(at: $0, sessionID: sessionID) })
     }
 
     private func createChart() {
@@ -203,30 +246,6 @@ struct SessionWindow: View {
         return responder is NSTextView || responder is NSTextField
     }
 
-}
-
-private struct SharedTimeRuler: View {
-    let range: ClosedRange<Date>
-    let timeZone: PlotTimeZone
-    let reference: Date?
-    private var span: TimeInterval { max(0.001, range.upperBound.timeIntervalSince(range.lowerBound)) }
-
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                ForEach(0...4, id: \.self) { index in
-                    let fraction = CGFloat(index) / 4
-                    let date = range.lowerBound.addingTimeInterval(span * Double(fraction))
-                    Text(TimeText.format(date, zone: timeZone, reference: reference, includeDate: span > 86_400))
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                        .frame(width: 72, alignment: index == 0 ? .leading : (index == 4 ? .trailing : .center))
-                        .position(x: 84 + max(1, geometry.size.width - 112) * fraction + (index == 0 ? 36 : (index == 4 ? -36 : 0)), y: 10)
-                }
-            }
-        }
-        .frame(height: 20).padding(.vertical, 3).background(.bar)
-        .overlay(alignment: .bottom) { Rectangle().fill(.separator).frame(height: 0.5) }
-    }
 }
 
 private struct SelectionInspector: View {
@@ -892,35 +911,7 @@ private struct ChartRow: View {
         guideEntryError = NumericText.parse(guideValue, unit: chart.settings.unit) == nil ? "Enter a finite number, such as 10 Gi." : nil
     }
     private func toggleSelectionBoundary(_ edge: PlotSelectionEdge) {
-        guard let selection = session.timeline.selection else { return }
-        let bounds = model.resolvedSelectionBounds(selection, session: session)
-        let duration = max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound))
-        switch edge {
-        case .start:
-            switch selection.mode {
-            case .fixed: updateSelectionMode(.startFollowsEnd(duration: duration), bounds: bounds, selection: selection)
-            case .startFollowsEnd: updateSelectionMode(.fixed, bounds: bounds, selection: selection)
-            case .endFollowsNow: updateSelectionMode(.bothFollowNow(duration: duration), bounds: bounds, selection: selection)
-            case .bothFollowNow: updateSelectionMode(.endFollowsNow, bounds: bounds, selection: selection)
-            }
-        case .end:
-            switch selection.mode {
-            case .fixed: updateSelectionMode(.endFollowsNow, bounds: bounds, selection: selection)
-            case .endFollowsNow: updateSelectionMode(.fixed, bounds: bounds, selection: selection)
-            case .startFollowsEnd: updateSelectionMode(.bothFollowNow(duration: duration), bounds: bounds, selection: selection)
-            case .bothFollowNow: updateSelectionMode(.startFollowsEnd(duration: duration), bounds: bounds, selection: selection)
-            }
-        }
-    }
-    private func updateSelectionMode(_ mode: SelectionMode, bounds: ClosedRange<Date>, selection: TimeSelection) {
-        var value = selection; value.mode = mode
-        switch mode {
-        case .fixed: value.start = bounds.lowerBound; value.end = bounds.upperBound
-        case .endFollowsNow: value.start = bounds.lowerBound; value.end = model.sessionNow(session)
-        case .bothFollowNow(let duration): let current = model.sessionNow(session); value.start = current.addingTimeInterval(-duration); value.end = current
-        case .startFollowsEnd(let duration): value.end = bounds.upperBound; value.start = bounds.upperBound.addingTimeInterval(-duration)
-        }
-        onSelection(value)
+        model.toggleSelectionBoundary(edge, session: session)
     }
     private func editedGuideTimestamp() -> Double? {
         guard let seconds = Double(guideSecond), seconds >= 0, seconds < 60 else { return nil }
