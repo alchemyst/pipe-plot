@@ -230,12 +230,16 @@ final class PipePlotAppModel {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func visibleSamples(for chart: ChartSnapshot, session: SessionSnapshot, range requestedRange: ClosedRange<Date>? = nil) -> [StreamID: [StoredSample]] {
+    func visibleSamples(for chart: ChartSnapshot, session: SessionSnapshot, range requestedRange: ClosedRange<Date>? = nil) -> (samples: [StreamID: [StoredSample]], current: Set<StreamID>) {
         let range = requestedRange ?? domain(for: session)
-        return Dictionary(uniqueKeysWithValues: chart.streams.map { stream in
+        var current: Set<StreamID> = []
+        let samples = Dictionary(uniqueKeysWithValues: chart.streams.map { stream in
             let key = BackgroundQueries.QueryKey(start: range.lowerBound, end: range.upperBound, count: stream.sampleCount, last: stream.lastSampleAt)
-            return (stream.id, queries.display(stream.id, key: key, store: queryStore) { [weak self] in self?.errorMessage = $0.localizedDescription })
+            let rows = queries.display(stream.id, key: key, store: queryStore) { [weak self] in self?.errorMessage = $0.localizedDescription }
+            if queries.isCurrentDisplay(stream.id, key: key) { current.insert(stream.id) }
+            return (stream.id, rows)
         })
+        return (samples, current)
     }
     private func queryKey(_ stream: StreamID, range: ClosedRange<Date>) -> BackgroundQueries.QueryKey {
         let descriptor = sessions.values.lazy.flatMap(\.charts).flatMap(\.streams).first { $0.id == stream }

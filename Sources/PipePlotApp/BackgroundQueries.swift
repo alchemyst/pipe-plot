@@ -40,6 +40,11 @@ final class BackgroundQueries {
         // Existing points retain their real coordinates while the new range loads.
         return displays[id]?.1 ?? []
     }
+    func isCurrentDisplay(_ id: StreamID, key: QueryKey) -> Bool {
+        guard let cached = displays[id]?.0, let last = key.last else { return false }
+        return cached.count == key.count && cached.last == last && cached.start <= last && last <= cached.end
+    }
+
     func stats(_ id: StreamID, key: QueryKey, store: SampleStore, failed: @escaping (Error) -> Void) -> SelectionStatistics? {
         _ = revision
         if let entry = statistics[id], entry.0 == key { return entry.1 }

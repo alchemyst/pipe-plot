@@ -5,6 +5,7 @@ struct PlotCanvas: View {
     let chart: ChartSnapshot
     let session: SessionSnapshot
     let samples: [StreamID: [StoredSample]]
+    let currentDisplays: Set<StreamID>
     let domain: ClosedRange<Date>
     let now: Date
     @Binding var hoverDate: Date?
@@ -222,14 +223,25 @@ struct PlotCanvas: View {
                     }
                 }
             }
-            if let last = data.last {
-                let point = CGPoint(x: x(last.timestamp, in: plot), y: y(last.value, range: valueRange, in: plot))
-                if plot.maxX - point.x >= 64 {
-                    let name = chart.streams.count > 1 ? "\(stream.name) " : ""
-                    context.draw(Text(name + NumericText.format(last.value, scale: chart.settings.numericScale ?? .decimal, unit: chart.settings.unit))
-                        .font(.system(size: 9, weight: .medium)).foregroundColor(color), at: CGPoint(x: point.x + 6, y: point.y), anchor: .leading)
-                }
-            }
+
+        }
+
+        // Place labels after collecting extrema so neither kind obscures the other.
+        var labelRects = extremaLabels
+        for (index, stream) in chart.streams.enumerated() {
+            guard currentDisplays.contains(stream.id), let last = samples[stream.id]?.last,
+                  last.timestamp == stream.lastSampleAt, domain.contains(last.timestamp) else { continue }
+            let point = CGPoint(x: x(last.timestamp, in: plot), y: y(last.value, range: valueRange, in: plot))
+            guard point.x >= plot.minX, point.x <= plot.maxX,
+                  point.y >= plot.minY, point.y <= plot.maxY else { continue }
+            let name = chart.streams.count > 1 ? "\(stream.name) " : ""
+            let label = Text(name + NumericText.format(last.value, scale: numericScale, unit: chart.settings.unit))
+                .font(.system(size: 9, weight: .medium)).foregroundColor(Self.color(for: stream, fallback: index))
+            let resolved = context.resolve(label)
+            let size = resolved.measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+            guard let rect = LatestLabelLayout.place(point: point, size: size, plot: plot, occupied: labelRects) else { continue }
+            context.draw(resolved, at: CGPoint(x: rect.minX, y: rect.midY), anchor: .leading)
+            labelRects.append(rect)
         }
 
         for guide in chart.guides + session.timeGuides {
