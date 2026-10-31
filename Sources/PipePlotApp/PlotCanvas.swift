@@ -19,6 +19,7 @@ struct PlotCanvas: View {
     var onSelectionModeToggle: (PlotSelectionEdge) -> Void = { _ in }
     let selection: TimeSelection?
     let forecasts: [ForecastDrawing]
+    var draggingGuideID: UUID? = nil
     let onSelectionCommit: (Date?, Date?, SelectionMode?) -> Void
     let onGuide: (Guide, PlotGesturePhase) -> Void
     let onPan: (CGSize, PlotGesturePhase, CGFloat) -> Void
@@ -232,8 +233,9 @@ struct PlotCanvas: View {
                 let yPos = y(guide.value, range: valueRange, in: plot)
                 var path = Path(); path.move(to: CGPoint(x: plot.minX, y: yPos)); path.addLine(to: CGPoint(x: plot.maxX, y: yPos))
                 context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
-                if let label = guide.label, !label.isEmpty {
-                    drawBadge("\(label)  \(NumericText.format(guide.value, scale: numericScale, unit: chart.settings.unit))",
+                if draggingGuideID == guide.id || !(guide.label ?? "").isEmpty {
+                    let label = GuideReadout.horizontal(guide, settings: chart.settings, dragging: draggingGuideID == guide.id)
+                    drawBadge(label,
                               color: color, at: CGPoint(x: plot.maxX, y: yPos - 20), in: plot, context: context, trailing: true)
                 }
             } else {
@@ -241,13 +243,9 @@ struct PlotCanvas: View {
                 let xPos = x(date, in: plot)
                 var path = Path(); path.move(to: CGPoint(x: xPos, y: plot.minY)); path.addLine(to: CGPoint(x: xPos, y: plot.maxY))
                 context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
-                let label = guide.label.flatMap { $0.isEmpty ? nil : $0 }
-                    ?? TimeText.format(date, zone: session.timeline.timeZone ?? .local, includeDate: timeSpan > 86_400)
-                let textWidth = CGFloat(label.count) * 5.5
-                let labelX = min(plot.maxX - textWidth - 10, max(plot.minX, xPos + 5))
-                let badge = CGRect(x: labelX, y: plot.minY + 2, width: textWidth + 10, height: 15)
-                context.fill(Path(roundedRect: badge, cornerRadius: 4), with: .color(.black.opacity(0.32)))
-                context.draw(Text(label).font(.system(size: 9, weight: .semibold)).foregroundColor(color), at: CGPoint(x: labelX + 5, y: badge.midY), anchor: .leading)
+                let label = GuideReadout.vertical(guide, timeline: session.timeline, reference: referenceTime,
+                                                  dragging: draggingGuideID == guide.id, includeDate: timeSpan > 86_400)
+                drawBadge(label, color: color, at: CGPoint(x: xPos + 5, y: plot.minY + 2), in: plot, context: context)
             }
         }
         for forecast in forecasts {
