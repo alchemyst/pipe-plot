@@ -405,7 +405,7 @@ public final class PipePlotStore {
         sessions[si].charts[ci].streams[ix].name=name
         record(.renamedStream(streamID,old:old,new:name),in:sessions[si].id); try persist()
     }
-    public func updateSettings(_ settings:AxisSettings,chartID:ChartID) throws { lock.lock();defer{lock.unlock()}; guard let(si,ci)=findChartIndices(chartID) else{throw DomainError.unknownChart};if case .fixed(let min,let max)=settings.yScale,(!min.isFinite || !max.isFinite || min>=max){throw DomainError.invalidAxisSettings};let old=sessions[si].charts[ci].settings;guard old != settings else{return};let styles=sessions[si].charts[ci].streams.map{StreamStyleSnapshot(id:$0.id,color:$0.colorHex,dots:$0.dotsVisible,lines:$0.linesVisible)};sessions[si].charts[ci].settings=settings;for ix in sessions[si].charts[ci].streams.indices{sessions[si].charts[ci].streams[ix].dotsVisible=settings.dotsVisible;sessions[si].charts[ci].streams[ix].linesVisible=settings.linesVisible}; record(.settings(chartID,old:old,new:settings,oldStyles:styles),in:sessions[si].id); try persist() }
+    public func updateSettings(_ settings:AxisSettings,chartID:ChartID) throws { lock.lock();defer{lock.unlock()}; guard let(si,ci)=findChartIndices(chartID) else{throw DomainError.unknownChart};if case .fixed(let min,let max)=settings.yScale,(!min.isFinite || !max.isFinite || min>=max){throw DomainError.invalidAxisSettings};let old=sessions[si].charts[ci].settings;guard old != settings else{return};let styles=sessions[si].charts[ci].streams.map{StreamStyleSnapshot(id:$0.id,color:$0.colorHex,dots:$0.dotsVisible,lines:$0.linesVisible)};sessions[si].charts[ci].settings=settings;for ix in sessions[si].charts[ci].streams.indices{if old.dotsVisible != settings.dotsVisible {sessions[si].charts[ci].streams[ix].dotsVisible=settings.dotsVisible};if old.linesVisible != settings.linesVisible {sessions[si].charts[ci].streams[ix].linesVisible=settings.linesVisible}}; record(.settings(chartID,old:old,new:settings,oldStyles:styles),in:sessions[si].id); try persist() }
     public func upsertGuide(_ guide:Guide,chartID:ChartID) throws {
         lock.lock();defer{lock.unlock()};guard guide.value.isFinite, guide.alert.map({$0.hysteresis.isFinite && $0.hysteresis >= 0 && $0.cooldown.isFinite && $0.cooldown >= 0 && (guide.value + $0.hysteresis).isFinite && (guide.value - $0.hysteresis).isFinite && guide.orientation == .horizontalValue}) ?? true else{throw DomainError.invalidAxisSettings};guard let(si,ci)=findChartIndices(chartID) else{throw DomainError.unknownChart}
         if guide.orientation == .verticalTime { try upsertTimeGuide(guide,sessionID:sessions[si].id);return }
@@ -492,7 +492,20 @@ public final class PipePlotStore {
                 }
             }
         case .renamedStream(let id,let old,let new): if let (a,b)=streamIndices(id),let ix=sessions[a].charts[b].streams.firstIndex(where:{$0.id==id}) { sessions[a].charts[b].streams[ix].name=undo ? old:new }
-        case .settings(let cid,let old,let new,let oldStyles): if let(a,b)=findChartIndices(cid){let value=undo ? old:new;sessions[a].charts[b].settings=value;for ix in sessions[a].charts[b].streams.indices{let id=sessions[a].charts[b].streams[ix].id;if undo,let style=oldStyles.first(where:{$0.id==id}){sessions[a].charts[b].streams[ix].colorHex=style.color;sessions[a].charts[b].streams[ix].dotsVisible=style.dots;sessions[a].charts[b].streams[ix].linesVisible=style.lines}else{sessions[a].charts[b].streams[ix].dotsVisible=value.dotsVisible;sessions[a].charts[b].streams[ix].linesVisible=value.linesVisible}}}
+        case .settings(let cid,let old,let new,let oldStyles):
+            if let (a,b)=findChartIndices(cid) {
+                let value=undo ? old:new
+                sessions[a].charts[b].settings=value
+                for ix in sessions[a].charts[b].streams.indices {
+                    let style=oldStyles.first { $0.id == sessions[a].charts[b].streams[ix].id }
+                    if old.dotsVisible != new.dotsVisible {
+                        sessions[a].charts[b].streams[ix].dotsVisible = undo ? (style?.dots ?? old.dotsVisible) : new.dotsVisible
+                    }
+                    if old.linesVisible != new.linesVisible {
+                        sessions[a].charts[b].streams[ix].linesVisible = undo ? (style?.lines ?? old.linesVisible) : new.linesVisible
+                    }
+                }
+            }
         case .guide(let cid,let gid,let old,let new): if let(a,b)=findChartIndices(cid){sessions[a].charts[b].guides.removeAll{$0.id==gid};if let value=undo ? old:new{sessions[a].charts[b].guides.append(value)}}
         case .timeGuide(let sid,let gid,let old,let new): if let i=sessionIndex(sid){sessions[i].timeGuides.removeAll{$0.id==gid};if let value=undo ? old:new{sessions[i].timeGuides.append(value)}}
         case .selection(let sid,let old,let new): if let i=sessionIndex(sid){sessions[i].timeline.selection=undo ? old:new}
