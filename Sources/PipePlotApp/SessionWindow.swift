@@ -367,7 +367,8 @@ private struct ChartRowHost: View {
     @Binding var selectedChartID: ChartID?
 
     var body: some View {
-        ChartRow(chart: chart, session: session, samples: model.visibleSamples(for: chart, session: session, range: gestures.domain),
+        let display = model.visibleSamples(for: chart, session: session, range: gestures.domain)
+        ChartRow(chart: chart, session: session, samples: display.samples, currentDisplays: display.current,
                  now: model.sessionNow(session), hoverDate: $hoverDate,
                  sharedGestureDomain: Binding(get: { gestures.domain }, set: { gestures.domain = $0 }),
                  sharedSelectionStart: Binding(get: { gestures.selectionStart }, set: { gestures.selectionStart = $0 }),
@@ -403,6 +404,7 @@ private struct ChartRow: View {
     let chart: ChartSnapshot
     let session: SessionSnapshot
     let samples: [StreamID: [StoredSample]]
+    let currentDisplays: Set<StreamID>
     let now: Date
     @Binding var hoverDate: Date?
     @Binding var sharedGestureDomain: ClosedRange<Date>?
@@ -478,7 +480,7 @@ private struct ChartRow: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             ZStack(alignment: .topLeading) {
-                PlotCanvas(chart: plotChart, session: plotSession, samples: samples, domain: plotDomain, now: now, hoverDate: $hoverDate, selectionStart: $sharedSelectionStart, selectionPreview: $sharedSelectionEnd, selectionLinkedPreview: $sharedSelectionLinked,
+                PlotCanvas(chart: plotChart, session: plotSession, samples: samples, currentDisplays: currentDisplays, domain: plotDomain, now: now, hoverDate: $hoverDate, selectionStart: $sharedSelectionStart, selectionPreview: $sharedSelectionEnd, selectionLinkedPreview: $sharedSelectionLinked,
                            onFollowSelectionDuration: {
                                 guard let selection = session.timeline.selection else { return }
                                 let bounds = model.resolvedSelectionBounds(selection, session: session)
