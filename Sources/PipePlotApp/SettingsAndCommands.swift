@@ -180,7 +180,10 @@ struct GuideAlertSettingsRow: View {
 struct PipePlotCommands: Commands {
     @Bindable var model: PipePlotAppModel
     private var textUndo: UndoManager? {
-        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isEditable else { return nil }
+        _ = model.commandRevision
+        let responder = NSApp.keyWindow?.firstResponder
+        let editor = (responder as? NSTextView) ?? (responder as? NSTextField)?.currentEditor() as? NSTextView
+        guard let editor, editor.isEditable else { return nil }
         return editor.undoManager
     }
     private var undoName: String? { _ = model.editRevision; return model.activeSessionID.flatMap { model.store.undoActionName(sessionID: $0) } }

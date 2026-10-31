@@ -43,3 +43,71 @@ A shared ruler now carries a loop-style interval brace with duration, >/< endpoi
 Native release Session 33: dragging a plot selection showed an 11.3-second brace aligned with the chart interval. F fitted the viewport. Double-clicking the left ruler triangle changed Fixed interval → Start follows end; double-clicking the right changed it to Fixed duration follows now, retaining 11.3 seconds as the live bounds advanced. Cmd-Z restored Start follows end. Double-clicking ruler background added a locator; its editor accepted Workload started, visible in both the flag and chart guide. Three nearby locators used two flag lanes and an overflow stem; a second chart retained the shared time geometry while the stack scrolled. After app quit/manual reopen the guides and two-row layout remained, with producers disconnected. In the final build, clicking the text of a flag (away from its stem) opened the precise editor.
 
 The new presentation preserves the existing chart drag/snap implementation. Guide-drag replay could not be established through the same bridge limitations noted under #8; it is not claimed as passed here. The native text-field Undo check exposed a separate command-enablement problem after relaunch; tracked in the #14 follow-up below. Package tests (88 total, one opt-in measurement skipped) and release build/install passed before the final hover/hit-region adjustment; final full checks follow below.
+
+## #14 — native acceptance follow-up
+
+Hardware: M2 Pro MacBook Pro, 12 cores, 16 GB, macOS 27.2 (26B123). Native interactions used installed release builds; package and window-harness tests used debug builds. Test sessions created during this work are retained; only the new acceptance session 34 was temporarily trashed and then restored.
+
+Two concrete defects found during acceptance were fixed:
+
+- After a manual relaunch with no semantic edit history, native single-key text entry could not be undone in a locator sheet. Commands were not observing native field-editor/Undo changes. Commands now invalidate on text editing, focus and Undo notifications and resolve either the text view or a text field's current editor. Native retest: `xWorkload started` → Cmd-Z → `Workload started` → Cmd-Shift-Z → `xWorkload started`; Cancel discarded the test character without editing the guide.
+- A cold finite pipeline failed with `pp: Unix socket connect failed: Connection refused`. The app was running at a saved-session picker; activating its window made `pp ls` succeed. Listener startup had depended on SwiftUI `onAppear`. Production models now start IPC before scene appearance and queue/deduplicate window requests until the scene installs its opener. The new startup regression verifies deferred requests, deduplication and retained producer data. After the fix, a cold three-row pipeline completed in 1.509 s and a warm new-session pipeline in 0.021 s, each with exactly three ended samples and clean stdout. These are **whole CLI completion times**, not measured first-visible-point latency. The simultaneous cold check passed again on the final installed build (session 38).
+
+Additional observations:
+
+- Session 34 held exactly one raw observation during a 120-second silent-but-connected interval, then accepted the second observation and EOF with exit 0 and empty stdout/stderr. Metadata first-point acknowledgement was observed after 0.440 s; the entire run took 121.022 s. Native Now advanced during silence and froze at 10:51:40 UTC after EOF. This does not measure display latency.
+- Two newline text events appeared as labelled time guides without adding numeric streams. Session rename retained ID 34. Trash showed the retained-data/Restore state; Restore returned the same session and samples.
+- Local → UTC moved the clock from 12:51 to 10:51 UTC. Selecting the 1.5 horizontal guide as value origin displayed raw values 1 and 2 at −0.5 and +0.5; selecting an event as time origin displayed signed elapsed times. Raw observations remained unchanged.
+- Notification permission was initially off in System Settings, and enabling a guide alert produced the truthful native error “Notifications are not allowed for this application.” The user explicitly approved enabling PipePlot notifications; System Settings then showed Allow Notifications on, Desktop and Notification Centre checked, and Temporary alert style. Both-direction test streams crossed 1.5 as 1 → 2 → 1, with zero cooldown. The user first reported no banners, then confirmed the alerts were present in the tray and appeared to have been delivered silently. **Notification Centre delivery is user-observed; banner appearance and the reason for silent delivery are not established.** Global notification settings were not changed. Delivery API errors are now reported instead of discarded.
+- Border-resize attempts did not change the window dimensions through the bridge. Physical sleep/wake was not performed. Pointer drag/drop and guide-drag acceptance remain limited as documented above.
+
+### All 40 original scenarios: evidence and remaining work
+
+“Automated” below means relevant assertions passed in this run, not that every clause of the scenario was exercised natively. No blanket acceptance certificate is claimed.
+
+| # | Evidence in this session | Remaining / limit |
+| --- | --- | --- |
+| 1 | Cold finite pipeline: exactly three ended samples, clean CLI output after startup fix. | First-visible-point latency not instrumented. |
+| 2 | Multiple native windows; Target and session IDs retained through edits/restoration. Core routing tests passed. | Full focus/Target producer matrix not replayed natively. |
+| 3 | Simultaneous cold script passed before and after startup fix: one session/chart, two distinct streams, two samples each. Native ended legends checked. | No additional gap claimed. |
+| 4 | Two-minute sparse input passed; one observation throughout silence; native Now advanced and froze after EOF. | Display latency not measured. |
+| 5 | Capture survived paused historical selection in native sessions; visibility gating tests passed. | Hour-long paused-view soak and RAM budget outstanding. |
+| 6 | Native histories over 60 seconds remained visible; storage/range tests passed. | Long-retention resource budget unmeasured. |
+| 7 | Mark/style and layout-hiding regressions passed; native hide/restore/undo continued capture. | Full marks-only pointer matrix not repeated. |
+| 8 | Exact guide entry, postfix parsing and relative-value origin checked; range/readout tests passed. | Full resize/pan/zoom guide matrix outstanding. |
+| 9 | Parser, width, final-line, finite-value and transport regressions passed. | Not every malformed input rendered natively. |
+| 10 | EOF, quit/restart, denied notifications and startup failure observed; persistence rollback and IPC regressions passed. | Physical disk-full fault not performed. |
+| 11 | Native default window layout inspected. | Exact minimum-size resize and physical sleep/wake outstanding. |
+| 12 | Raw-statistics/range tests passed; native interval cards retained their statistics through target creation. | No new gap established. |
+| 13 | Native rename, Trash/Restore and manual relaunch checked. Metadata persistence tests passed. | No irreversible cleanup added. |
+| 14 | Native Cmd-Shift-D created a row; menu insertion and single-step undo/redo checked. | Pointer merge/split/drop acceptance remains #8. |
+| 15 | Shared ruler/selection/locator alignment visually checked; raw nearest/range tests passed. | Full irregular-input hover/pan/zoom matrix outstanding. |
+| 16 | Shared locators and two-row stack inspected; event guides persisted through relaunch. | Full reorder/merge/remove/scroll matrix limited by pointer bridge. |
+| 17 | Visible/hidden native query counts measured (see window report). | Long-history interaction latency and resource budgets outstanding. |
+| 18 | Core move tests preserve chart-owned settings/guides; insertion regression checks annotations and style. | Full native annotated cross-chart move matrix outstanding. |
+| 19 | Guide/readout/replay tests passed; direct locator editing worked. | Pointer guide-drag/Escape/replay not established. |
+| 20 | Last-stream insertion regression passed with later capture, source collapse and atomic undo/redo. | Native annotated last-stream pointer move outstanding. |
+| 21 | Core metadata/replay and background analysis tests passed. | Full native redo-across-acquisition/navigation sequence outstanding. |
+| 22 | Native semantic Cmd-Z and local text Undo/Redo checked after command fix. | Two-window independent history matrix not fully replayed. |
+| 23 | Background analysis undo/redo regressions passed. | Not repeated with native pointer timing. |
+| 24 | Metadata-only history/continuation pruning and reversible stream visibility tests passed. | Large-capture undo memory measurement outstanding. |
+| 25 | Native Target controls and Cmd-Shift-D used; routing tests passed. | Full terminal/focus combination matrix not replayed. |
+| 26 | Atomic chart registration/core concurrency tests passed. | Repeated live concurrent create-chart UI stress not performed. |
+| 27 | Shared-row width/parser/storage tests passed; live two-column producers used throughout. | No new gap established. |
+| 28 | Continuation/ownership tests passed. | Native repeated interrupt/rerun legend/segment inspection not fully repeated. |
+| 29 | Group reassociation/replay and live-destination rejection tests passed. | Native reassociation sheet mapping/undo not exercised end-to-end. |
+| 30 | Target epoch, MRU and explicit registration tests passed. Explicit session 34 used for events and alert producers. | Full native target switching sequence not repeated. |
+| 31 | Native rename/Trash/Restore retained ID 34; listing and restoration tests passed. | No new gap established. |
+| 32 | Growing silent-live domain observed; raw receipt-timing tests passed. | Native 15-minute rolling transition not timed. |
+| 33 | Native endpoint toggles and fixed-duration following checked; session clock advanced during silence. | Native drag-to-now gesture remains limited. |
+| 34 | Linked bounds retained 11.3-second duration natively; relevant model tests passed. | Extended statistics/refit workload remains #13 and soak work. |
+| 35 | Native forecast target flow checked; training-range and background-fit tests passed. | Full linked/fixed live multirow forecast timing matrix outstanding. |
+| 36 | Analytic regression/status tests passed; native exact target creation and Undo worked. | Full native edit/delete/move recovery matrix outstanding. |
+| 37 | Native independent endpoint mode changes and meaningful Undo checked; preference/navigation regression passed. | Complete native Back/Forward plus mode-Undo sequence not replayed. |
+| 38 | Native test windows were quit/closed during this session; core close/target/capture semantics passed. | Full native simultaneous-session close/fallback matrix outstanding. |
+| 39 | Created-chart replay regression passed; new before-source insertion undo/redo checked natively. | Native attach-many-columns plus unrelated-later-lines scenario not fully replayed. |
+| 40 | Manual reopen restored session 33's guides/layout with disconnected producers. Fresh cold pipelines created new sessions after readiness fix. | First-visible-point latency remains unmeasured. |
+
+Final checks: release build, signing and local install passed. Final `swift test` executed 89 tests with zero failures (one opt-in native window measurement skipped); the earlier opt-in full run passed all 88 then-existing tests, including that native measurement. All eight independent transport regressions passed. Final simultaneous cold pipelines passed after the readiness and notification-error changes.
+
+**#14 stays open** for the explicit outstanding native/failure/resource work above, including actual banners, physical sleep/wake, exact minimum size, hour-long paused capture and week-scale resource measurements. #8 also stays open for pointer drop/preview/cancellation acceptance. #13 and #19 are numerical/performance work outside this unlocked-desktop implementation session; #15 remains the umbrella audit.

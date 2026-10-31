@@ -16,12 +16,15 @@ final class PipePlotAppModel {
     private let connectionRegistry = ConnectionRegistry()
     private let appInstanceID = UUID()
     private var openWindowAction: ((SessionID) -> Void)?
+    private var pendingWindowIDs: Set<SessionID> = []
     private var openSessionPickerAction: (() -> Void)?
     private var didBootstrap = false
     private var serverStarted = false
     private(set) var sessions: [SessionID: SessionSnapshot] = [:]
     private(set) var errorMessage: String?
     private(set) var editRevision = 0
+    private(set) var commandRevision = 0
+    @ObservationIgnored private var commandNotifications: [NSObjectProtocol] = []
     private(set) var activeSessionID: SessionID?
     private(set) var selectedChartIDs: [SessionID: ChartID] = [:]
     private(set) var forecastStatuses: [SessionID: ForecastStatus] = [:]
@@ -53,10 +56,38 @@ final class PipePlotAppModel {
         }
         let listener = UnixSocketServer { [weak self] connection in self?.handle(connection) }
         server = listener
+        let commandEvents: [Notification.Name] = [
+            NSText.didBeginEditingNotification, NSText.didChangeNotification, NSText.didEndEditingNotification,
+            NSControl.textDidBeginEditingNotification, NSControl.textDidChangeNotification, NSControl.textDidEndEditingNotification,
+            NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+            .NSUndoManagerDidUndoChange, .NSUndoManagerDidRedoChange, .NSUndoManagerDidCloseUndoGroup
+        ]
+        commandNotifications = commandEvents.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                // Native field editing does not mutate session metadata. Commands
+                // must nevertheless re-read the current field editor's UndoManager.
+                DispatchQueue.main.async { [weak self] in self?.commandRevision &+= 1 }
+            }
+        }
         refreshAll()
+        // IPC readiness must not wait for a background/occluded SwiftUI scene
+        // to appear. Model-only test clients keep their isolated stores offline.
+        if databaseURL == nil { startServer() }
     }
 
-    func installOpenWindow(_ action: @escaping (SessionID) -> Void) { openWindowAction = action }
+    deinit { commandNotifications.forEach(NotificationCenter.default.removeObserver) }
+
+    func installOpenWindow(_ action: @escaping (SessionID) -> Void) {
+        openWindowAction = action
+        let pending = pendingWindowIDs.sorted { (sessions[$0]?.number ?? 0) < (sessions[$1]?.number ?? 0) }
+        pendingWindowIDs.removeAll()
+        for id in pending { action(id) }
+    }
+    func requestSessionWindow(_ id: SessionID) {
+        guard openedSessionIDs.insert(id).inserted else { return }
+        if let openWindowAction { openWindowAction(id) }
+        else { pendingWindowIDs.insert(id) }
+    }
     func installOpenSessionPicker(_ action: @escaping () -> Void) { openSessionPickerAction = action }
     func presentSessionPicker() { openSessionPickerAction?() }
     func becameActive(_ id: SessionID) { activeSessionID = id; openedSessionIDs.insert(id); refresh(id) }
@@ -79,7 +110,7 @@ final class PipePlotAppModel {
             if !prior.isEmpty {
                 for id in prior { try store.setSessionOpen(true, sessionID: id); refresh(id) }
                 let ids = prior.compactMap { id in sessions[id]?.number == nil ? nil : id }.sorted { (sessions[$0]?.number ?? 0) < (sessions[$1]?.number ?? 0) }
-                for id in ids.dropFirst() { openWindowAction?(id) }
+                for id in ids.dropFirst() { requestSessionWindow(id) }
                 startServer()
                 return ids.first
             }
@@ -98,7 +129,7 @@ final class PipePlotAppModel {
     }
 
     func createSessionWindow() {
-        do { let session = try store.createSession(); refreshAll(); openWindowAction?(session.id) }
+        do { let session = try store.createSession(); refreshAll(); requestSessionWindow(session.id) }
         catch { errorMessage = error.localizedDescription }
     }
 
@@ -203,7 +234,7 @@ final class PipePlotAppModel {
     func restoreSession(_ id: SessionID) {
         do {
             try store.restoreSession(sessionID: id); refreshAll()
-            if !openedSessionIDs.contains(id) { openWindowAction?(id) }
+            requestSessionWindow(id)
         } catch { errorMessage = error.localizedDescription }
     }
     func setStreamLayoutHidden(_ hidden: Bool, streamID: StreamID) {
@@ -529,6 +560,7 @@ final class PipePlotAppModel {
         guard !terminating else { return }
         suspendedDisplays.remove(id)
         openedSessionIDs.remove(id)
+        pendingWindowIDs.remove(id)
         defer { connectionRegistry.closeConnections(for: id) }
         do {
             try store.setSessionOpen(false, sessionID: id)
@@ -571,7 +603,7 @@ final class PipePlotAppModel {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.refreshAll()
-                    if !self.openedSessionIDs.contains(ready.sessionID) { self.openWindowAction?(ready.sessionID) }
+                    self.requestSessionWindow(ready.sessionID)
                 }
             }
             if case .command(let command) = first { try serve(command, over: connection) }
@@ -591,7 +623,12 @@ final class PipePlotAppModel {
                     if let ready = registered, let session = try store.snapshot(sessionID: ready.sessionID) {
                         let events = crossings.evaluate(row, streams: store.currentAttachmentStreamIDs(attachmentID), attachment: attachmentID, session: session)
                         if !events.isEmpty { DispatchQueue.main.async { [weak self] in
-                            for event in events { self?.notifications.deliver(event) }
+                            for event in events {
+                                self?.notifications.deliver(event) { [weak self] message in
+                                    guard let message else { return }
+                                    DispatchQueue.main.async { self?.errorMessage = message }
+                                }
+                            }
                         } }
                     }
                     try connection.send(ServerMessage.accepted(AcceptedRow(sequence: seq)))

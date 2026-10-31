@@ -15,8 +15,8 @@ final class GuideNotifications: NSObject, UNUserNotificationCenterDelegate {
             else { completion(allowed ? nil : "Notifications are disabled for PipePlot. Enable them in macOS System Settings → Notifications to receive guide crossing alerts.") }
         }
     }
-    func deliver(_ crossing: GuideCrossing) {
-        guard enabled else { return }
+    func deliver(_ crossing: GuideCrossing, completion: @escaping (String?) -> Void = { _ in }) {
+        guard enabled else { completion(nil); return }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         let content = UNMutableNotificationContent()
@@ -24,7 +24,9 @@ final class GuideNotifications: NSObject, UNUserNotificationCenterDelegate {
         content.body = "\(crossing.direction == .rising ? "Rising" : "Falling"): \(NumericText.format(crossing.value)) (guide \(NumericText.format(crossing.threshold)))"
         content.sound = .default
         content.threadIdentifier = crossing.sessionID.uuidString
-        center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) { error in
+            completion(error.map { "Could not deliver guide notification: \($0.localizedDescription)" })
+        }
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
