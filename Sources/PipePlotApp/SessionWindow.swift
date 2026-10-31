@@ -284,53 +284,43 @@ private struct SelectionInspector: View {
     }
 
     private var selectionMenu: some View {
-        Menu("Boundary") {
-            Button("Fix interval") { updateMode(.fixed) }
-            Button("Link end to now") { updateMode(.endFollowsNow) }
-            Button("Link start to end at fixed duration") {
-                updateMode(.startFollowsEnd(duration: max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound))))
-            }
-            Button("Follow now at fixed duration") {
-                let duration = max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound))
-                updateMode(.bothFollowNow(duration: duration))
-            }
+        SnapshotMenu(title: "Boundary") {
+            [.command("Fix interval") { updateMode(.fixed) },
+             .command("Link end to now") { updateMode(.endFollowsNow) },
+             .command("Link start to end at fixed duration") { updateMode(.startFollowsEnd(duration: max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound)))) },
+             .command("Follow now at fixed duration") { updateMode(.bothFollowNow(duration: max(0.5, bounds.upperBound.timeIntervalSince(bounds.lowerBound)))) }]
         }
     }
 
     private var inclusionMenu: some View {
-        Menu("Streams · \(includedIDs.count)/\(streams.count)") {
-            ForEach(streams) { stream in
+        SnapshotMenu(title: "Streams · \(includedIDs.count)/\(streams.count)") {
+            streams.map { stream in
                 let included = includedIDs.contains(stream.id)
-                Button {
+                let chart = charts.first { $0.streams.contains { $0.id == stream.id } }
+                let suffix = chart.map { " · \($0.title)\($0.isVisible ? "" : " (hidden)")" } ?? ""
+                return .command(stream.name + suffix, enabled: !included || includedIDs.count > 1, checked: included) {
                     var ids = includedIDs
                     if included { ids.remove(stream.id) } else { ids.insert(stream.id) }
                     var value = selection
                     value.selectedStreamIDs = ids.count == streamIDs.count ? [] : ids
                     onSelection(value)
-                    } label: {
-                        let chart = charts.first(where: { $0.streams.contains(where: { $0.id == stream.id }) })
-                        let suffix = chart.map { " · \($0.title)\($0.isVisible ? "" : " (hidden)")" } ?? ""
-                        Label(stream.name + suffix, systemImage: included ? "checkmark" : "")
-                    }
-                    .disabled(included && includedIDs.count == 1)
-            }
-            Button("Include all") { var value = selection; value.selectedStreamIDs = []; onSelection(value) }
+                }
+            } + [.command("Include all") { var value = selection; value.selectedStreamIDs = []; onSelection(value) }]
         }
     }
 
     private var forecastMenu: some View {
-        Menu {
-            ForEach(charts) { chart in
-                ForEach(chart.streams) { stream in
-                    ForEach(chart.guides.filter { $0.orientation == .horizontalValue }) { guide in
-                        Button("\(stream.name) · \(guide.label?.isEmpty == false ? guide.label! : guide.value.formatted(.number.precision(.significantDigits(4))))") {
+        SnapshotMenu(title: "Forecast", symbol: "chart.xyaxis.line") {
+            charts.flatMap { chart in
+                chart.streams.flatMap { stream in
+                    chart.guides.filter { $0.orientation == .horizontalValue }.map { guide in
+                        SnapshotMenuItem.command("\(stream.name) · \(guide.label?.isEmpty == false ? guide.label! : guide.value.formatted(.number.precision(.significantDigits(4))))") {
                             model.setForecast(ForecastConfiguration(streamID: stream.id, guideID: guide.id, selection: selection), session: session)
                         }
                     }
                 }
             }
-        } label: { Label("Forecast", systemImage: "chart.xyaxis.line") }
-            .disabled(charts.allSatisfy { $0.guides.allSatisfy { $0.orientation != .horizontalValue } })
+        }.disabled(charts.allSatisfy { $0.guides.allSatisfy { $0.orientation != .horizontalValue } })
             .help("Fit selected observations to a value guide")
     }
 
@@ -632,29 +622,34 @@ private struct ChartRow: View {
             Text(chart.title).font(.headline)
             if let unit = chart.settings.unit, !unit.isEmpty { Text(unit).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 7).padding(.vertical, 3).background(.quaternary, in: Capsule()) }
             Spacer()
-            Menu {
-                Button("Add horizontal value guide…", action: onAddGuideFromCurrentScale)
-                    .keyboardShortcut(isCurrentChart ? KeyboardShortcut("g", modifiers: [.command, .option]) : nil)
-                Button("Add time guide at Now") {
-                    model.addTimeGuide(at: now, sessionID: session.id)
-                }.keyboardShortcut(isCurrentChart ? KeyboardShortcut("t", modifiers: [.command, .option]) : nil)
-                Button("Manage Guides…") { showGuideManager = true; editingGuide = nil }
-            } label: { Label("Guides", systemImage: "line.3.horizontal") }.help("Create and edit chart guides")
-            Menu {
-                Button("Rename Chart…") { renameChartText = chart.title; showRenameChart = true }
+            SnapshotMenu(title: "Guides", symbol: "line.3.horizontal") {
+                [.command("Add horizontal value guide…", action: onAddGuideFromCurrentScale),
+                 .command("Add time guide at Now") { model.addTimeGuide(at: model.sessionNow(session), sessionID: session.id) },
+                 .command("Manage Guides…") { showGuideManager = true; editingGuide = nil }]
+            }.help("Create and edit chart guides")
+                .background {
+                    // Keep the existing shortcuts without coupling the tracked native menu to SwiftUI.
+                    Button("Add value guide", action: onAddGuideFromCurrentScale)
+                        .keyboardShortcut(isCurrentChart ? KeyboardShortcut("g", modifiers: [.command, .option]) : nil)
+                        .hidden().frame(width: 0, height: 0)
+                    Button("Add time guide") { model.addTimeGuide(at: model.sessionNow(session), sessionID: session.id) }
+                        .keyboardShortcut(isCurrentChart ? KeyboardShortcut("t", modifiers: [.command, .option]) : nil)
+                        .hidden().frame(width: 0, height: 0)
+                }
+            SnapshotMenu(title: "Chart actions", symbol: "ellipsis.circle", compact: true) {
+                var items: [SnapshotMenuItem] = [.command("Rename Chart…") { renameChartText = chart.title; showRenameChart = true }]
                 let charts = session.charts.filter(\.isVisible)
                 if let index = charts.firstIndex(where: { $0.id == chart.id }) {
-                    Button("Move Up") { model.reorderChart(chart.id, to: max(0, index - 1)) }.disabled(index == 0)
-                    Button("Move Down") { model.reorderChart(chart.id, to: min(charts.count - 1, index + 1)) }.disabled(index == charts.count - 1)
+                    items += [.command("Move Up", enabled: index > 0) { model.reorderChart(chart.id, to: index - 1) },
+                              .command("Move Down", enabled: index < charts.count - 1) { model.reorderChart(chart.id, to: index + 1) }]
                 }
-                Button(chart.streams.isEmpty ? "Delete Empty Chart" : "Hide Chart") { model.deleteChart(chart.id) }
+                items.append(.command(chart.streams.isEmpty ? "Delete Empty Chart" : "Hide Chart") { model.deleteChart(chart.id) })
                 let hidden = session.charts.filter { !$0.isVisible }
                 if !hidden.isEmpty {
-                    Divider(); Menu("Restore Hidden Chart") {
-                        ForEach(hidden) { item in Button(item.title) { model.restoreChart(item.id) } }
-                    }
+                    items += [.separator, .submenu("Restore Hidden Chart", hidden.map { item in .command(item.title) { model.restoreChart(item.id) } })]
                 }
-            } label: { Image(systemName: "ellipsis.circle") }.help("Chart actions")
+                return items
+            }.help("Chart actions")
             Button(action: onToggleLines) { Image(systemName: chart.settings.linesVisible ? "point.topleft.down.to.point.bottomright.curvepath" : "point.topleft.down.to.point.bottomright.curvepath") }
                 .buttonStyle(.plain).foregroundStyle(chart.settings.linesVisible ? Color.accentColor : .secondary).help("Toggle connecting lines")
             Button(action: onToggleDots) { Image(systemName: "circle.fill") }.buttonStyle(.plain).foregroundStyle(chart.settings.dotsVisible ? Color.accentColor : .secondary).help("Toggle dots")
@@ -673,30 +668,23 @@ private struct ChartRow: View {
                         Circle().fill(PlotCanvas.color(for: stream, fallback: index)).frame(width: 8, height: 8)
                         Text(stream.name).font(.caption.weight(.medium))
                         Text(stream.state.rawValue.capitalized).font(.caption2).foregroundStyle(.secondary)
-                        Menu {
-                            streamActions(stream)
-                            Divider()
-                            Button((stream.linesVisible ?? chart.settings.linesVisible) ? "Hide connecting lines" : "Show connecting lines") {
-                                model.updateStreamStyle(stream.id, colorHex: stream.colorHex, dotsVisible: stream.dotsVisible, linesVisible: !(stream.linesVisible ?? chart.settings.linesVisible))
-                            }
-                            Button((stream.dotsVisible ?? chart.settings.dotsVisible) ? "Hide dots" : "Show dots") {
-                                model.updateStreamStyle(stream.id, colorHex: stream.colorHex, dotsVisible: !(stream.dotsVisible ?? chart.settings.dotsVisible), linesVisible: stream.linesVisible)
-                            }
-                            Menu("Color") {
-                                ForEach(0..<9, id: \.self) { index in
-                                    Button("Color \(index + 1)") {
-                                        model.updateStreamStyle(stream.id, colorHex: PlotCanvas.paletteHex(index), dotsVisible: stream.dotsVisible, linesVisible: stream.linesVisible)
-                                    }
-                                }
-                            }
-                        } label: { Image(systemName: "ellipsis").font(.caption).foregroundStyle(.secondary) }.menuStyle(.borderlessButton)
+                        SnapshotMenu(title: "Actions for \(stream.name)", symbol: "ellipsis", compact: true) {
+                            streamActions(stream) + [.separator,
+                                .command((stream.linesVisible ?? chart.settings.linesVisible) ? "Hide connecting lines" : "Show connecting lines") {
+                                    model.updateStreamStyle(stream.id, colorHex: stream.colorHex, dotsVisible: stream.dotsVisible, linesVisible: !(stream.linesVisible ?? chart.settings.linesVisible))
+                                },
+                                .command((stream.dotsVisible ?? chart.settings.dotsVisible) ? "Hide dots" : "Show dots") {
+                                    model.updateStreamStyle(stream.id, colorHex: stream.colorHex, dotsVisible: !(stream.dotsVisible ?? chart.settings.dotsVisible), linesVisible: stream.linesVisible)
+                                },
+                                .submenu("Color", (0..<9).map { index in .command("Color \(index + 1)") {
+                                    model.updateStreamStyle(stream.id, colorHex: PlotCanvas.paletteHex(index), dotsVisible: stream.dotsVisible, linesVisible: stream.linesVisible)
+                                } })]
+                        }.frame(width: 30)
                     }
                     .padding(.leading, 8).padding(.trailing, 4).padding(.vertical, 5)
                     .background(.quaternary.opacity(0.6), in: Capsule())
+                    .background(SnapshotContextMenu { streamActions(stream) })
                     .draggable(stream.id.uuidString)
-                    .contextMenu {
-                        streamActions(stream)
-                    }
                 }
                 if chart.streams.isEmpty { Text("No streams").font(.caption).foregroundStyle(.tertiary) }
             }.padding(.horizontal, 14).padding(.vertical, 9)
@@ -709,32 +697,13 @@ private struct ChartRow: View {
             .help("Drop a stream here to move it to this chart")
     }
 
-    @ViewBuilder private func guideColorMenu(_ guide: Guide) -> some View {
-        Menu("Guide Color") {
-            ForEach(0..<9, id: \.self) { index in
-                Button {
-                    var value = guide
-                    value.color = PlotCanvas.paletteHex(index)
-                    if value.orientation == .verticalTime { model.updateTimeGuide(value, sessionID: session.id) }
-                    else { onEditGuide(value) }
-                } label: {
-                    Label("Color \(index + 1)", systemImage: "circle.fill")
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(PlotCanvas.paletteColor(index))
-                }
-            }
-        }
-    }
-
-    @ViewBuilder private func streamActions(_ stream: StreamDescriptor) -> some View {
-        Button("Rename…") { renameText = stream.name; renameStream = stream }
-        Menu("Move to Chart") {
-            ForEach(session.charts.filter { $0.id != chart.id && $0.isVisible }) { destination in
-                Button(destination.title) { onMove(stream.id, destination.id) }
-            }
-        }
-        Button("Move to New Chart") { model.moveToNewChart(stream.id, sessionID: session.id, after: chart.id) }
-        Button("Continue / Reassociate Group…") { reassociationSource = stream }
+    private func streamActions(_ stream: StreamDescriptor) -> [SnapshotMenuItem] {
+        [.command("Rename…") { renameText = stream.name; renameStream = stream },
+         .submenu("Move to Chart", session.charts.filter { $0.id != chart.id && $0.isVisible }.map { destination in
+             .command(destination.title) { onMove(stream.id, destination.id) }
+         }),
+         .command("Move to New Chart") { model.moveToNewChart(stream.id, sessionID: session.id, after: chart.id) },
+         .command("Continue / Reassociate Group…") { reassociationSource = stream }]
     }
 
     private var isCurrentChart: Bool {
@@ -770,14 +739,12 @@ private struct ChartRow: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Menu {
-                ForEach(0..<9, id: \.self) { index in
-                    Button("Color \(index + 1)") {
-                        var updated = guide; updated.color = PlotCanvas.paletteHex(index)
-                        if isTime { model.updateTimeGuide(updated, sessionID: session.id) } else { onEditGuide(updated) }
-                    }
-                }
-            } label: { Image(systemName: "paintpalette") }.help("Change guide color")
+            SnapshotMenu(title: "Change guide color", symbol: "paintpalette", compact: true) {
+                (0..<9).map { index in .command("Color \(index + 1)") {
+                    var updated = guide; updated.color = PlotCanvas.paletteHex(index)
+                    if isTime { model.updateTimeGuide(updated, sessionID: session.id) } else { onEditGuide(updated) }
+                } }
+            }.frame(width: 32).help("Change guide color")
             Button("Edit") { beginEditingGuide(guide) }
             Button(role: .destructive) { if isTime { model.removeTimeGuide(guide, sessionID: session.id) } else { onRemoveGuide(guide) } } label: { Image(systemName: "trash") }.help("Delete guide")
         }
