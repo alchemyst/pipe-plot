@@ -19,11 +19,14 @@ public enum Analysis {
         let selected = samples.filter { sample in range.map { $0.contains(sample.timestamp) } ?? true }.sorted { ($0.timestamp,$0.sequence) < ($1.timestamp,$1.sequence) }
         guard let first=selected.first, let last=selected.last else { return nil }
         let values=selected.map(\.value).sorted()
-        let n=Double(values.count), mean=values.reduce(0,+)/n
-        let variance=values.reduce(0.0) { $0 + ($1-mean)*($1-mean) } / n
+        var moments = SampleMoments()
+        for sample in selected { moments.append(time: 0, value: sample.value) }
+        moments.flush()
+        let mean = moments.meanValue
+        let variance = max(0, moments.valueSquares / Double(moments.count))
         let middle=values.count/2
         let median=values.count.isMultiple(of:2) ? (values[middle-1]+values[middle])/2 : values[middle]
-        return SelectionStatistics(count:values.count, minimum:values[0], maximum:values[values.count-1], mean:mean,
+        return SelectionStatistics(count:values.count, minimum:moments.minimum, maximum:moments.maximum, mean:mean,
             populationStandardDeviation:sqrt(variance), median:median, firstSampleAt:first.timestamp, lastSampleAt:last.timestamp, firstValue:first.value, lastValue:last.value)
     }
     public static func linearForecast(samples: [StoredSample], guideValue: Double) -> ForecastResult {
@@ -31,10 +34,11 @@ public enum Analysis {
         guard sorted.count >= 2, guideValue.isFinite else { return .insufficientData }
         let origin=sorted[0].timestamp.timeIntervalSince1970
         let points=sorted.map { ($0.timestamp.timeIntervalSince1970-origin,$0.value) }
-        let mx=points.reduce(0.0){$0+$1.0}/Double(points.count), my=points.reduce(0.0){$0+$1.1}/Double(points.count)
-        let denominator=points.reduce(0.0){$0+($1.0-mx)*($1.0-mx)}
-        guard denominator > 0 else { return .insufficientData }
-        let slope=points.reduce(0.0){$0+($1.0-mx)*($1.1-my)}/denominator
+        var moments = SampleMoments()
+        for point in points { moments.append(time: point.0, value: point.1) }
+        moments.flush()
+        guard let slope = moments.slope else { return .insufficientData }
+        let mx = moments.meanTime, my = moments.meanValue
         guard abs(slope) > 1e-15 else { return .flatSlope }
         let intercept=my-slope*mx
         let seconds=(guideValue-intercept)/slope

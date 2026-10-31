@@ -59,18 +59,15 @@ extension SampleStore {
 
     public func statistics(streamID: StreamID, from: Date, to: Date) throws -> SelectionStatistics? {
         lock.lock(); defer { lock.unlock() }
-        var n = 0, mean = 0.0, m2 = 0.0
+        var moments = SampleMoments()
         var first: StoredSample?, last: StoredSample?
-        var minimum = Double.infinity, maximum = -Double.infinity
         try scan(streamID: streamID, from: from, to: to) { row in
-            n += 1
-            let delta = row.value - mean
-            mean += delta / Double(n)
-            m2 += delta * (row.value - mean)
-            minimum = min(minimum, row.value); maximum = max(maximum, row.value)
+            moments.append(time: 0, value: row.value)
             if first == nil { first = row }; last = row
         }
+        moments.flush()
         guard let first, let last else { return nil }
+        let n = moments.count
         // SQLite performs the sort; no unbounded Swift array is materialized.
         var statement: OpaquePointer?
         try prepare("SELECT AVG(value) FROM (SELECT value FROM samples WHERE stream_id=? AND timestamp>=? AND timestamp<=? ORDER BY value LIMIT ? OFFSET ?)", &statement)
@@ -80,22 +77,21 @@ extension SampleStore {
         sqlite3_bind_int(statement, 4, n.isMultiple(of: 2) ? 2 : 1)
         sqlite3_bind_int64(statement, 5, Int64((n - 1) / 2))
         guard sqlite3_step(statement) == SQLITE_ROW else { throw SampleStoreError.sql("Could not calculate median") }
-        return SelectionStatistics(count: n, minimum: minimum, maximum: maximum, mean: mean,
-            populationStandardDeviation: sqrt(max(0, m2 / Double(n))), median: sqlite3_column_double(statement, 0),
+        return SelectionStatistics(count: n, minimum: moments.minimum, maximum: moments.maximum, mean: moments.meanValue,
+            populationStandardDeviation: sqrt(max(0, moments.valueSquares / Double(n))), median: sqlite3_column_double(statement, 0),
             firstSampleAt: first.timestamp, lastSampleAt: last.timestamp, firstValue: first.value, lastValue: last.value)
     }
 
     public func linearFit(streamID: StreamID, from: Date, to: Date) throws -> LinearFit? {
         lock.lock(); defer { lock.unlock() }
-        var n = 0, mx = 0.0, my = 0.0, xx = 0.0, xy = 0.0
+        var moments = SampleMoments()
         try scan(streamID: streamID, from: from, to: to) { row in
-            n += 1
-            let x = row.timestamp.timeIntervalSince(from), dx = x - mx, dy = row.value - my
-            mx += dx / Double(n); my += dy / Double(n)
-            xx += dx * (x - mx); xy += dx * (row.value - my)
+            moments.append(time: row.timestamp.timeIntervalSince(from), value: row.value)
         }
-        guard n >= 2, xx > 0, xx.isFinite, xy.isFinite else { return nil }
-        return LinearFit(count: n, origin: from, meanTime: mx, meanValue: my, slope: xy / xx)
+        moments.flush()
+        guard let slope = moments.slope else { return nil }
+        return LinearFit(count: moments.count, origin: from, meanTime: moments.meanTime,
+                         meanValue: moments.meanValue, slope: slope)
     }
 
     /// Keeps first/last/min/max per time bucket. The returned working set is bounded

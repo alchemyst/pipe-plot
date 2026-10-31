@@ -28,6 +28,10 @@ The repository was newly created and contained no existing issues. Source paths 
 
 - [ ] [#14](https://github.com/alchemyst/pipe-plot/issues/14) — Native, lifecycle and resource acceptance. This is validation work, explicitly distinguished from missing source implementation.
 
+## Later numerical-analysis work
+
+- [ ] [#19](https://github.com/alchemyst/pipe-plot/issues/19) — Add kernel-based derivative estimates and smoothing with explicit time resampling, bounded gap imputation and defined filter latency.
+
 ## First-use message: complete coverage
 
 | ID | Original request | Current disposition / evidence |

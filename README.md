@@ -65,6 +65,8 @@ Saved sessions can be renamed or moved to Trash from the saved-session picker. R
 
 `Sources/PipePlotCore` owns parsing, storage and reversible model edits. `Sources/PipePlotTransport` owns local socket framing and discovery. `Sources/pp` is the CLI; `Sources/PipePlotApp` is the native interface. Raw observations are separate from presentation edits so undo does not restore stale sample arrays.
 
+Statistics and straight-line regression share an Accelerate/vDSP implementation. Centered moments are computed in batches of at most 1,024 observations and merged, keeping range-query working memory bounded while fitting actual receipt timestamps. Median selection remains in SQLite for stored histories. Kernel-based smoothing and derivative estimates, including explicit resampling and gap policies, are tracked in [#19](https://github.com/alchemyst/pipe-plot/issues/19).
+
 [SPEC.md](SPEC.md) records the product requirements. [Validation scenarios](docs/VALIDATION.md) describe the automated and manual checks needed before calling every interaction production-ready.
 
 The controls and behaviors above describe the current implementation. The documented manual interaction and visual acceptance scenarios have not all been exercised; consult the validation guide before treating the UI as fully verified.
