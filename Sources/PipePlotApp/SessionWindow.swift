@@ -326,7 +326,7 @@ private struct SelectionInspector: View {
                 let included = includedIDs.contains(stream.id)
                 let chart = charts.first { $0.streams.contains { $0.id == stream.id } }
                 let suffix = chart.map { " · \($0.title)\($0.isVisible ? "" : " (hidden)")" } ?? ""
-                return .command(stream.name + suffix, enabled: !included || includedIDs.count > 1, checked: included) {
+                return .command(stream.name + (stream.isLayoutHidden == true ? " (layout hidden)" : "") + suffix, enabled: !included || includedIDs.count > 1, checked: included) {
                     var ids = includedIDs
                     if included { ids.remove(stream.id) } else { ids.insert(stream.id) }
                     var value = selection
@@ -486,9 +486,12 @@ private struct ChartRow: View {
         calendar.timeZone = session.timeline.timeZone == .utc ? TimeZone(secondsFromGMT: 0)! : .current
         return calendar
     }
+    private var layoutStreams: [StreamDescriptor] { chart.streams.filter { $0.isLayoutHidden != true } }
+    private var hiddenStreams: [StreamDescriptor] { chart.streams.filter { $0.isLayoutHidden == true } }
     private var plotChart: ChartSnapshot {
-        guard let guidePreview = sharedGuidePreview, sharedGuideChartID == chart.id, guidePreview.orientation == .horizontalValue else { return chart }
         var value = chart
+        value.streams = layoutStreams
+        guard let guidePreview = sharedGuidePreview, sharedGuideChartID == chart.id, guidePreview.orientation == .horizontalValue else { return value }
         if let index = value.guides.firstIndex(where: { $0.id == guidePreview.id }) { value.guides[index] = guidePreview }
         else { value.guides.append(guidePreview) }
         return value
@@ -529,12 +532,12 @@ private struct ChartRow: View {
                            onGuideSelected: { beginEditingGuide($0) },
                            onSelectionModeToggle: { toggleSelectionBoundary($0) },
                            selection: session.timeline.selection,
-                           forecasts: model.forecastDrawings(for: chart, session: session),
+                           forecasts: model.forecastDrawings(for: plotChart, session: session),
                            draggingGuideID: sharedGuidePreview?.id,
-                           trainingRanges: model.forecastTrainingRanges(for: chart, session: session),
+                           trainingRanges: model.forecastTrainingRanges(for: plotChart, session: session),
                            onSelectionCommit: { start, end, mode in
                                 guard let start, let end else { onSelection(nil); return }
-                                onSelection(TimeSelection(start: start, end: end, mode: mode ?? .fixed, selectedStreamIDs: Set(chart.streams.map(\.id))))
+                                onSelection(TimeSelection(start: start, end: end, mode: mode ?? .fixed, selectedStreamIDs: Set(layoutStreams.map(\.id))))
                            },
                            onGuide: { guide, phase in
                                 switch phase {
@@ -582,8 +585,8 @@ private struct ChartRow: View {
                 } else {
                     Color.clear.frame(height: 216)
                 }
-                if chart.streams.isEmpty {
-                    Text("Waiting for a pipeline…  Run `sampler | pp` to add data here.")
+                if layoutStreams.isEmpty {
+                    Text(chart.streams.isEmpty ? "Waiting for a pipeline…  Run `sampler | pp` to add data here." : "All streams are hidden. Restore them from Chart actions; capture continues.")
                         .font(.callout).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .allowsHitTesting(false)
@@ -594,7 +597,7 @@ private struct ChartRow: View {
             if let hoverDate {
                     ScrollView(.horizontal) {
                     HStack(spacing: 12) {
-                        ForEach(chart.streams) { stream in
+                        ForEach(layoutStreams) { stream in
                             if let sample = model.nearestSample(stream.id, at: hoverDate) {
                                 let offset = sample.timestamp.timeIntervalSince(hoverDate)
                                 Text(hoverReadout(stream: stream, sample: sample, offset: offset))
@@ -608,7 +611,7 @@ private struct ChartRow: View {
                 }
             }
             .frame(height: 25)
-            ForEach(model.allForecastStatuses[session.id, default: []].filter { status in chart.streams.contains(where: { $0.id == status.configuration.streamID }) }, id: \.configuration.id) { status in
+            ForEach(model.allForecastStatuses[session.id, default: []].filter { status in layoutStreams.contains(where: { $0.id == status.configuration.streamID }) }, id: \.configuration.id) { status in
                 HStack(spacing: 8) {
                     Label("Linear forecast", systemImage: "arrow.up.right")
                     Text(status.message).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -675,6 +678,11 @@ private struct ChartRow: View {
                               .command("Move Down", enabled: index < charts.count - 1) { model.reorderChart(chart.id, to: index + 1) }]
                 }
                 items.append(.command(chart.streams.isEmpty ? "Delete Empty Chart" : "Hide Chart") { model.deleteChart(chart.id) })
+                if !hiddenStreams.isEmpty {
+                    items += [.separator, .submenu("Restore Hidden Stream", hiddenStreams.map { stream in
+                        .command(stream.name) { model.setStreamLayoutHidden(false, streamID: stream.id) }
+                    })]
+                }
                 let hidden = session.charts.filter { !$0.isVisible }
                 if !hidden.isEmpty {
                     items += [.separator, .submenu("Restore Hidden Chart", hidden.map { item in .command(item.title) { model.restoreChart(item.id) } })]
@@ -694,10 +702,14 @@ private struct ChartRow: View {
     private var streamLegend: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
-                ForEach(Array(chart.streams.enumerated()), id: \.element.id) { index, stream in
+                ForEach(Array(layoutStreams.enumerated()), id: \.element.id) { index, stream in
                     HStack(spacing: 6) {
                         Circle().fill(PlotCanvas.color(for: stream, fallback: index)).frame(width: 8, height: 8)
                         Text(stream.name).font(.caption.weight(.medium))
+                        if !(stream.linesVisible ?? chart.settings.linesVisible) && !(stream.dotsVisible ?? chart.settings.dotsVisible) {
+                            Text("Marks off").font(.caption2).foregroundStyle(.secondary)
+                                .help("Lines and dots are off; value labels and analysis remain visible. Hide from Layout removes all stream visuals.")
+                        }
                         Text(stream.state.rawValue.capitalized).font(.caption2).foregroundStyle(.secondary)
                         SnapshotMenu(title: "Actions for \(stream.name)", symbol: "ellipsis", compact: true) {
                             streamActions(stream) + [.separator,
@@ -717,7 +729,7 @@ private struct ChartRow: View {
                     .background(SnapshotContextMenu { streamActions(stream) })
                     .draggable(stream.id.uuidString)
                 }
-                if chart.streams.isEmpty { Text("No streams").font(.caption).foregroundStyle(.tertiary) }
+                if layoutStreams.isEmpty { Text(chart.streams.isEmpty ? "No streams" : "\(hiddenStreams.count) hidden stream(s) · restore from Chart actions").font(.caption).foregroundStyle(.secondary) }
             }.padding(.horizontal, 14).padding(.vertical, 9)
         }.scrollIndicators(.hidden)
             .dropDestination(for: String.self) { items, _ in
@@ -734,7 +746,8 @@ private struct ChartRow: View {
              .command(destination.title) { onMove(stream.id, destination.id) }
          }),
          .command("Move to New Chart") { model.moveToNewChart(stream.id, sessionID: session.id, after: chart.id) },
-         .command("Continue / Reassociate Group…") { reassociationSource = stream }]
+         .command("Continue / Reassociate Group…") { reassociationSource = stream },
+         .command("Hide from Layout") { model.setStreamLayoutHidden(true, streamID: stream.id) }]
     }
 
     private var isCurrentChart: Bool {

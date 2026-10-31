@@ -19,3 +19,11 @@ Selection → Forecast offers a flat Create target entry for each included strea
 Native release check, Session 24: dragged a 15-second fixed training interval; with no guides, opened Create target for Line 1. NaN left Create disabled; `10 Gi` and label `Native target` enabled it. Creation showed a forecast and preserved the training interval and raw statistics. The very large target legitimately extended the forecast horizon into the far future. Cmd-Z removed the forecast. A subsequent menu-bar inspection hit stale accessibility IDs in the automation bridge; full replay correctness is established by the targeted test rather than claimed from that failed interaction.
 
 `ForecastTargetTests.testAtomicTargetValidationUndoAndCapture` passed: invalid input makes no mutation; target/forecast identities and training selection survive persistence and one-action undo/redo; later observations remain intact. Debug and release build/install passed.
+
+## #9 — per-stream layout removal
+
+Hide from Layout removes a stream's legend, marks, value labels, hover readout and forecast visuals, while retaining its chart ownership, data, capture and analysis configuration. Chart actions → Restore Hidden Stream restores it. Hiding the last stream retains the chart with an explicit restore instruction and keeps its Target unchanged. Whole-chart hiding remains separate. Turning both marks off is identified as Marks off; annotations remain until Hide from Layout is chosen.
+
+Native release check, Session 26: hid Line 1 and Line 2 during `pp --test 2`, saw the all-hidden message, restored Line 1 through the nested chart menu, then Cmd-Z hid it and Cmd-Shift-Z restored it. Now advanced throughout (12:29:13–12:29:51). The restored plot includes samples captured during hiding.
+
+`StreamLayoutTests.testHiddenLastStreamKeepsCaptureStylePersistenceAndReplay` passed, including legacy decoding, persistence, last-stream target/row retention, style and samples across undo/redo. Debug/release build and install passed.

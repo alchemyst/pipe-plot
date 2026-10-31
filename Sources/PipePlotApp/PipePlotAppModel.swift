@@ -190,6 +190,9 @@ final class PipePlotAppModel {
             if !openedSessionIDs.contains(id) { openWindowAction?(id) }
         } catch { errorMessage = error.localizedDescription }
     }
+    func setStreamLayoutHidden(_ hidden: Bool, streamID: StreamID) {
+        perform { try store.setStreamLayoutHidden(hidden, streamID: streamID) }
+    }
     func updateStreamStyle(_ id: StreamID, colorHex: String?, dotsVisible: Bool?, linesVisible: Bool?) {
         perform { try store.updateStreamStyle(id, colorHex: colorHex, dotsVisible: dotsVisible, linesVisible: linesVisible) }
     }
@@ -257,7 +260,7 @@ final class PipePlotAppModel {
         guard isDisplayActive(session.id) else { return ([:], []) }
         let range = requestedRange ?? domain(for: session)
         var current: Set<StreamID> = []
-        let samples = Dictionary(uniqueKeysWithValues: chart.streams.map { stream in
+        let samples = Dictionary(uniqueKeysWithValues: chart.streams.filter { $0.isLayoutHidden != true }.map { stream in
             let key = BackgroundQueries.QueryKey(start: range.lowerBound, end: range.upperBound, count: stream.sampleCount, last: stream.lastSampleAt)
             let rows = queries.display(stream.id, key: key, store: queryStore) { [weak self] in self?.errorMessage = $0.localizedDescription }
             if queries.isCurrentDisplay(stream.id, key: key) { current.insert(stream.id) }
