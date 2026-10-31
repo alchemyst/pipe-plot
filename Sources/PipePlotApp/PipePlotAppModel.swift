@@ -279,10 +279,12 @@ final class PipePlotAppModel {
         return queries.stats(stream, key: queryKey(stream, range: range), store: queryStore) { [weak self] in self?.errorMessage = $0.localizedDescription }
     }
     func setTimeZone(_ zone: PlotTimeZone, session: SessionSnapshot) {
-        var timeline = session.timeline; timeline.timeZone = zone; saveTimeline(timeline, session.id)
+        do { try store.setTimeZone(zone, sessionID: session.id); refresh(session.id) }
+        catch { errorMessage = error.localizedDescription }
     }
     func setTimeReference(_ guide: UUID?, session: SessionSnapshot) {
-        var timeline = session.timeline; timeline.referenceTimeGuideID = guide; saveTimeline(timeline, session.id)
+        do { try store.setTimeReference(guide, sessionID: session.id); refresh(session.id) }
+        catch { errorMessage = error.localizedDescription }
     }
     func resolvedSelectionBounds(_ selection: TimeSelection, session: SessionSnapshot) -> ClosedRange<Date> {
         switch selection.mode {
@@ -386,6 +388,20 @@ final class PipePlotAppModel {
         allForecastStatuses[session.id] = statuses
         forecastStatuses[session.id] = statuses.first
     }
+    func forecastTrainingRanges(for chart: ChartSnapshot, session: SessionSnapshot) -> [ForecastTrainingRange] {
+        let configurations = session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? []
+        return configurations.compactMap { configuration in
+            guard let stream = chart.streams.first(where: { $0.id == configuration.streamID }) else { return nil }
+            let guide = chart.guides.first { $0.id == configuration.guideID }
+            let target = guide?.label.flatMap { $0.isEmpty ? nil : $0 }
+                ?? guide.map { NumericText.format($0.value, scale: chart.settings.numericScale ?? .decimal, unit: chart.settings.unit) }
+                ?? "missing target"
+            return ForecastTrainingRange(id: configuration.id, streamID: stream.id,
+                label: "\(stream.name) → \(target) · training",
+                range: resolvedRange(configuration.selection, now: sessionNow(session)),
+                linked: configuration.selection.mode != .fixed)
+        }
+    }
     func forecastDrawings(for chart: ChartSnapshot, session: SessionSnapshot) -> [ForecastDrawing] {
         (allForecastStatuses[session.id] ?? []).compactMap { status in
             guard chart.streams.contains(where: { $0.id == status.configuration.streamID }),
@@ -396,7 +412,13 @@ final class PipePlotAppModel {
     }
     func forecastDrawing(for chart: ChartSnapshot, session: SessionSnapshot) -> ForecastDrawing? { forecastDrawings(for: chart, session: session).first }
     private func saveTimeline(_ timeline: TimelineState, _ id: SessionID) {
-        do { try store.updateTimeline(timeline, sessionID: id); refresh(id) } catch { errorMessage = error.localizedDescription }
+        do {
+            // Navigation restores only viewport fields, using current persisted preferences.
+            guard var current = try store.snapshot(sessionID: id)?.timeline else { return }
+            current.visibleStart = timeline.visibleStart; current.visibleEnd = timeline.visibleEnd
+            current.followNow = timeline.followNow; current.historySpan = timeline.historySpan
+            try store.updateTimeline(current, sessionID: id); refresh(id)
+        } catch { errorMessage = error.localizedDescription }
     }
     func navigate(_ timeline: TimelineState, session: SessionSnapshot) {
         navigationBack[session.id, default: []].append(session.timeline)
@@ -539,6 +561,14 @@ struct ForecastStatus {
         self.configuration = configuration; self.fit = fit; self.guide = guide
         self.crossing = crossing; self.message = message; self.fitSampleCount = fitSampleCount; self.fitRange = fitRange
     }
+}
+
+struct ForecastTrainingRange: Identifiable {
+    let id: UUID
+    let streamID: StreamID
+    let label: String
+    let range: ClosedRange<Date>
+    let linked: Bool
 }
 
 struct ForecastDrawing {

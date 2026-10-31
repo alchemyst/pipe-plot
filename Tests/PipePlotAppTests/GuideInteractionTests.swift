@@ -4,6 +4,45 @@ import PipePlotCore
 
 @MainActor
 final class GuideInteractionTests: XCTestCase {
+    func testNavigationPreservesPreferencesAndReferenceUndoPreservesViewport() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = directory.appendingPathComponent("test.sqlite")
+        let model = PipePlotAppModel(databaseURL: database)
+        let initial = try model.store.createSession()
+        model.refreshAll()
+        func session() throws -> SessionSnapshot { try XCTUnwrap(model.sessions[initial.id]) }
+        model.addTimeGuide(at: Date(timeIntervalSince1970: 100), sessionID: initial.id)
+        let guide = try XCTUnwrap(session().timeGuides.first)
+        var moved = try session().timeline
+        moved.followNow = false; moved.visibleStart = Date(timeIntervalSince1970: 10)
+        moved.visibleEnd = Date(timeIntervalSince1970: 50)
+        model.navigate(moved, session: try session())
+        model.setTimeZone(.utc, session: try session())
+        model.setTimeReference(guide.id, session: try session())
+        model.navigateBack(try session())
+        XCTAssertEqual(try session().timeline.timeZone, .utc)
+        XCTAssertEqual(try session().timeline.referenceTimeGuideID, guide.id)
+        XCTAssertEqual(try session().timeline.visibleStart, initial.timeline.visibleStart)
+        model.navigateForward(try session())
+        XCTAssertEqual(try session().timeline.visibleStart, moved.visibleStart)
+        model.undo(initial.id)
+        XCTAssertNil(try session().timeline.referenceTimeGuideID)
+        XCTAssertEqual(try session().timeline.timeZone, .utc)
+        XCTAssertEqual(try session().timeline.visibleStart, moved.visibleStart)
+        model.redo(initial.id)
+        model.removeTimeGuide(guide, sessionID: initial.id)
+        model.undo(initial.id)
+        XCTAssertEqual(try session().timeGuides.first?.id, guide.id)
+        XCTAssertEqual(try session().timeline.referenceTimeGuideID, guide.id)
+        let saved = try XCTUnwrap(PipePlotStore(databaseURL: database).snapshot(sessionID: initial.id))
+        XCTAssertEqual(saved.timeline.visibleStart, moved.visibleStart)
+        XCTAssertEqual(saved.timeline.visibleEnd, moved.visibleEnd)
+        XCTAssertEqual(saved.timeline.timeZone, .utc)
+        XCTAssertEqual(saved.timeline.referenceTimeGuideID, guide.id)
+    }
+
     func testTimeGuideEditsInvalidateCommandsAndUndoRedo() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

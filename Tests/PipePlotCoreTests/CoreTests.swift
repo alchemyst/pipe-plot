@@ -2,6 +2,38 @@ import XCTest
 @testable import PipePlotCore
 
 final class CoreTests: XCTestCase {
+    func testAxisEditsPreserveIndependentMarksThroughReplayAndCapture() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try PipePlotStore(databaseURL: directory.appendingPathComponent("test.sqlite"))
+        let ready = try store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 2))
+        let ids = ready.streams.map(\.id)
+        try store.updateStreamStyle(ids[0], colorHex: nil, dotsVisible: true, linesVisible: false)
+        func chart() throws -> ChartSnapshot { try XCTUnwrap(store.snapshot(sessionID: ready.sessionID)?.charts.first) }
+        var settings = try chart().settings
+        settings.unit = "bytes"; settings.numericScale = .binary; settings.includeZero = true
+        settings.yScale = .fixed(min: -10, max: 100); settings.referenceGuideID = UUID()
+        try store.updateSettings(settings, chartID: ready.chartID)
+        try store.append(SampleRow(timestamp: Date(), values: [1, 2], sequence: 1), to: ready.attachmentID)
+        for _ in 0..<2 {
+            XCTAssertEqual(try chart().streams[0].dotsVisible, true)
+            XCTAssertEqual(try chart().streams[0].linesVisible, false)
+            XCTAssertTrue(try store.undo(sessionID: ready.sessionID))
+            XCTAssertTrue(try store.redo(sessionID: ready.sessionID))
+        }
+        settings.dotsVisible = true
+        try store.updateSettings(settings, chartID: ready.chartID)
+        XCTAssertEqual(try chart().streams[0].linesVisible, false)
+        XCTAssertEqual(try chart().streams[1].linesVisible, true)
+        XCTAssertTrue(try store.undo(sessionID: ready.sessionID))
+        XCTAssertEqual(try chart().streams[0].dotsVisible, true)
+        XCTAssertEqual(try chart().streams[1].dotsVisible, false)
+        XCTAssertTrue(try store.redo(sessionID: ready.sessionID))
+        XCTAssertEqual(try chart().streams[0].linesVisible, false)
+        XCTAssertEqual(try chart().streams.map(\.sampleCount), [1, 1])
+    }
+
     func testParserSplitRowsAndFinalUnterminatedLine() {
         let parser=InputParser()
         XCTAssertTrue(parser.append(Data(" -1.2e2\t0 ".utf8),timestamp:Date(timeIntervalSince1970:1)).isEmpty)

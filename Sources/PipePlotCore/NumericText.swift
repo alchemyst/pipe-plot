@@ -39,14 +39,14 @@ public enum NumericText {
     }
 
     /// Formats using a readable 3-significant-digit mantissa and an optional unit.
-    public static func format(_ value: Double, scale: NumericScale = .decimal, unit: String? = nil) -> String {
+    public static func format(_ value: Double, scale: NumericScale = .decimal, unit: String? = nil, significantDigits: Int = 3) -> String {
         guard value.isFinite else { return value.isNaN ? "NaN" : (value.sign == .minus ? "−∞" : "∞") }
         if value == 0 { return unit.map { $0.isEmpty ? "0" : "0 \($0)" } ?? "0" }
         let prefixes = scale == .binary ? binaryPrefixes : decimalPrefixes
         let magnitude = abs(value)
         let prefix = prefixes.first(where: { magnitude >= $0.0 }) ?? prefixes.last!
         let scaled = value / prefix.0
-        let number = scaled.formatted(.number.locale(Locale(identifier: "en_US_POSIX")).grouping(.never).precision(.significantDigits(1...3)))
+        let number = scaled.formatted(.number.locale(Locale(identifier: "en_US_POSIX")).grouping(.never).precision(.significantDigits(1...max(1, significantDigits))))
         let suffix = prefix.1 + (unit ?? "")
         return number + (suffix.isEmpty ? "" : " \(suffix)")
     }
