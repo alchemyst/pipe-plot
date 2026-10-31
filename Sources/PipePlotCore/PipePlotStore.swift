@@ -447,6 +447,27 @@ public final class PipePlotStore {
     public func setSelection(_ selection:TimeSelection?,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID) else{throw DomainError.unknownSession};if let s=selection { if s.start>s.end {throw DomainError.invalidSelection};switch s.mode {case .bothFollowNow(let duration), .startFollowsEnd(let duration): if !duration.isFinite || duration<=0 {throw DomainError.invalidSelection};default: break} };let old=sessions[i].timeline.selection;guard old != selection else{return};sessions[i].timeline.selection=selection;record(.selection(sessionID,old:old,new:selection),in:sessionID);try persist() }
     public func setForecast(_ forecast:ForecastConfiguration?,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID) else{throw DomainError.unknownSession};if let f=forecast {guard f.selection.start<=f.selection.end, sessions[i].charts.flatMap(\.streams).contains(where:{$0.id==f.streamID}),sessions[i].charts.contains(where:{$0.guides.contains(where:{$0.id==f.guideID && $0.orientation == .horizontalValue})}) else {throw DomainError.invalidSelection}};let old=sessions[i].timeline.forecast;guard old != forecast else{return};sessions[i].timeline.forecast=forecast;record(.forecast(sessionID,old:old,new:forecast),in:sessionID);try persist() }
     public func setForecasts(_ forecasts:[ForecastConfiguration],sessionID:SessionID)throws {lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID)else{throw DomainError.unknownSession};for f in forecasts{guard f.selection.start<=f.selection.end,sessions[i].charts.flatMap(\.streams).contains(where:{$0.id==f.streamID}),sessions[i].charts.contains(where:{$0.guides.contains(where:{$0.id==f.guideID && $0.orientation == .horizontalValue})}) else{throw DomainError.invalidSelection}};let old=sessions[i].timeline.forecasts ?? sessions[i].timeline.forecast.map{[$0]} ?? [];guard old != forecasts else{return};sessions[i].timeline.forecasts=forecasts;sessions[i].timeline.forecast=forecasts.first;record(.forecasts(sessionID,old:old,new:forecasts),in:sessionID);try persist()}
+    /// Guide and forecast are one metadata transaction and one semantic edit.
+    @discardableResult public func createForecastTarget(value: Double, label: String? = nil, streamID: StreamID, selection: TimeSelection) throws -> Guide {
+        lock.lock(); defer { lock.unlock() }
+        guard value.isFinite else { throw DomainError.invalidAxisSettings }
+        guard let (si, ci) = streamIndices(streamID) else { throw DomainError.unknownStream }
+        guard selection.start <= selection.end else { throw DomainError.invalidSelection }
+        switch selection.mode {
+        case .bothFollowNow(let duration), .startFollowsEnd(let duration):
+            guard duration.isFinite, duration > 0 else { throw DomainError.invalidSelection }
+        default: break
+        }
+        let guide = Guide(orientation: .horizontalValue, value: value, label: label)
+        let old = sessions[si].timeline.forecasts ?? sessions[si].timeline.forecast.map { [$0] } ?? []
+        let new = old + [ForecastConfiguration(streamID: streamID, guideID: guide.id, selection: selection)]
+        sessions[si].charts[ci].guides.append(guide)
+        sessions[si].timeline.forecasts = new; sessions[si].timeline.forecast = new.first
+        record(.forecastTarget(sessions[si].charts[ci].id, guide: guide, old: old, new: new), in: sessions[si].id)
+        try persist()
+        return guide
+    }
+
     public func updateStreamStyle(_ id:StreamID,colorHex:String?,dotsVisible:Bool?,linesVisible:Bool?)throws {lock.lock();defer{lock.unlock()};guard let(si,ci)=streamIndices(id),let ix=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==id})else{throw DomainError.unknownStream};let old=sessions[si].charts[ci].streams[ix];let color=colorHex ?? old.colorHex,dots=dotsVisible ?? old.dotsVisible,lines=linesVisible ?? old.linesVisible;guard color != old.colorHex || dots != old.dotsVisible || lines != old.linesVisible else{return};sessions[si].charts[ci].streams[ix].colorHex=color;sessions[si].charts[ci].streams[ix].dotsVisible=dots;sessions[si].charts[ci].streams[ix].linesVisible=lines;record(.streamStyle(id,oldColor:old.colorHex,newColor:color,oldDots:old.dotsVisible,newDots:dots,oldLines:old.linesVisible,newLines:lines),in:sessions[si].id);try persist()}
     public func setSessionOpen(_ open:Bool,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID),!sessions[i].isDeleted || !open else{throw DomainError.unknownSession};sessions[i].isOpen=open;if !open { let active=attachments.values.filter{$0.sessionID==sessionID && $0.active};for a in active { try finishAttachment(a.id,reason:.sessionClosed) }; if let t=targetChartID, sessions[i].charts.contains(where:{$0.id==t}) { targetChartID=nil; fallbackTarget() } };try persist() }
 
@@ -528,6 +549,13 @@ public final class PipePlotStore {
         case .selection(let sid,let old,let new): if let i=sessionIndex(sid){sessions[i].timeline.selection=undo ? old:new}
         case .forecast(let sid,let old,let new): if let i=sessionIndex(sid){sessions[i].timeline.forecast=undo ? old:new}
         case .forecasts(let sid,let old,let new):if let i=sessionIndex(sid){let value=undo ? old:new;sessions[i].timeline.forecasts=value;sessions[i].timeline.forecast=value.first}
+        case .forecastTarget(let chartID, let guide, let old, let new):
+            if let (a, b) = findChartIndices(chartID) {
+                sessions[a].charts[b].guides.removeAll { $0.id == guide.id }
+                if !undo { sessions[a].charts[b].guides.append(guide) }
+                let value = undo ? old : new
+                sessions[a].timeline.forecasts = value; sessions[a].timeline.forecast = value.first
+            }
         case .streamStyle(let id,let oldColor,let newColor,let oldDots,let newDots,let oldLines,let newLines):if let(a,b)=streamIndices(id),let ix=sessions[a].charts[b].streams.firstIndex(where:{$0.id==id}){sessions[a].charts[b].streams[ix].colorHex=undo ? oldColor:newColor;sessions[a].charts[b].streams[ix].dotsVisible=undo ? oldDots:newDots;sessions[a].charts[b].streams[ix].linesVisible=undo ? oldLines:newLines}
         case .sessionTitle(let sid,let old,let new): if let i=sessionIndex(sid){sessions[i].title=undo ? old:new}
         case .chartTitle(let id,let old,let new):if let(a,b)=findChartIndices(id){sessions[a].charts[b].title=undo ? old:new}
@@ -642,7 +670,7 @@ private struct PersistedState:Codable {var sessions:[SessionRecord];var targetCh
 private struct ReassociationItem {var sourceID:StreamID;var destinationID:StreamID;var segmentIDs:[String];var sourceRecord:StreamRecord;var sourceChartID:ChartID;var sourceChartIndex:Int;var sourceStreamIndex:Int;var destinationChartID:ChartID}
 private struct ReassociationAction {var sessionID:SessionID;var attachmentID:AttachmentID;var items:[ReassociationItem];var chartVisibility:[ChartID:Bool]}
 private struct StreamStyleSnapshot {var id:StreamID;var color:String?;var dots:Bool?;var lines:Bool?}
-private enum UndoRecord {case createdChart(sessionID:SessionID,chartID:ChartID,index:Int),restoredChart(sessionID:SessionID,chart:ChartRecord,index:Int,streamIDs:[StreamID]),movedStream(StreamID,from:ChartID,to:ChartID,fromWasVisible:Bool,toWasVisible:Bool,fromNowVisible:Bool,toNowVisible:Bool),moveToNewChart(StreamID,from:ChartID,chart:ChartRecord,index:Int,streamIndex:Int,sourceWasVisible:Bool,targetBefore:ChartID?,targetAfter:ChartID?),renamedStream(StreamID,old:String,new:String),sessionTitle(SessionID,old:String,new:String),chartTitle(ChartID,old:String,new:String),chartReordered(ChartID,from:Int,to:Int),chartDeleted(SessionID,chart:ChartRecord,index:Int),chartVisibility(ChartID,old:Bool,new:Bool),sessionDeleted(SessionID,wasOpen:Bool,targetBefore:ChartID?,targetAfter:ChartID?),sessionRestored(SessionID,targetBefore:ChartID?,targetAfter:ChartID?),settings(ChartID,old:AxisSettings,new:AxisSettings,oldStyles:[StreamStyleSnapshot]),guide(ChartID,id:UUID,old:Guide?,new:Guide?),timeGuide(SessionID,id:UUID,old:Guide?,new:Guide?),timeReference(SessionID,old:UUID?,new:UUID?),selection(SessionID,old:TimeSelection?,new:TimeSelection?),forecast(SessionID,old:ForecastConfiguration?,new:ForecastConfiguration?),forecasts(SessionID,old:[ForecastConfiguration],new:[ForecastConfiguration]),streamStyle(StreamID,oldColor:String?,newColor:String?,oldDots:Bool?,newDots:Bool?,oldLines:Bool?,newLines:Bool?),reassociation(ReassociationAction)}
+private enum UndoRecord {case forecastTarget(ChartID,guide:Guide,old:[ForecastConfiguration],new:[ForecastConfiguration]),createdChart(sessionID:SessionID,chartID:ChartID,index:Int),restoredChart(sessionID:SessionID,chart:ChartRecord,index:Int,streamIDs:[StreamID]),movedStream(StreamID,from:ChartID,to:ChartID,fromWasVisible:Bool,toWasVisible:Bool,fromNowVisible:Bool,toNowVisible:Bool),moveToNewChart(StreamID,from:ChartID,chart:ChartRecord,index:Int,streamIndex:Int,sourceWasVisible:Bool,targetBefore:ChartID?,targetAfter:ChartID?),renamedStream(StreamID,old:String,new:String),sessionTitle(SessionID,old:String,new:String),chartTitle(ChartID,old:String,new:String),chartReordered(ChartID,from:Int,to:Int),chartDeleted(SessionID,chart:ChartRecord,index:Int),chartVisibility(ChartID,old:Bool,new:Bool),sessionDeleted(SessionID,wasOpen:Bool,targetBefore:ChartID?,targetAfter:ChartID?),sessionRestored(SessionID,targetBefore:ChartID?,targetAfter:ChartID?),settings(ChartID,old:AxisSettings,new:AxisSettings,oldStyles:[StreamStyleSnapshot]),guide(ChartID,id:UUID,old:Guide?,new:Guide?),timeGuide(SessionID,id:UUID,old:Guide?,new:Guide?),timeReference(SessionID,old:UUID?,new:UUID?),selection(SessionID,old:TimeSelection?,new:TimeSelection?),forecast(SessionID,old:ForecastConfiguration?,new:ForecastConfiguration?),forecasts(SessionID,old:[ForecastConfiguration],new:[ForecastConfiguration]),streamStyle(StreamID,oldColor:String?,newColor:String?,oldDots:Bool?,newDots:Bool?,oldLines:Bool?,newLines:Bool?),reassociation(ReassociationAction)}
 
 private extension SessionRecord {
     enum CodingKeys: String, CodingKey { case id, number, title, charts, timeGuides, timeline, isOpen, rejectedLineCount, isDeleted }
@@ -679,6 +707,7 @@ private extension UndoRecord {
         case .selection: return "Selection"
         case .forecast: return "Linear Forecast"
         case .forecasts: return "Linear Forecasts"
+        case .forecastTarget: return "Create Forecast Target"
         case .streamStyle: return "Stream Style"
         case .reassociation: return "Reassociate Streams"
         }

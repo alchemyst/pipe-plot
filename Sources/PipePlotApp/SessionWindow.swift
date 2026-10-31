@@ -235,6 +235,11 @@ private struct SelectionInspector: View {
     let model: PipePlotAppModel
     let onSelection: (TimeSelection?) -> Void
 
+    @State private var forecastTarget: StreamDescriptor?
+    @State private var forecastSelection: TimeSelection?
+    @State private var targetValue = ""
+    @State private var targetLabel = ""
+
     private var charts: [ChartSnapshot] { session.charts }
     private var streams: [StreamDescriptor] { charts.flatMap(\.streams) }
     private var streamIDs: Set<StreamID> { Set(streams.map(\.id)) }
@@ -272,6 +277,29 @@ private struct SelectionInspector: View {
         .overlay(alignment: .top) { Rectangle().fill(.separator).frame(height: 0.5) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Selection inspector")
+        .sheet(item: $forecastTarget) { stream in
+            let unit = charts.first { $0.streams.contains { $0.id == stream.id } }?.settings.unit
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Create forecast target").font(.title3.weight(.semibold))
+                Text("Stream: \(stream.name)").font(.callout)
+                TextField("Target value (for example 10 Gi)", text: $targetValue).textFieldStyle(.roundedBorder)
+                if NumericText.parse(targetValue, unit: unit) == nil {
+                    Text("Enter a finite value, with an optional SI or binary postfix.").font(.caption).foregroundStyle(.secondary)
+                }
+                TextField("Label (optional)", text: $targetLabel).textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("Cancel") { forecastTarget = nil }
+                    Spacer()
+                    Button("Create Guide and Forecast") {
+                        if let value = NumericText.parse(targetValue, unit: unit), let training = forecastSelection,
+                           model.createForecastTarget(value: value, label: targetLabel.isEmpty ? nil : targetLabel, streamID: stream.id, selection: training) {
+                            forecastTarget = nil
+                        }
+                    }.disabled(NumericText.parse(targetValue, unit: unit) == nil).keyboardShortcut(.defaultAction)
+                }
+            }.padding(22).frame(width: 390)
+        }
+
     }
 
     private var modeLabel: String {
@@ -312,7 +340,10 @@ private struct SelectionInspector: View {
     private var forecastMenu: some View {
         SnapshotMenu(title: "Forecast", symbol: "chart.xyaxis.line") {
             charts.flatMap { chart in
-                chart.streams.flatMap { stream in
+                chart.streams.filter { includedIDs.contains($0.id) }.flatMap { stream in
+                    [SnapshotMenuItem.command("Create target for \(stream.name)…") {
+                        forecastSelection = selection; targetValue = ""; targetLabel = ""; forecastTarget = stream
+                    }] +
                     chart.guides.filter { $0.orientation == .horizontalValue }.map { guide in
                         SnapshotMenuItem.command("\(stream.name) · \(guide.label?.isEmpty == false ? guide.label! : guide.value.formatted(.number.precision(.significantDigits(4))))") {
                             model.setForecast(ForecastConfiguration(streamID: stream.id, guideID: guide.id, selection: selection), session: session)
@@ -320,7 +351,7 @@ private struct SelectionInspector: View {
                     }
                 }
             }
-        }.disabled(charts.allSatisfy { $0.guides.allSatisfy { $0.orientation != .horizontalValue } })
+        }.disabled(includedIDs.isEmpty)
             .help("Fit selected observations to a value guide")
     }
 

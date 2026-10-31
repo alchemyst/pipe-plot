@@ -380,6 +380,15 @@ final class PipePlotAppModel {
         }
         catch { errorMessage = error.localizedDescription }
     }
+    @discardableResult
+    func createForecastTarget(value: Double, label: String?, streamID: StreamID, selection: TimeSelection) -> Bool {
+        do {
+            try store.createForecastTarget(value: value, label: label, streamID: streamID, selection: selection)
+            refreshAll()
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
+    }
+
     func removeForecast(_ id: UUID, session: SessionSnapshot) {
         let configurations = (session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? []).filter { $0.id != id }
         perform { try store.setForecasts(configurations, sessionID: session.id) }
