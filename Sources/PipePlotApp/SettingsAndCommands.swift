@@ -26,6 +26,11 @@ struct SessionPicker: View {
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }.padding(.vertical, 4)
                     }.buttonStyle(.plain)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button("Move to Trash", systemImage: "trash", role: .destructive) {
+                            model.deleteSession(session.id)
+                        }
+                    }
                     .contextMenu {
                         Button("Rename…") { sessionTitle = session.title; renaming = session }
                         Button("Move to Trash", role: .destructive) { model.deleteSession(session.id) }
