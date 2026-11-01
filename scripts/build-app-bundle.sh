@@ -4,6 +4,15 @@ set -euo pipefail
 repo_root="$(CDPATH= cd "$(dirname "$0")/.." && /bin/pwd -P)"
 cd "$repo_root"
 
+# Render from source on a fresh checkout or when the icon sources change.
+icon="$repo_root/design/icon/PipePlot.icns"
+for source in build.py pipe.pov plot.pov chart.inc; do
+    if [[ ! -f "$icon" || "$repo_root/design/icon/$source" -nt "$icon" ]]; then
+        python3 "$repo_root/design/icon/build.py"
+        break
+    fi
+done
+
 swift build -c release
 bin_dir="$(swift build -c release --show-bin-path)"
 stage="$repo_root/.build/pipeplot-stage"

@@ -15,7 +15,7 @@ just install
 
 Use `just` to list the project commands. `just build` compiles the release binaries, `just bundle` builds the app in `.build/pipeplot-stage/` without installing it, and `just check` runs the package tests and independent transport regression tests. The smoke and cold-pipeline scripts in `scripts/` exercise an installed app and create sessions, so they are not part of `just check`.
 
-`just icon` regenerates the static icon assets and requires POV-Ray, Python with Pillow, and macOS `iconutil`; see [the icon build notes](design/icon/README.md). Ordinary builds use the existing icon and do not require those tools. The underlying Swift and shell commands can also be run directly without `just`.
+`just icon` regenerates the static icon assets and requires POV-Ray, Python with Pillow, and macOS `iconutil`; see [the icon build notes](design/icon/README.md). Generated icon assets are ignored by Git. Bundling and installation render the icon when it is missing or its sources have changed, and otherwise reuse the local output. `just build` only compiles Swift and does not require the rendering tools. The underlying Swift and shell commands can also be run directly without `just`.
 
 ## Capture
 

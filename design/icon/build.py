@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Render and composite the PipePlot icon. Requires POV-Ray, Pillow and macOS iconutil."""
 from pathlib import Path
-import math
 import subprocess
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -15,7 +14,7 @@ def layer(): return Image.new('RGBA', (N,N))
 def rounded(draw, b, r, **kw): draw.rounded_rectangle(box(b), radius=width(r), **kw)
 
 def main():
-    subprocess.run(['povray', f'+I{HERE / "pipe.pov"}', f'+O{HERE / "pipe.png"}', '+W1024', '+H1024', '+FN', '+UA', '+A0.1', '-D', '-GR', '-GA', '-GS', '-GW'], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(['povray', f'+L{HERE}', f'+I{HERE / "pipe.pov"}', f'+O{HERE / "pipe.png"}', '+W1024', '+H1024', '+FN', '+UA', '+A0.1', '-D', '-GR', '-GA', '-GS', '-GW'], check=True, stdout=subprocess.DEVNULL)
     # All drawing is done at 2x for smooth small-size results.
     bg = layer(); d = ImageDraw.Draw(bg)
     for y in range(N):
@@ -33,13 +32,6 @@ def main():
     for x in (570,650,730,810,890): p.line((width(x),width(363),width(x),width(688)),fill=(125,143,158,48),width=width(2))
     for y in (390,465,540,615,690): p.line((width(550),width(y),width(904),width(y)),fill=(125,143,158,48),width=width(2))
     p.line([box((550,350)),box((550,697)),box((900,697))],fill=(150,161,172,205),width=width(8),joint='curve')
-    # Smooth plotted trace, built as cubic Bezier segments.
-    segments=[((503,526),(554,526),(578,635),(635,635)),((635,635),(691,635),(704,508),(755,508)),((755,508),(797,508),(799,579),(836,579)),((836,579),(865,579),(881,431),(920,424))]
-    points=[]
-    for a,b,c,e in segments:
-        for i in range(61):
-            t=i/60; u=1-t
-            points.append((width(u**3*a[0]+3*u*u*t*b[0]+3*u*t*t*c[0]+t**3*e[0]),width(u**3*a[1]+3*u*u*t*b[1]+3*u*t*t*c[1]+t**3*e[1])))
     # Map the chart into the measured concept box.
     sx, sy = 544/464, 441/418
     def align_box(im):
@@ -49,28 +41,8 @@ def main():
 
     # Render a rounded emissive tube as a separate 3D layer. The camera is
     # orthographic and aligned to the 1024px compositing canvas.
-    curve_points = [(390, 503)] + [(406+(x/S-484)*sx, 279+(y/S-313)*sy) for x,y in points]
-    curve_scene = HERE/'plot-generated.pov'
-    with curve_scene.open('w') as scene:
-        scene.write("""#version 3.7;
-global_settings { assumed_gamma 1.0 }
-camera { orthographic location <512,512,-1000> look_at <512,512,0> right x*1024 up y*1024 }
-background { color rgbt <0,0,0,1> }
-light_source { <200,900,-400> color rgb <1.2,0.8,0.35> }
-light_source { <700,250,-400> color rgb <0.4,0.08,0.015> }
-sphere_sweep { linear_spline
-""")
-        scene.write(f'{len(curve_points)},\n')
-        for i, (x,y) in enumerate(curve_points):
-            scene.write(f'<{x:.4f},{1024-y:.4f},0>, 10.5'+(',' if i+1<len(curve_points) else '')+'\n')
-        scene.write("""  tolerance 0.05
-  texture {
-    pigment { color rgb <1.0,0.32,0.025> }
-    finish { ambient 0.65 diffuse 0.25 specular 0.65 roughness 0.035 }
-  }
-}
-""")
-    subprocess.run(['povray', f'+I{curve_scene}', f'+O{HERE / "04-plot-3d.png"}', '+W1024', '+H1024', '+FN', '+UA', '+A0.05', '-D', '-GR', '-GA', '-GS', '-GW'], check=True, stdout=subprocess.DEVNULL)
+    curve_scene = HERE/'plot.pov'
+    subprocess.run(['povray', f'+L{HERE}', f'+I{curve_scene}', f'+O{HERE / "04-plot-3d.png"}', '+W1024', '+H1024', '+FN', '+UA', '+A0.05', '-D', '-GR', '-GA', '-GS', '-GW'], check=True, stdout=subprocess.DEVNULL)
     molten=Image.open(HERE/'04-plot-3d.png').convert('RGBA').resize((N,N),Image.Resampling.LANCZOS)
     # Bloom is an image-space approximation; it is not emitted illumination.
     for colour, blur, opacity in [((220,40,0),28,105), ((255,105,0),12,155)]:
@@ -84,23 +56,14 @@ sphere_sweep { linear_spline
     top = 496 - (bounds[3]-bounds[1])*raw_scale/2
     camera_depth = 16.4  # camera at z=-16; trace plane at z=0.4
     view_size = 2*camera_depth*tan(radians(70)/2)
-    world_points=[]
-    for x,y in curve_points:
-        raw_x=bounds[0]+(x-73)/raw_scale
-        raw_y=bounds[1]+(y-top)/raw_scale
-        world_points.append((3+(raw_x/1024-0.5)*view_size, (0.5-raw_y/1024)*view_size))
-    world_radius = 10.5 / raw_scale / 1024 * view_size
+    plot_scale = view_size / (raw_scale * 1024)
+    plot_offset_x = 3 + ((bounds[0]-73/raw_scale)/1024-0.5)*view_size
+    plot_offset_y = (0.5-(bounds[1]+(1024-top)/raw_scale)/1024)*view_size
     shared_scene=HERE/'shared-generated.pov'
     with shared_scene.open('w') as scene:
-        scene.write((HERE/'pipe.pov').read_text()+'\n')
-        scene.write('sphere_sweep { linear_spline\n'+str(len(world_points))+',\n')
-        for i,(x,y) in enumerate(world_points):
-            scene.write(f'<{x:.6f},{y:.6f},0.4>, {world_radius:.6f}'+(',' if i+1<len(world_points) else '')+'\n')
-        scene.write(""" tolerance 0.01
- texture { pigment { color rgb <1,0.32,0.025> } finish { ambient 0.8 diffuse 0.25 specular 0.65 roughness 0.035 } }
-}
-""")
-    subprocess.run(['povray', f'+I{shared_scene}', f'+O{HERE / "shared-render.png"}', '+W1024', '+H1024', '+FN', '+UA', '+A0.05', '-D', '-GR', '-GA', '-GS', '-GW'], check=True, stdout=subprocess.DEVNULL)
+        scene.write('#include "pipe.pov"\n#include "chart.inc"\n')
+        scene.write(f'ChartSweep({plot_scale:.12g}, <{plot_offset_x:.12g},{plot_offset_y:.12g},0.4>, 0.01, 0.8)\n')
+    subprocess.run(['povray', f'+L{HERE}', f'+I{shared_scene}', f'+O{HERE / "shared-render.png"}', '+W1024', '+H1024', '+FN', '+UA', '+A0.05', '-D', '-GR', '-GA', '-GS', '-GW'], check=True, stdout=subprocess.DEVNULL)
     shared=Image.open(HERE/'shared-render.png').convert('RGBA')
     # Map the shared scene using the same camera crop as the original pipe.
     shared=shared.transform((N,N), Image.Transform.AFFINE,

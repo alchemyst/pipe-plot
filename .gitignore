@@ -3,3 +3,9 @@
 build/
 *.xcuserstate
 .swiftpm/
+
+# Icon rendering pipeline outputs.
+/design/icon/*.png
+/design/icon/*.icns
+/design/icon/*.iconset/
+/design/icon/*-generated.pov
