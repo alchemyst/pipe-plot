@@ -1,8 +1,10 @@
 # PipePlot icon prototype
 
-Run `just icon` from the project to regenerate the pipe render, transparent compositing layers, 1024 px preview, iconset and macOS `.icns`. Alternatively, run `python3 design/icon/build.py` from the repository root. This requires POV-Ray, Python 3 with Pillow, and macOS `iconutil`. Install Pillow in a suitable Python environment if needed (`python3 -m pip install Pillow`). The build writes into this directory.
+Run `just icon` from the project to regenerate the pipe render, transparent compositing layers, 1024 px preview, iconset and macOS `.icns` in `.build/icon/`. Alternatively, run `python3 design/icon/build.py`, or pass `--output-dir PATH` to choose a different output directory. This requires POV-Ray, Python 3 with Pillow, and macOS `iconutil`. Install Pillow in the Python environment used for rendering (`python3 -m pip install Pillow`).
 
-Only the rendering sources, build script and documentation are tracked. PNGs, `.icns`, `.iconset` directories and `*-generated.pov` scenes are generated locally and ignored by Git. Bundling and installation regenerate the icon when it is missing or its sources have changed.
+The Xcode app target's **Render app icon** build phase calls the same renderer and writes to `$(TARGET_TEMP_DIR)/Icon/`. It declares its source inputs and generated outputs, so Xcode regenerates the icon when missing or outdated and copies it into the app before signing. `scripts/render-icon.sh` adds the standard Homebrew and pyenv tool locations to Xcode's PATH. Set the target's `ICON_PYTHON` build setting to a Python executable with Pillow if needed, for example `xcodebuild ... ICON_PYTHON=/path/to/python3`. The app itself remains Swift; Python and POV-Ray are build-time tools.
+
+Only rendering sources, the build script and documentation are tracked. Generated artwork, scenes, iconsets and `.icns` files live under ignored build directories. The ignore rules also cover older outputs left in `design/icon/`.
 
 `pipe.pov` holds the geometry, camera, metal and lights. `build.py` controls placement, chart, simulated glass, supersampling and export. `01-pipe.png`, `02-chart.png` and `03-glass-preview.png` are transparent full-canvas layers; `pipe.png` is the raw render. The iconset contains 16, 32, 128, 256 and 512 point images at 1x and 2x. `PipePlot.icns` is a static composite.
 

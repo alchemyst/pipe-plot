@@ -4,18 +4,23 @@ Native macOS plots for temporary numeric streams. Pipe a sampler into `pp`; each
 
 ## Build and install
 
-Requires Apple Silicon, macOS 27, Xcode's Swift toolchain, and [just](https://just.systems/). No third-party Swift packages are required.
+Requires Apple Silicon, macOS 27, Xcode's Swift toolchain, and [just](https://just.systems/). Building the app's icon also requires POV-Ray, Python 3 with Pillow, and macOS `iconutil`. No third-party Swift packages are required.
 
 ```sh
+just build
 just test
 just install
 ```
 
-`just install` builds and installs an ad-hoc signed `~/Applications/PipePlot.app` and `~/.local/bin/pp` together. Add `~/.local/bin` to your shell's `PATH` if it is not already present. You can also invoke `~/.local/bin/pp` directly. Building alone does not update either installed copy; run `just install` again after changes.
+Open `PipePlot.xcodeproj` and select the shared **PipePlot** scheme to build, run, test, profile, or archive the app in Xcode. The app target links the local Swift package's `PipePlotCore` and `PipePlotTransport` products. Xcode processes the tracked `Config/Info.plist`, renders and copies the icon, and signs the app with a local ad-hoc identity. App unit tests belong to the Xcode project; shared-code and CLI tests remain in SwiftPM.
 
-Use `just` to list the project commands. `just build` compiles the release binaries, `just bundle` builds the app in `.build/pipeplot-stage/` without installing it, and `just check` runs the package tests and independent transport regression tests. The smoke and cold-pipeline scripts in `scripts/` exercise an installed app and create sessions, so they are not part of `just check`.
+`just build` builds the Release app and the SwiftPM `pp` CLI; `just bundle` is an equivalent command. The app is written to `.build/xcode/Build/Products/Release/PipePlot.app`. Xcode tracks changes to the app sources, plist, and icon inputs, reusing unchanged outputs. `swift build -c release --product pp` builds only the CLI.
 
-`just icon` regenerates the static icon assets and requires POV-Ray, Python with Pillow, and macOS `iconutil`; see [the icon build notes](design/icon/README.md). Generated icon assets are ignored by Git. Bundling and installation render the icon when it is missing or its sources have changed, and otherwise reuse the local output. `just build` only compiles Swift and does not require the rendering tools. The underlying Swift and shell commands can also be run directly without `just`.
+`just test` runs both the package tests and the Xcode app tests. `just check` additionally runs the independent transport regression tests. The smoke and cold-pipeline scripts in `scripts/` exercise an installed app and create sessions, so they are not part of `just check`. Hosted app tests run without opening the user's database, starting IPC, or restoring application windows.
+
+`just install` builds and installs an ad-hoc signed `~/Applications/PipePlot.app` and `~/.local/bin/pp` together. Add `~/.local/bin` to your shell's `PATH` if it is not already present. Building alone does not update either installed copy; run `just install` again after changes.
+
+`just icon` regenerates standalone icon artwork in `.build/icon/`; see [the icon build notes](design/icon/README.md). App builds render their own copy in Xcode's derived files directory. Generated assets and local Xcode state are ignored by Git. The `justfile` remains the command runner; the build uses Xcode and SwiftPM directly, without Make.
 
 ## Capture
 

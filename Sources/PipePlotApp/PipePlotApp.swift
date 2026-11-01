@@ -3,6 +3,18 @@ import AppKit
 import PipePlotCore
 
 @main
+enum PipePlotAppEntry {
+    static func main() {
+        // Hosted XCTest needs the app's run loop, but must not open the user's
+        // database, start IPC, or restore windows. Set only by the test action.
+        if ProcessInfo.processInfo.environment["PIPEPLOT_TEST_HOST"] == "1" {
+            NSApplication.shared.run()
+        } else {
+            PipePlotApplication.main()
+        }
+    }
+}
+
 struct PipePlotApplication: App {
     @NSApplicationDelegateAdaptor(PipePlotAppDelegate.self) private var appDelegate
     @State private var model = PipePlotAppModel()
