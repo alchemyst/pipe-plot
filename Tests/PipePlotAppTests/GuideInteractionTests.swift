@@ -4,6 +4,29 @@ import PipePlotCore
 
 @MainActor
 final class GuideInteractionTests: XCTestCase {
+    func testSheetDetailsPreserveIndependentlySavedAlertAndDoNotResurrectDeletedGuide() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = directory.appendingPathComponent("guide.sqlite")
+        let model = PipePlotAppModel(databaseURL: database)
+        let session = try model.store.createSession()
+        let chart = try XCTUnwrap(session.charts.first)
+        let captured = Guide(orientation: .horizontalValue, value: 1.5, label: "Before")
+        model.updateGuide(captured, chartID: chart.id, sessionID: session.id)
+        var alertEdit = captured
+        alertEdit.alert = GuideAlert(direction: .rising, hysteresis: 0.2, cooldown: 3)
+        model.updateGuide(alertEdit, chartID: chart.id, sessionID: session.id)
+        model.updateGuideDetails(captured.id, value: 2, label: "After", chartID: chart.id, sessionID: session.id, orientation: captured.orientation)
+        let saved = try XCTUnwrap(model.store.snapshot(sessionID: session.id)?.charts.first?.guides.first)
+        XCTAssertEqual(saved.alert, alertEdit.alert)
+        XCTAssertEqual(saved.value, 2)
+        XCTAssertEqual(saved.label, "After")
+        model.undo(session.id)
+        XCTAssertEqual(model.sessions[session.id]?.charts.first?.guides.first?.alert, alertEdit.alert)
+        model.removeGuide(saved, chartID: chart.id, sessionID: session.id)
+        model.updateGuideDetails(captured.id, value: 3, label: nil, chartID: chart.id, sessionID: session.id, orientation: captured.orientation)
+        XCTAssertTrue(try XCTUnwrap(model.store.snapshot(sessionID: session.id)?.charts.first?.guides).isEmpty)
+    }
     func testNavigationPreservesPreferencesAndReferenceUndoPreservesViewport() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

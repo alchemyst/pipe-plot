@@ -1,0 +1,30 @@
+{
+  "checkpoints" : [
+    {
+      "edits" : 200,
+      "rss" : 17104896
+    },
+    {
+      "edits" : 500,
+      "rss" : 17203200
+    },
+    {
+      "edits" : 1000,
+      "rss" : 16023552
+    }
+  ],
+  "editKinds" : [
+    "rename",
+    "hide from layout",
+    "restore layout"
+  ],
+  "edits" : 1000,
+  "elapsedSeconds" : 0.56976497173309326,
+  "finalRSS" : 17612800,
+  "initialRSS" : 16334848,
+  "maxSampledRSS" : 17612800,
+  "redoActions" : 200,
+  "retainedRows" : 1214570,
+  "streams" : 10,
+  "undoActions" : 200
+}

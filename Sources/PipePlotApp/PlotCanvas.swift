@@ -204,6 +204,12 @@ struct PlotCanvas: View {
                     context.fill(Path(ellipseIn: rect), with: .color(color))
                 }
             }
+            if linesVisible || dotsVisible, let latest = data.last {
+                let point = CGPoint(x: x(latest.timestamp, in: plot), y: y(latest.value, range: valueRange, in: plot))
+                if plot.intersects(CGRect(x: point.x - 3, y: point.y - 3, width: 6, height: 6)) {
+                    AcceptanceTrace.record("visible-sample-render", stream: stream.id, sample: latest.timestamp)
+                }
+            }
             if chart.settings.showExtrema != false, chart.streams.count <= 6, data.count >= 3 {
                 let extrema = PeakFinder.extrema(samples: data, visibleRange: domain, plotWidth: Double(plot.width), valueRange: valueRange, maximumCount: 3)
                 for extremum in extrema {

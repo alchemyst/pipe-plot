@@ -184,6 +184,8 @@ struct GuideAlertSettingsRow: View {
 
 struct PipePlotCommands: Commands {
     @Bindable var model: PipePlotAppModel
+    var installInitialWindowOpener: ((OpenWindowAction) -> Void)? = nil
+    @Environment(\.openWindow) private var openWindow
     private var textUndo: UndoManager? {
         _ = model.commandRevision
         let responder = NSApp.keyWindow?.firstResponder
@@ -205,6 +207,7 @@ struct PipePlotCommands: Commands {
         }
     }
     var body: some Commands {
+        let _ = installInitialWindowOpener?(openWindow)
         CommandGroup(replacing: .newItem) {
             Button("New Session") { model.createSessionWindow() }.keyboardShortcut("n", modifiers: [.command])
         }

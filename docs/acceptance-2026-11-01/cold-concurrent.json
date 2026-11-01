@@ -1,0 +1,18 @@
+{
+  "secondsToSavedRows": 1.1266558170318604,
+  "sessionNumber": 57,
+  "sessions": 1,
+  "charts": 1,
+  "streams": [
+    {
+      "id": "76B2D318-8CDF-4063-AB30-68A41B6A9466",
+      "name": "Cold concurrent B",
+      "sampleCount": 3
+    },
+    {
+      "id": "0A1DFD7D-AB46-489D-A762-6972199F2D8C",
+      "name": "Cold concurrent A",
+      "sampleCount": 3
+    }
+  ]
+}

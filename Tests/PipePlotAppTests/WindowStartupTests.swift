@@ -27,4 +27,23 @@ final class WindowStartupTests: XCTestCase {
         model.requestSessionWindow(ready.sessionID)
         XCTAssertEqual(windows, [ready.sessionID, ready.sessionID])
     }
+    func testRestoredAdditionalWindowsWaitForInitialSceneBinding() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = directory.appendingPathComponent("restore.sqlite")
+        let writer = try PipePlotStore(databaseURL: database)
+        let sessions = try (0..<3).map { _ in try writer.createSession() }
+        try writer.recordTerminationOpenSessions(Set(sessions.map(\.id)))
+        let model = PipePlotAppModel(databaseURL: database)
+        var initial: SessionID?, additional: [SessionID] = []
+        model.installOpenWindow { id in
+            if initial == nil { initial = id } else { additional.append(id) }
+        }
+        initial = model.bootstrap()
+        XCTAssertEqual(initial, sessions.first?.id)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(Set([initial].compactMap { $0 } + additional), Set(sessions.map(\.id)))
+        XCTAssertEqual(additional.count, 2)
+    }
+
 }

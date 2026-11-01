@@ -1,0 +1,15 @@
+	 Executed 4 tests, with 0 failures (0 unexpected) in 26.884 (26.891) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 26.884 (26.892) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 26.884 (26.948) seconds
+WINDOW_STATE index=0 visible=true mini=false occlusion=8194 hidden=false
+WINDOW_STATE index=1 visible=true mini=false occlusion=8194 hidden=false
+WINDOW_STATE index=2 visible=true mini=false occlusion=8194 hidden=false
+WINDOW_STATE index=3 visible=true mini=false occlusion=8194 hidden=false
+WINDOW_MEASUREMENT minimized=0 ingest=false wall=4.017642974853516 cpuSeconds=0.271657 cpuPercent=6.761601309531608 queries=24 refreshes=20 rowsPerSession=0
+WINDOW_MEASUREMENT minimized=0 ingest=true wall=4.047248005867004 cpuSeconds=0.605625 cpuPercent=14.96387172523327 queries=24 refreshes=24 rowsPerSession=66
+WINDOW_STATE index=0 visible=true mini=false occlusion=8194 hidden=false
+WINDOW_STATE index=1 visible=false mini=true occlusion=8192 hidden=false
+WINDOW_STATE index=2 visible=false mini=true occlusion=8192 hidden=false
+WINDOW_STATE index=3 visible=false mini=true occlusion=8192 hidden=false
+WINDOW_MEASUREMENT minimized=3 ingest=false wall=4.022742033004761 cpuSeconds=0.179049 cpuPercent=4.450919261811589 queries=5 refreshes=5 rowsPerSession=0
+WINDOW_MEASUREMENT minimized=3 ingest=true wall=4.004341959953308 cpuSeconds=0.560858 cpuPercent=14.006246359802393 queries=6 refreshes=6 rowsPerSession=66

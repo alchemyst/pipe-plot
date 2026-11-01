@@ -57,7 +57,7 @@ struct SessionWindow: View {
                     gestures = SessionGesturePreview()
                 }
             }
-        }).frame(width: 0, height: 0))
+        }).frame(width: 1, height: 1))
         .alert("PipePlot", isPresented: errorPresented) { errorButtons } message: { errorMessage }
         .onKeyPress(keys: [.escape, "a", "d", "f", "w", "s"]) { press in
             guard !isEditingText, let session else { return .ignored }
@@ -880,9 +880,8 @@ private struct ChartRow: View {
             HStack { Button("Back") { editingGuide = nil }; Spacer(); Button("Save Guide") {
                 let enteredValue = item.orientation == .verticalTime ? editedGuideTimestamp() : NumericText.parse(guideValue, unit: chart.settings.unit)
                 if let value = enteredValue, value.isFinite {
-                    var guide = item.orientation == .verticalTime ? (session.timeGuides.first(where: { $0.id == item.id }) ?? item) : (chart.guides.first(where: { $0.id == item.id }) ?? item)
-                    guide.value = value; guide.label = guideLabel.isEmpty ? nil : guideLabel
-                    if guide.orientation == .verticalTime { model.updateTimeGuide(guide, sessionID: session.id) } else { onEditGuide(guide) }
+                    model.updateGuideDetails(item.id, value: value, label: guideLabel.isEmpty ? nil : guideLabel,
+                                             chartID: chart.id, sessionID: session.id, orientation: item.orientation)
                 }
                 editingGuide = nil
             }.disabled(item.orientation == .verticalTime ? editedGuideTimestamp() == nil : NumericText.parse(guideValue, unit: chart.settings.unit) == nil).keyboardShortcut(.defaultAction) }

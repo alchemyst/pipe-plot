@@ -388,13 +388,14 @@ public final class PipePlotStore {
         for (source,dest) in zip(sourceStreamIDs,destinationStreamIDs) {
             guard let (si,ci)=streamIndices(source),let (di,dj)=streamIndices(dest),si==di,
                   let sourceIndex=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==source}),
-                  let _=sessions[di].charts[dj].streams.firstIndex(where:{$0.id==dest}) else { throw DomainError.unknownStream }
+                  let destinationIndex=sessions[di].charts[dj].streams.firstIndex(where:{$0.id==dest}) else { throw DomainError.unknownStream }
             var segmentIDs=try samples.segmentIDs(streamID:source)
             let liveSegment=aid.uuidString.lowercased()
             if !segmentIDs.contains(liveSegment) { segmentIDs.append(liveSegment) }
             items.append(ReassociationItem(sourceID:source,destinationID:dest,segmentIDs:segmentIDs,
                 sourceRecord:sessions[si].charts[ci].streams[sourceIndex],sourceChartID:sessions[si].charts[ci].id,
-                sourceChartIndex:ci,sourceStreamIndex:sourceIndex,destinationChartID:sessions[di].charts[dj].id))
+                sourceChartIndex:ci,sourceStreamIndex:sourceIndex,destinationChartID:sessions[di].charts[dj].id,
+                destinationState:sessions[di].charts[dj].streams[destinationIndex].state))
         }
         var visibility:[ChartID:Bool]=[:]
         for (si,ci) in locations { let chart=sessions[si].charts[ci];visibility[chart.id]=chart.isVisible }
@@ -634,6 +635,17 @@ public final class PipePlotStore {
                 throw DomainError.streamBusy(findStream(id)?.name ?? id.uuidString)
             }
             for id in destinationIDs where owners[id] == action.attachmentID { owners.removeValue(forKey:id) }
+            // Raw segment transfer changes both histories. Restore the destination's
+            // summary and disconnected lifecycle as well as rebuilding the source.
+            for item in action.items {
+                if let (si,ci)=streamIndices(item.destinationID),let ix=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==item.destinationID}) {
+                    let bounds=try samples.bounds(streamID:item.destinationID)
+                    sessions[si].charts[ci].streams[ix].sampleCount=try samples.count(streamID:item.destinationID)
+                    sessions[si].charts[ci].streams[ix].firstSampleAt=bounds.first
+                    sessions[si].charts[ci].streams[ix].lastSampleAt=bounds.last
+                    sessions[si].charts[ci].streams[ix].state=item.destinationState
+                }
+            }
             for (item,sourceID) in zip(action.items,sourceIDs) {
                 if let (si,ci)=findChartIndices(item.sourceChartID) {
                     var record=item.sourceRecord
@@ -707,7 +719,7 @@ private struct SessionRecord:Codable {var id:SessionID;var number:Int;var title:
 private struct ChartRecord:Codable {var id:ChartID;var title:String;var streams:[StreamRecord];var settings:AxisSettings;var guides:[Guide];var isVisible:Bool}
 private struct StreamRecord:Codable {var id:StreamID;var name:String;var state:StreamState;var sampleCount:Int64=0;var firstSampleAt:Date?;var lastSampleAt:Date?;var unitHint:String?;var colorHex:String?;var dotsVisible:Bool?;var linesVisible:Bool?;var isLayoutHidden:Bool?;var derivedSeries:DerivedSeriesConfiguration?}
 private struct PersistedState:Codable {var sessions:[SessionRecord];var targetChartID:ChartID?;var nextNumber:Int;var recency:[ChartID];var restoreOpenSessionIDs:Set<SessionID>?}
-private struct ReassociationItem {var sourceID:StreamID;var destinationID:StreamID;var segmentIDs:[String];var sourceRecord:StreamRecord;var sourceChartID:ChartID;var sourceChartIndex:Int;var sourceStreamIndex:Int;var destinationChartID:ChartID}
+private struct ReassociationItem {var sourceID:StreamID;var destinationID:StreamID;var segmentIDs:[String];var sourceRecord:StreamRecord;var sourceChartID:ChartID;var sourceChartIndex:Int;var sourceStreamIndex:Int;var destinationChartID:ChartID;var destinationState:StreamState}
 private struct ReassociationAction {var sessionID:SessionID;var attachmentID:AttachmentID;var items:[ReassociationItem];var chartVisibility:[ChartID:Bool]}
 private struct StreamStyleSnapshot {var id:StreamID;var color:String?;var dots:Bool?;var lines:Bool?}
 private enum UndoRecord {case derivedSeries(StreamID,old:DerivedSeriesConfiguration?,new:DerivedSeriesConfiguration?),streamLayout(StreamID,old:Bool,new:Bool),forecastTarget(ChartID,guide:Guide,old:[ForecastConfiguration],new:[ForecastConfiguration]),createdChart(sessionID:SessionID,chartID:ChartID,index:Int),restoredChart(sessionID:SessionID,chart:ChartRecord,index:Int,streamIDs:[StreamID]),movedStream(StreamID,from:ChartID,to:ChartID,fromWasVisible:Bool,toWasVisible:Bool,fromNowVisible:Bool,toNowVisible:Bool),moveToNewChart(StreamID,from:ChartID,chart:ChartRecord,index:Int,streamIndex:Int,sourceWasVisible:Bool,targetBefore:ChartID?,targetAfter:ChartID?),renamedStream(StreamID,old:String,new:String),sessionTitle(SessionID,old:String,new:String),chartTitle(ChartID,old:String,new:String),chartReordered(ChartID,from:Int,to:Int),chartDeleted(SessionID,chart:ChartRecord,index:Int),chartVisibility(ChartID,old:Bool,new:Bool),sessionDeleted(SessionID,wasOpen:Bool,targetBefore:ChartID?,targetAfter:ChartID?),sessionRestored(SessionID,targetBefore:ChartID?,targetAfter:ChartID?),settings(ChartID,old:AxisSettings,new:AxisSettings,oldStyles:[StreamStyleSnapshot]),guide(ChartID,id:UUID,old:Guide?,new:Guide?),timeGuide(SessionID,id:UUID,old:Guide?,new:Guide?),timeReference(SessionID,old:UUID?,new:UUID?),selection(SessionID,old:TimeSelection?,new:TimeSelection?),forecast(SessionID,old:ForecastConfiguration?,new:ForecastConfiguration?),forecasts(SessionID,old:[ForecastConfiguration],new:[ForecastConfiguration]),streamStyle(StreamID,oldColor:String?,newColor:String?,oldDots:Bool?,newDots:Bool?,oldLines:Bool?,newLines:Bool?),reassociation(ReassociationAction)}

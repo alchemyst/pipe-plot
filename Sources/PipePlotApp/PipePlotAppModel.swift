@@ -12,7 +12,9 @@ final class PipePlotAppModel {
     private let queryStore: SampleStore
     private let crossings = GuideCrossingDetector()
     private let notifications: GuideNotifications
-    private var server: UnixSocketServer?
+    // Assigned during initialization, then only read. UnixSocketServer serializes
+    // its own lifecycle; nonisolated storage lets model teardown close its listener.
+    @ObservationIgnored nonisolated(unsafe) private var server: UnixSocketServer?
     private let connectionRegistry = ConnectionRegistry()
     private let appInstanceID = UUID()
     private var openWindowAction: ((SessionID) -> Void)?
@@ -42,7 +44,7 @@ final class PipePlotAppModel {
     let queries = BackgroundQueries()
     let refreshTimer = Timer.publish(every: 0.75, on: .main, in: .common).autoconnect()
 
-    init(databaseURL: URL? = nil) {
+    init(databaseURL: URL? = nil, socketURL: URL? = nil) {
         notifications = GuideNotifications(enabled: databaseURL == nil)
         do {
             let database = databaseURL ?? PipePlotLocations.supportDirectory.appendingPathComponent("pipeplot.sqlite")
@@ -55,7 +57,7 @@ final class PipePlotAppModel {
             alert.runModal()
             exit(EXIT_FAILURE)
         }
-        let listener = UnixSocketServer { [weak self] connection in self?.handle(connection) }
+        let listener = UnixSocketServer(socketURL: socketURL ?? PipePlotLocations.socketURL) { [weak self] connection in self?.handle(connection) }
         server = listener
         let commandEvents: [Notification.Name] = [
             NSText.didBeginEditingNotification, NSText.didChangeNotification, NSText.didEndEditingNotification,
@@ -73,18 +75,20 @@ final class PipePlotAppModel {
         refreshAll()
         // IPC readiness must not wait for a background/occluded SwiftUI scene
         // to appear. Model-only test clients keep their isolated stores offline.
-        if databaseURL == nil { startServer() }
+        if databaseURL == nil || socketURL != nil { startServer() }
     }
 
-    deinit { commandNotifications.forEach(NotificationCenter.default.removeObserver) }
+    deinit { server?.stop(); commandNotifications.forEach(NotificationCenter.default.removeObserver) }
 
     func installOpenWindow(_ action: @escaping (SessionID) -> Void) {
+        AcceptanceTrace.record("window-opener-installed-pending-\(pendingWindowIDs.count)")
         openWindowAction = action
         let pending = pendingWindowIDs.sorted { (sessions[$0]?.number ?? 0) < (sessions[$1]?.number ?? 0) }
         pendingWindowIDs.removeAll()
         for id in pending { action(id) }
     }
     func requestSessionWindow(_ id: SessionID) {
+        AcceptanceTrace.record("window-request-opener-\(openWindowAction != nil)")
         guard openedSessionIDs.insert(id).inserted else { return }
         if let openWindowAction { openWindowAction(id) }
         else { pendingWindowIDs.insert(id) }
@@ -111,7 +115,12 @@ final class PipePlotAppModel {
             if !prior.isEmpty {
                 for id in prior { try store.setSessionOpen(true, sessionID: id); refresh(id) }
                 let ids = prior.compactMap { id in sessions[id]?.number == nil ? nil : id }.sorted { (sessions[$0]?.number ?? 0) < (sessions[$1]?.number ?? 0) }
-                for id in ids.dropFirst() { requestSessionWindow(id) }
+                // Let the initial scene bind the returned session before asking
+                // its opener for additional restored windows.
+                let additional = Array(ids.dropFirst())
+                DispatchQueue.main.async { [weak self] in
+                    for id in additional { self?.requestSessionWindow(id) }
+                }
                 startServer()
                 return ids.first
             }
@@ -185,6 +194,17 @@ final class PipePlotAppModel {
             } }
         }
         catch { errorMessage = error.localizedDescription }
+    }
+    /// A sheet edits coordinates/text while alert controls save independently.
+    /// Merge those fields into the current guide, never its captured sheet value.
+    func updateGuideDetails(_ id: UUID, value: Double, label: String?, chartID: ChartID, sessionID: SessionID, orientation: GuideOrientation) {
+        guard let session = sessions[sessionID] else { return }
+        let current = orientation == .verticalTime ? session.timeGuides.first(where: { $0.id == id })
+            : session.charts.first(where: { $0.id == chartID })?.guides.first(where: { $0.id == id })
+        guard var guide = current else { return }
+        guide.value = value; guide.label = label
+        if orientation == .verticalTime { updateTimeGuide(guide, sessionID: sessionID) }
+        else { updateGuide(guide, chartID: chartID, sessionID: sessionID) }
     }
     func removeGuide(_ guide: Guide, chartID: ChartID, sessionID: SessionID) {
         do { try store.removeGuide(guide.id, chartID: chartID); refresh(sessionID) }
@@ -488,6 +508,11 @@ final class PipePlotAppModel {
         perform { try store.setForecasts(configurations, sessionID: session.id) }
     }
     func refreshForecast(_ session: SessionSnapshot) {
+        guard session.isOpen, !session.isDeleted else {
+            allForecastStatuses.removeValue(forKey: session.id)
+            forecastStatuses.removeValue(forKey: session.id)
+            return
+        }
         guard isDisplayActive(session.id) else { return }
         let configurations = session.isDeleted ? [] : (session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? [])
         let statuses = configurations.map { configuration -> ForecastStatus in
@@ -601,6 +626,7 @@ final class PipePlotAppModel {
         var attachment: AttachmentID?
         var eventMode = false
         var registered: ReadyReply?
+        var acceptedFirstRow = false
         defer {
             if let id = registered?.attachmentID { crossings.finish(attachment: id) }
             connectionRegistry.remove(connectionKey); connection.close()
@@ -640,6 +666,12 @@ final class PipePlotAppModel {
                 case .row(let row):
                     guard !eventMode, let attachmentID = attachment else { throw protocolFailure("not_ready", "No sampler was registered") }
                     let seq = try store.append(row, to: attachmentID).first ?? row.sequence
+                    if !acceptedFirstRow, let ready = registered {
+                        acceptedFirstRow = true
+                        // First-point latency must not wait for the periodic display
+                        // timer. Subsequent samples retain the coalesced refresh cadence.
+                        DispatchQueue.main.async { [weak self] in self?.tick(ready.sessionID) }
+                    }
                     if let ready = registered, let session = try store.snapshot(sessionID: ready.sessionID) {
                         let events = crossings.evaluate(row, streams: store.currentAttachmentStreamIDs(attachmentID), attachment: attachmentID, session: session)
                         if !events.isEmpty { DispatchQueue.main.async { [weak self] in

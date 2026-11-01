@@ -1,0 +1,122 @@
+{
+  "phaseSeconds": 60,
+  "appPid": 79920,
+  "cliPid": 844,
+  "phases": [
+    {
+      "name": "idle-connected",
+      "elapsed": 60.14682095799071,
+      "newRows": 0,
+      "before": {
+        "app": {
+          "pid": 79920,
+          "userNanoseconds": 2557778000,
+          "systemNanoseconds": 959992875,
+          "packageIdleWakeups": 4,
+          "interruptWakeups": 1602,
+          "rss": 77414400,
+          "physicalFootprint": 62702648
+        },
+        "cli": {
+          "pid": 844,
+          "userNanoseconds": 3414291,
+          "systemNanoseconds": 3284375,
+          "packageIdleWakeups": 0,
+          "interruptWakeups": 8,
+          "rss": 6979584,
+          "physicalFootprint": 2277880
+        }
+      },
+      "after": {
+        "app": {
+          "pid": 79920,
+          "userNanoseconds": 2572633125,
+          "systemNanoseconds": 964061958,
+          "packageIdleWakeups": 4,
+          "interruptWakeups": 1708,
+          "rss": 72859648,
+          "physicalFootprint": 62309432
+        },
+        "cli": {
+          "pid": 844,
+          "userNanoseconds": 5632916,
+          "systemNanoseconds": 8463958,
+          "packageIdleWakeups": 11,
+          "interruptWakeups": 247,
+          "rss": 5455872,
+          "physicalFootprint": 2277880
+        }
+      },
+      "peakRSS": {
+        "app": 77414400,
+        "cli": 6979584
+      },
+      "appCPUPercentOneCore": 0.03146335533380481,
+      "appInterruptWakeupsPerSecond": 1.762354157903628,
+      "cliCPUPercentOneCore": 0.012300247763996115,
+      "cliInterruptWakeupsPerSecond": 3.973609846594029
+    },
+    {
+      "name": "ingest-five-seconds",
+      "elapsed": 60.092356124994694,
+      "newRows": 12,
+      "before": {
+        "app": {
+          "pid": 79920,
+          "userNanoseconds": 2572633125,
+          "systemNanoseconds": 964061958,
+          "packageIdleWakeups": 4,
+          "interruptWakeups": 1708,
+          "rss": 72859648,
+          "physicalFootprint": 62309432
+        },
+        "cli": {
+          "pid": 844,
+          "userNanoseconds": 5632916,
+          "systemNanoseconds": 8463958,
+          "packageIdleWakeups": 11,
+          "interruptWakeups": 247,
+          "rss": 5455872,
+          "physicalFootprint": 2277880
+        }
+      },
+      "after": {
+        "app": {
+          "pid": 79920,
+          "userNanoseconds": 2631067416,
+          "systemNanoseconds": 985875333,
+          "packageIdleWakeups": 5,
+          "interruptWakeups": 1808,
+          "rss": 53805056,
+          "physicalFootprint": 62342200
+        },
+        "cli": {
+          "pid": 844,
+          "userNanoseconds": 10107291,
+          "systemNanoseconds": 14167000,
+          "packageIdleWakeups": 19,
+          "interruptWakeups": 485,
+          "rss": 6209536,
+          "physicalFootprint": 2523640
+        }
+      },
+      "peakRSS": {
+        "app": 73351168,
+        "cli": 6209536
+      },
+      "appCPUPercentOneCore": 0.13354055519654012,
+      "appInterruptWakeupsPerSecond": 1.6641051615948572,
+      "cliCPUPercentOneCore": 0.016936292161403247,
+      "cliInterruptWakeupsPerSecond": 3.96057028459576
+    }
+  ],
+  "exitCode": 0,
+  "stdout": "",
+  "stderr": "",
+  "cpuCounterConversion": {
+    "unit": "Mach absolute ticks",
+    "numerator": 125,
+    "denominator": 3,
+    "control": "0.2-second clock() CPU burn measured 4,800,812 ticks = 0.200034 seconds"
+  }
+}

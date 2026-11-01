@@ -1,0 +1,4 @@
+{
+  "boundary": "visible-window Canvas drawing pass; physical scanout unmeasured",
+  "error": "No visible sample render within 30 seconds; keep the desktop unlocked and window visible."
+}

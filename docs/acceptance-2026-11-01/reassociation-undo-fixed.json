@@ -1,0 +1,25 @@
+{
+  "session": 59,
+  "destination": {
+    "colorHex": "#8B78CB",
+    "name": "Postfix destination",
+    "state": "ended",
+    "sampleCount": 1,
+    "linesVisible": true,
+    "firstSampleAt": 815228826.3207932,
+    "id": "8AAC5FBD-530D-4A4F-BEDD-9702821CC506",
+    "lastSampleAt": 815228826.3207932,
+    "dotsVisible": false
+  },
+  "source": {
+    "colorHex": "#D97932",
+    "name": "Postfix source",
+    "state": "live",
+    "sampleCount": 2,
+    "linesVisible": true,
+    "firstSampleAt": 815228826.3462172,
+    "id": "D7AF162D-1AED-40E3-8EA1-8235D5CE49DC",
+    "lastSampleAt": 815228860.686837,
+    "dotsVisible": false
+  }
+}

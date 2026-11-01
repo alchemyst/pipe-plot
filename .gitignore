@@ -10,3 +10,6 @@ xcuserdata/
 /design/icon/*.icns
 /design/icon/*.iconset/
 /design/icon/*-generated.pov
+
+# Python script bytecode.
+__pycache__/

@@ -80,6 +80,8 @@ Statistics and straight-line regression share an Accelerate/vDSP implementation.
 
 [Window visibility validation](docs/WINDOW_VISIBILITY_VALIDATION.md) records the native four-window CPU/query measurement and its reproduction command.
 
+[Latest acceptance execution](docs/ACCEPTANCE_2026-11-01.md) records the native, failure, sleep/wake and resource checks, with explicit remaining limits and reproduction scripts.
+
 [Native UI session evidence](docs/NATIVE_UI_SESSION.md) records the issue fixes, all 40 scenario outcomes and outstanding pointer/lifecycle/resource checks.
 
 [SPEC.md](SPEC.md) records the product requirements. [Validation scenarios](docs/VALIDATION.md) describe the automated and manual checks needed before calling every interaction production-ready.

@@ -294,7 +294,8 @@ public enum PipePlotLocations {
         return candidates.first(where: { fm.fileExists(atPath: $0.path) }) ?? candidates[0]
     }
 
-    /// Launch the locally installed app without activating its windows.
+    /// Present the locally installed app on cold launch. Ready warm connections
+    /// bypass this path and never repeatedly activate the app.
     public static func launchInstalledApp() throws {
         let app = appURL
         guard FileManager.default.fileExists(atPath: app.path) else {
@@ -302,7 +303,11 @@ public enum PipePlotLocations {
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-g", app.path, "--args", "--pipeplot-launched-by-cli"]
+        var arguments = [app.path, "--args", "--pipeplot-launched-by-cli"]
+        if let trace = ProcessInfo.processInfo.environment["PIPEPLOT_ACCEPTANCE_TRACE"], trace.hasPrefix("/") {
+            arguments += ["--acceptance-trace", trace]
+        }
+        process.arguments = arguments
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {

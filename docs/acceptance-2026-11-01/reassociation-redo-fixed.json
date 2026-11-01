@@ -1,0 +1,14 @@
+{
+  "session": 59,
+  "destination": {
+    "name": "Postfix destination",
+    "sampleCount": 4,
+    "lastSampleAt": 815228869.538202,
+    "colorHex": "#8B78CB",
+    "firstSampleAt": 815228826.3207932,
+    "dotsVisible": false,
+    "linesVisible": true,
+    "state": "live",
+    "id": "8AAC5FBD-530D-4A4F-BEDD-9702821CC506"
+  }
+}

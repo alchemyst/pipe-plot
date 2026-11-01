@@ -1,0 +1,4 @@
+2026-11-01 12:58:52 +0200 Sleep               	Entering Sleep state due to 'Software Sleep pid=82604':TCPKeepAlive=active Using AC (Charge:80%) 15 secs
+2026-11-01 12:59:07 +0200 Wake                	Wake from Deep Idle [CDNVA] : due to ATC0.CIOWakeup/UserActivity Assertion Using AC (Charge:80%) 105 secs
+2026-11-01 13:00:52 +0200 Sleep               	Entering Sleep state due to 'Software Sleep pid=85373':TCPKeepAlive=active Using AC (Charge:80%) 15 secs
+2026-11-01 13:01:07 +0200 Wake                	Wake from Deep Idle [CDNVA] : due to ATC0.CIOWakeup/UserActivity Assertion Using AC (Charge:80%)

@@ -52,6 +52,7 @@ final class WindowStateView: NSView {
         // the window here so rapid hide/reveal notifications cannot apply stale state.
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window else { return }
+            AcceptanceTrace.record("window-state-visible-\(window.isVisible)-occlusion-\(window.occlusionState.rawValue)-hidden-\(NSApp.isHidden)-appActive-\(NSApp.isActive)")
             let active = Self.displayIsActive(visible: window.isVisible, miniaturized: window.isMiniaturized,
                                               occluded: !window.occlusionState.contains(.visible), appHidden: NSApp.isHidden)
             guard self.lastActive != active else { return }

@@ -153,3 +153,7 @@ Source timestamps/historical imports, periodicity or richer forecasting, general
 - Reviewed existing tests and recorded validation; did not rerun the full suite or drive the user's desktop.
 - Earlier “implemented” reports were too broad to establish visible completion. Child issues state what exists, the precise gap, and testable acceptance criteria.
 
+
+## Acceptance execution — 2026-11-01
+
+[ACCEPTANCE_2026-11-01.md](ACCEPTANCE_2026-11-01.md) records the completed #14 execution, fixes and measured limits. It supersedes the outstanding acceptance status above while retaining the original audit as history. The original 40-scenario inventory combines native observations with model/responder regression evidence; it does not certify every possible manual permutation.

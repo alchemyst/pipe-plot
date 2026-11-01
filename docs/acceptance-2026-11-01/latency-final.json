@@ -1,0 +1,40 @@
+{
+  "boundary": "visible-window Canvas drawing pass; physical scanout unmeasured",
+  "cold": {
+    "start": 1793534727.9580002,
+    "render": {
+      "event": "visible-sample-render",
+      "pid": 74669,
+      "sampleWall": 1793534727.976488,
+      "stream": "86bd8170-cf64-407f-bf59-8a93f4606ca9",
+      "uptimeNanoseconds": 116354012712916,
+      "wall": 1793534732.0034518
+    },
+    "seconds": 4.045451641082764
+  },
+  "warm": {
+    "start": 1793534732.015788,
+    "render": {
+      "event": "visible-sample-render",
+      "pid": 74669,
+      "sampleWall": 1793534732.0369492,
+      "stream": "f668ce96-4232-42c3-a81a-be908ce154a8",
+      "uptimeNanoseconds": 116354340865125,
+      "wall": 1793534732.331605
+    },
+    "seconds": 0.31581687927246094
+  },
+  "sparse": {
+    "silentSeconds": 120.0,
+    "start": 1793534852.464418,
+    "render": {
+      "event": "visible-sample-render",
+      "pid": 74669,
+      "sampleWall": 1793534852.4796572,
+      "stream": "86bd8170-cf64-407f-bf59-8a93f4606ca9",
+      "uptimeNanoseconds": 116475140336250,
+      "wall": 1793534853.131308
+    },
+    "seconds": 0.6668901443481445
+  }
+}

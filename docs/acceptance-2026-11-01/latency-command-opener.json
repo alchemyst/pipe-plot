@@ -1,0 +1,28 @@
+{
+  "boundary": "visible-window Canvas drawing pass; physical scanout unmeasured",
+  "cold": {
+    "start": 1793534552.631568,
+    "render": {
+      "event": "visible-sample-render",
+      "pid": 72622,
+      "sampleWall": 1793534552.963616,
+      "stream": "ca99c2e2-fcf1-440a-b74a-401c0eac2069",
+      "uptimeNanoseconds": 116176467266375,
+      "wall": 1793534554.458157
+    },
+    "seconds": 1.8265891075134277
+  },
+  "warm": {
+    "start": 1793534554.468768,
+    "render": {
+      "event": "visible-sample-render",
+      "pid": 72622,
+      "sampleWall": 1793534554.482563,
+      "stream": "be4b06f8-c8ad-4d46-9f72-1d551c9ad951",
+      "uptimeNanoseconds": 116176540559166,
+      "wall": 1793534554.53145
+    },
+    "seconds": 0.0626821517944336
+  },
+  "error": "No visible sample render within 30 seconds; keep the desktop unlocked and window visible."
+}

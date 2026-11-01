@@ -1,0 +1,17 @@
+{
+  "session": 45,
+  "observations": 150,
+  "valuesOrdered0Through149": true,
+  "largestReceiptGapSeconds": 33.159926891326904,
+  "beforeGap": {
+    "timestamp": 1793530847.210514,
+    "value": 120.0
+  },
+  "afterGap": {
+    "timestamp": 1793530880.370441,
+    "value": 121.0
+  },
+  "cliExitCode": 0,
+  "stdout": "",
+  "stderr": ""
+}
