@@ -61,9 +61,15 @@ final class BackgroundAnalysisTests: XCTestCase {
         XCTAssertEqual(before.compactMap(\.fit).count, 2)
         let session = try XCTUnwrap(model.sessions[ready.sessionID])
         XCTAssertGreaterThan(model.domain(for: session).upperBound, start.addingTimeInterval(200))
+        let fitsBeforeArrival = model.queries.rawFitCount
         _ = try model.store.append(SampleRow(timestamp: start.addingTimeInterval(10), values: [-1000]), to: ready.attachmentID)
         model.refreshAll()
+        for _ in 0..<50 {
+            if model.allForecastStatuses[ready.sessionID]?.compactMap(\.fit).count == 2 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
         XCTAssertEqual(model.allForecastStatuses[ready.sessionID]?.compactMap(\.crossing), before.compactMap(\.crossing))
+        XCTAssertEqual(model.queries.rawFitCount, fitsBeforeArrival)
         model.removeForecast(before[0].configuration.id, session: try XCTUnwrap(model.sessions[ready.sessionID]))
         XCTAssertEqual(model.allForecastStatuses[ready.sessionID]?.count, 1)
     }

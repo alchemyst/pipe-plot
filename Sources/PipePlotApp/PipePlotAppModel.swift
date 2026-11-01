@@ -261,14 +261,16 @@ final class PipePlotAppModel {
     }
     func samplerGroup(containing stream: StreamID, sessionID: SessionID) -> [StreamID] { store.samplerGroup(containing: stream) ?? [stream] }
     func reassociate(_ sources: [StreamID], with destinations: [StreamID], sessionID: SessionID) {
+        queries.invalidateFits()
         perform { try store.reassociateStreams(sources, to: destinations) }
     }
     func reassociate(_ source: StreamID, with destination: StreamID, sessionID: SessionID) {
+        queries.invalidateFits()
         do { try store.reassociateStreams([source], to: [destination]); refresh(sessionID) }
         catch { errorMessage = error.localizedDescription }
     }
-    func undo(_ sessionID: SessionID) { do { _ = try store.undo(sessionID: sessionID); refreshAll() } catch { errorMessage = error.localizedDescription } }
-    func redo(_ sessionID: SessionID) { do { _ = try store.redo(sessionID: sessionID); refreshAll() } catch { errorMessage = error.localizedDescription } }
+    func undo(_ sessionID: SessionID) { queries.invalidateFits(); do { _ = try store.undo(sessionID: sessionID); refreshAll() } catch { errorMessage = error.localizedDescription } }
+    func redo(_ sessionID: SessionID) { queries.invalidateFits(); do { _ = try store.redo(sessionID: sessionID); refreshAll() } catch { errorMessage = error.localizedDescription } }
 
     func refresh(_ id: SessionID) {
         do {
@@ -296,10 +298,10 @@ final class PipePlotAppModel {
         return isDisplayActive(session.id)
     }
 
-    func tick(_ id: SessionID) {
+    func tick(_ id: SessionID, now: Date = Date()) {
         guard isDisplayActive(id) else { return }
         displayRefreshCount &+= 1
-        if sessions[id]?.timeline.clockStoppedAt == nil { clockPulse = Date() }
+        if sessions[id]?.timeline.clockStoppedAt == nil { clockPulse = now }
         refresh(id)
     }
     func sessionNow(_ session: SessionSnapshot) -> Date { session.timeline.clockStoppedAt ?? clockPulse }
@@ -395,7 +397,7 @@ final class PipePlotAppModel {
     func fit(for stream: StreamID, selection: TimeSelection, cacheID: UUID? = nil) -> LinearFit? {
         guard isDisplayActive(for: stream) else { return nil }
         let range = resolvedRange(selection, now: sessionNow(for: stream))
-        return queries.fit(stream, cacheID: cacheID ?? stream, key: queryKey(stream, range: range), store: queryStore, completed: { [weak self] in
+        return queries.fit(stream, cacheID: cacheID ?? stream, key: queryKey(stream, range: range), settings: selection, store: queryStore, completed: { [weak self] in
             guard let self else { return }
             // Read current configurations, never the configuration that launched a
             // query: Undo/removal while work is running cannot resurrect an overlay.
@@ -477,20 +479,14 @@ final class PipePlotAppModel {
     func refreshForecast(_ session: SessionSnapshot) {
         guard isDisplayActive(session.id) else { return }
         let configurations = session.isDeleted ? [] : (session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? [])
-        let previous = allForecastStatuses[session.id] ?? []
         let statuses = configurations.map { configuration -> ForecastStatus in
             guard let chart = session.charts.first(where: { $0.streams.contains(where: { $0.id == configuration.streamID }) }),
                   let guide = chart.guides.first(where: { $0.id == configuration.guideID && $0.orientation == .horizontalValue }) else {
                 return ForecastStatus(configuration: configuration, fit: nil, guide: nil, crossing: nil, message: "Target guide is missing")
             }
-            let old = previous.first { $0.configuration.id == configuration.id }
             let count = chart.streams.first(where: { $0.id == configuration.streamID })?.sampleCount ?? 0
             let range = resolvedRange(configuration.selection, now: sessionNow(session))
-            let fitted: LinearFit?
-            if old?.configuration.selection == configuration.selection,
-               (configuration.selection.mode == .fixed || (old?.fitSampleCount == count && old?.fitRange == range)), let existing = old?.fit {
-                fitted = existing
-            } else { fitted = fit(for: configuration.streamID, selection: configuration.selection, cacheID: configuration.id) }
+            let fitted = fit(for: configuration.streamID, selection: configuration.selection, cacheID: configuration.id)
             let crossing = fitted?.crossing(value: guide.value)
             let now = sessionNow(session)
             let message: String

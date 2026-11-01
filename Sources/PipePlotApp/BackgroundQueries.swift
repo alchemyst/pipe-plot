@@ -2,8 +2,8 @@ import Foundation
 import Observation
 import PipePlotCore
 
-/// One outstanding query of each kind per stream. Queries never execute on the
-/// view/responder thread; a new viewport supersedes old output by its exact key.
+/// One outstanding query per stream (or forecast). Queries never execute on the
+/// view/responder thread; fit snapshots additionally track selected membership.
 @MainActor @Observable
 final class BackgroundQueries {
     private(set) var revision = 0
@@ -12,12 +12,21 @@ final class BackgroundQueries {
     @ObservationIgnored private var statistics: [StreamID: (QueryKey, SelectionStatistics?)] = [:]
     @ObservationIgnored private var nearest: [StreamID: (QueryKey, StoredSample?)] = [:]
     @ObservationIgnored private var nearestPending: Set<StreamID> = []
-    @ObservationIgnored private var fits: [StreamID: (QueryKey, LinearFit?)] = [:]
+    @ObservationIgnored private var fits: [UUID: (QueryKey, TimeSelection, ReusableLinearFit)] = [:]
     @ObservationIgnored private var displayPending: Set<StreamID> = []
     @ObservationIgnored private var statisticsPending: Set<StreamID> = []
-    @ObservationIgnored private var fitPending: Set<StreamID> = []
+    @ObservationIgnored private var fitPending: Set<UUID> = []
 
     @ObservationIgnored private(set) var submittedQueryCount = 0
+
+    @ObservationIgnored private(set) var rawFitCount = 0
+    @ObservationIgnored private var fitGeneration = 0
+    @ObservationIgnored private var fitsNeedValidation: Set<UUID> = []
+
+    func invalidateFits() {
+        fitGeneration &+= 1
+        fitsNeedValidation.formUnion(fits.keys)
+    }
 
     struct QueryKey: Equatable {
         let start: Date
@@ -81,16 +90,33 @@ final class BackgroundQueries {
         }
         return nil
     }
-    func fit(_ id: StreamID, cacheID: UUID, key: QueryKey, store: SampleStore, completed: @escaping () -> Void, failed: @escaping (Error) -> Void) -> LinearFit? {
-        if let entry = fits[cacheID], entry.0 == key { return entry.1 }
+    func fit(_ id: StreamID, cacheID: UUID, key: QueryKey, settings: TimeSelection, store: SampleStore, completed: @escaping () -> Void, failed: @escaping (Error) -> Void) -> LinearFit? {
+        // Counts/latest time detect arrivals; mapping and history edits call
+        // invalidateFits even when those descriptors happen to be unchanged.
+        if !fitsNeedValidation.contains(cacheID),
+           let entry = fits[cacheID], entry.2.streamID == id, entry.1 == settings,
+           entry.0.count == key.count, entry.0.last == key.last,
+           entry.2.contains(from: key.start, to: key.end) {
+            return entry.2.fit
+        }
+        let previous = fits[cacheID].flatMap { $0.1 == settings ? $0.2 : nil }
+        let generation = fitGeneration
         if fitPending.insert(cacheID).inserted {
             submittedQueryCount &+= 1
             queue.async { [weak self] in
-                let result = Result { try store.linearFit(streamID: id, from: key.start, to: key.end) }
+                let result = Result { try store.reusableLinearFit(streamID: id, from: key.start, to: key.end, reusing: previous) }
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.fitPending.remove(cacheID)
-                    switch result { case .success(let fit): self.fits[cacheID] = (key, fit); case .failure(let error): self.fits[cacheID] = (key, nil); failed(error) }
+                    if case .success(let snapshot) = result, snapshot.didRefit { self.rawFitCount &+= 1 }
+                    if generation == self.fitGeneration {
+                        switch result {
+                        case .success(let snapshot):
+                            self.fits[cacheID] = (key, settings, snapshot)
+                            self.fitsNeedValidation.remove(cacheID)
+                        case .failure(let error): failed(error)
+                        }
+                    }
                     self.revision &+= 1
                     completed()
                 }
@@ -104,6 +130,6 @@ final class BackgroundQueries {
         nearest = nearest.filter { ids.contains($0.key) }
         displays = displays.filter { ids.contains($0.key) }
         statistics = statistics.filter { ids.contains($0.key) }
-        if fits.count > 256 { fits.removeAll() }
+        if fits.count > 256 { fits.removeAll(); fitsNeedValidation.removeAll() }
     }
 }

@@ -21,6 +21,25 @@ public final class SampleStore: @unchecked Sendable {
         try execute("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS samples(stream_id TEXT NOT NULL, timestamp REAL NOT NULL, sequence INTEGER NOT NULL, value REAL NOT NULL, PRIMARY KEY(stream_id, sequence)); CREATE INDEX IF NOT EXISTS samples_by_time ON samples(stream_id,timestamp,sequence);")
         try? execute("ALTER TABLE samples ADD COLUMN segment_id TEXT")
         try execute("CREATE TABLE IF NOT EXISTS stream_meta(stream_id TEXT PRIMARY KEY, sample_count INTEGER NOT NULL DEFAULT 0, first_time REAL, last_time REAL, next_sequence INTEGER NOT NULL DEFAULT 0);")
+        // Separate append and mutation revisions let a reader reuse unchanged
+        // membership after out-of-range arrivals, while remaps always invalidate.
+        try execute("""
+            CREATE TABLE IF NOT EXISTS fit_versions(stream_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0, mutation INTEGER NOT NULL DEFAULT 0);
+            CREATE TRIGGER IF NOT EXISTS fit_insert AFTER INSERT ON samples BEGIN
+                INSERT INTO fit_versions(stream_id,revision) VALUES(NEW.stream_id,1)
+                ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS fit_delete AFTER DELETE ON samples BEGIN
+                INSERT INTO fit_versions(stream_id,revision,mutation) VALUES(OLD.stream_id,1,1)
+                ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1,mutation=mutation+1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS fit_update AFTER UPDATE ON samples BEGIN
+                INSERT INTO fit_versions(stream_id,revision,mutation) VALUES(OLD.stream_id,1,1)
+                ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1,mutation=mutation+1;
+                INSERT INTO fit_versions(stream_id,revision,mutation) VALUES(NEW.stream_id,1,1)
+                ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1,mutation=mutation+1;
+            END;
+            """)
     }
     /// Independent WAL reader for UI analysis. It cannot write and does not hold
     /// the ingestion connection's lock while scanning a long historical range.

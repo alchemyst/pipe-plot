@@ -24,7 +24,7 @@ The repository was newly created and contained no existing issues. Source paths 
 - [ ] [#10](https://github.com/alchemyst/pipe-plot/issues/10) — Preserve per-stream mark overrides when changing chart units or axis settings
 - [ ] [#11](https://github.com/alchemyst/pipe-plot/issues/11) — Separate timeline display preferences from viewport navigation and undo
 - [x] [#12](https://github.com/alchemyst/pipe-plot/issues/12) — Suspend unnecessary chart work for hidden and minimised windows
-- [ ] [#13](https://github.com/alchemyst/pipe-plot/issues/13) — Avoid refitting live forecasts when selected sample membership is unchanged
+- [x] [#13](https://github.com/alchemyst/pipe-plot/issues/13) — Avoid refitting live forecasts when selected sample membership is unchanged
 
 - [ ] [#14](https://github.com/alchemyst/pipe-plot/issues/14) — Native, lifecycle and resource acceptance. This is validation work, explicitly distinguished from missing source implementation.
 

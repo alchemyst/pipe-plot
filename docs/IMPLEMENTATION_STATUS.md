@@ -62,3 +62,31 @@ saved display preferences, event validation/rollback, numeric parsing, extrema,
 and crossing direction/deadband/cooldown. New native gesture rendering, menu
 stability and delivered notification banners have not been manually verified.
 Desktop interaction remains paused following the user's report of menus opening.
+
+
+## Forecast membership reuse — 2026-11-01 (issue #13)
+
+Forecasts now reuse raw fits while the actual training samples remain unchanged.
+Cached snapshots record inclusive selected endpoints, exclusive neighboring
+boundaries, and per-stream SQLite append/mutation revisions. Silent clock ticks
+inside those boundaries submit no analysis query. A changed boundary or arrival
+checks membership; arrivals outside the training interval retain the existing fit.
+Segment remapping and Undo/Redo validate the database revision even when stream
+counts and latest timestamps are unchanged. Fit settings are part of the cache
+identity, and superseded background completions cannot bypass invalidation.
+The linked training bounds and crossing countdown still advance independently.
+
+Deterministic connected-input instrumentation in `LiveForecastReuseTests` reports
+40 silent ticks with **0 queries / 0 raw refits**, followed by **1 query / 1 refit**
+when the inclusive rolling boundary drops a sample. The resulting slope is 3/s
+and the target crossing is 40 seconds after the test origin. Subsequent arrivals
+and changed settings also refit. Storage tests cover empty gaps, duplicate times,
+fractional timestamp precision, interior/out-of-range arrivals, and mapping round
+trips through an independent WAL reader.
+
+Validation: `swift test` passed 64 tests; the Xcode app test suite executed 23 tests
+with zero failures and one opt-in native resource measurement skipped. The final
+app run used a clean derived-data directory and `ENABLE_DEBUG_DYLIB=NO` after
+two incremental test hosts stalled in dyld before starting tests; an earlier
+standard Debug run also passed. This is automated model/storage evidence, not
+a new manual UI or long-run measurement.
