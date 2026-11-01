@@ -28,7 +28,9 @@ struct PipePlotApplication: App {
         }
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(.presented)
-        .commands { PipePlotCommands(model: model, installInitialWindowOpener: { appDelegate.installInitialWindowOpener($0) }) }
+        .commands {
+            PipePlotCommands(model: model, installInitialWindowOpener: { appDelegate.installInitialWindowOpener($0) })
+        }
 
         WindowGroup("PipePlot", for: SessionID.self) { $sessionID in
             SessionScene(model: model, appDelegate: appDelegate, initialSessionID: sessionID)
@@ -52,7 +54,8 @@ private struct SessionScene: View {
     @Environment(\.openWindow) private var openWindow
 
     init(model: PipePlotAppModel, appDelegate: PipePlotAppDelegate, initialSessionID: SessionID? = nil) {
-        self.model = model; self.appDelegate = appDelegate
+        self.model = model
+        self.appDelegate = appDelegate
         _sessionID = State(initialValue: initialSessionID)
     }
     var body: some View {
@@ -60,7 +63,10 @@ private struct SessionScene: View {
             if let sessionID {
                 SessionWindow(sessionID: sessionID, model: model).frame(minWidth: 850, minHeight: 580)
             } else {
-                SessionPicker(model: model) { id in model.openSession(id); sessionID = id }.frame(minWidth: 520, minHeight: 400)
+                SessionPicker(model: model) { id in
+                    model.openSession(id)
+                    sessionID = id
+                }.frame(minWidth: 520, minHeight: 400)
             }
         }
         .environment(model)
@@ -81,8 +87,11 @@ private struct SavedSessionScene: View {
     let model: PipePlotAppModel
     @Environment(\.openWindow) private var openWindow
     var body: some View {
-        SessionPicker(model: model) { id in model.openSession(id); openWindow(value: id) }
-            .frame(minWidth: 520, minHeight: 400)
+        SessionPicker(model: model) { id in
+            model.openSession(id)
+            openWindow(value: id)
+        }
+        .frame(minWidth: 520, minHeight: 400)
     }
 }
 
@@ -99,10 +108,11 @@ final class PipePlotAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
-        AcceptanceTrace.record("application-did-finish-launching-active-\(NSApp.isActive)-policy-\(NSApp.activationPolicy().rawValue)-windows-\(NSApp.windows.count)")
+        AcceptanceTrace.record(
+            "application-did-finish-launching-active-\(NSApp.isActive)-policy-\(NSApp.activationPolicy().rawValue)-windows-\(NSApp.windows.count)"
+        )
         if NSApp.windows.isEmpty {
-            if let initialWindowOpener { initialWindowOpener(id: "initial") }
-            else { needsInitialWindow = true }
+            if let initialWindowOpener { initialWindowOpener(id: "initial") } else { needsInitialWindow = true }
         }
         if ProcessInfo.processInfo.arguments.contains("--pipeplot-launched-by-cli") {
             // A cold pipeline is an explicit request for its first chart. SwiftUI
@@ -129,7 +139,10 @@ final class PipePlotAppDelegate: NSObject, NSApplicationDelegate {
         return .terminateNow
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        if !hasVisibleWindows, let reopenHandler { reopenHandler(); return false }
+        if !hasVisibleWindows, let reopenHandler {
+            reopenHandler()
+            return false
+        }
         return true
     }
 }

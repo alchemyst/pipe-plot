@@ -9,7 +9,8 @@ final class MetadataContinuationTests: XCTestCase {
         let store = try PipePlotStore(databaseURL: directory.appendingPathComponent("test.sqlite"))
         let first = try store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1, unitHint: "MiB"))
         try store.finishAttachment(first.attachmentID, reason: .eof)
-        let second = try store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1, unitHint: "seconds"))
+        let second = try store.registerSampler(
+            intent: .target, sampler: SamplerIntent(columnCount: 1, unitHint: "seconds"))
         XCTAssertFalse(second.continued)
         XCTAssertNotEqual(first.streams[0].id, second.streams[0].id)
         XCTAssertEqual(try store.snapshot(sessionID: first.sessionID)?.charts[0].settings.unit, "MiB")

@@ -4,15 +4,18 @@ import XCTest
 final class EventInputParserTests: XCTestCase {
     func testChunkingCRLFAndFinalUnterminatedLine() {
         var parser = EventInputParser()
-        XCTAssertEqual(parser.append(Data("first\r\n  second  \n\nlast".utf8)), [.event("first"), .event("  second  ")])
+        XCTAssertEqual(
+            parser.append(Data("first\r\n  second  \n\nlast".utf8)), [.event("first"), .event("  second  ")])
         XCTAssertEqual(parser.finish(), [.event("last")])
     }
 
     func testRejectsInvalidUTF8AndNULButContinues() {
         var parser = EventInputParser()
-        XCTAssertEqual(parser.append(Data([0x61, 0x00, 0x0a, 0xff, 0x0a, 0x6f, 0x6b, 0x0a])), [
-            .rejected("event contains a NUL byte"), .rejected("event is not valid UTF-8"), .event("ok")
-        ])
+        XCTAssertEqual(
+            parser.append(Data([0x61, 0x00, 0x0a, 0xff, 0x0a, 0x6f, 0x6b, 0x0a])),
+            [
+                .rejected("event contains a NUL byte"), .rejected("event is not valid UTF-8"), .event("ok"),
+            ])
     }
 
     func testOversizeLineIsDiscardedAsOneAndParserResynchronizes() {

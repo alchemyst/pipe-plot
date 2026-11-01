@@ -36,7 +36,9 @@ struct SnapshotMenuItem {
     var action: (() -> Void)? = nil
     static var separator: Self { .init(title: "-") }
 
-    static func command(_ title: String, enabled: Bool = true, checked: Bool = false, action: @escaping () -> Void) -> Self {
+    static func command(_ title: String, enabled: Bool = true, checked: Bool = false, action: @escaping () -> Void)
+        -> Self
+    {
         .init(title: title, enabled: enabled, checked: checked, action: action)
     }
     static func submenu(_ title: String, _ children: [Self]) -> Self {
@@ -47,7 +49,10 @@ struct SnapshotMenuItem {
         let menu = NSMenu()
         menu.autoenablesItems = false
         for entry in entries {
-            if entry.title == "-", entry.action == nil, entry.children == nil { menu.addItem(.separator()); continue }
+            if entry.title == "-", entry.action == nil, entry.children == nil {
+                menu.addItem(.separator())
+                continue
+            }
             let item = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
             item.isEnabled = entry.enabled
             item.state = entry.checked ? .on : .off
@@ -56,7 +61,7 @@ struct SnapshotMenuItem {
                 let target = MenuCommand(action)
                 item.target = target
                 item.action = #selector(MenuCommand.run)
-                item.representedObject = target // NSMenuItem's target is weak.
+                item.representedObject = target  // NSMenuItem's target is weak.
             }
             menu.addItem(item)
         }
@@ -96,12 +101,16 @@ final class ContextMenuRegion: NSView {
         guard window != nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
             guard let self, event.window === self.window,
-                  self.visibleRect.contains(self.convert(event.locationInWindow, from: nil)) else { return event }
+                self.visibleRect.contains(self.convert(event.locationInWindow, from: nil))
+            else { return event }
             let menu = SnapshotMenuItem.menu(self.builder?() ?? [])
             NSMenu.popUpContextMenu(menu, with: event, for: self)
             return nil
         }
     }
-    func stopMonitoring() { if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil }
+    func stopMonitoring() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
     deinit { stopMonitoring() }
 }

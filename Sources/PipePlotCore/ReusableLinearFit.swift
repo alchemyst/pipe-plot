@@ -33,9 +33,12 @@ extension SampleStore {
     /// only a revision lookup; crossing a boundary requires indexed endpoint seeks.
     /// Append-only membership uses count + maximum allocated sequence; updates,
     /// deletes and segment remaps additionally advance the mutation generation.
-    public func reusableLinearFit(streamID: StreamID, from: Date, to: Date,
-                                  reusing previous: ReusableLinearFit? = nil) throws -> ReusableLinearFit {
-        lock.lock(); defer { lock.unlock() }
+    public func reusableLinearFit(
+        streamID: StreamID, from: Date, to: Date,
+        reusing previous: ReusableLinearFit? = nil
+    ) throws -> ReusableLinearFit {
+        lock.lock()
+        defer { lock.unlock() }
         func sql(_ text: String) throws {
             guard sqlite3_exec(db, text, nil, nil, nil) == SQLITE_OK else {
                 throw SampleStoreError.sql(String(cString: sqlite3_errmsg(db)))
@@ -48,18 +51,23 @@ extension SampleStore {
         defer { sqlite3_finalize(version) }
         bindText(version, 1, streamID.uuidString.lowercased())
         let code = sqlite3_step(version)
-        guard code == SQLITE_ROW || code == SQLITE_DONE else { throw SampleStoreError.sql("Could not read fit revision") }
+        guard code == SQLITE_ROW || code == SQLITE_DONE else {
+            throw SampleStoreError.sql("Could not read fit revision")
+        }
         let revision = code == SQLITE_ROW ? sqlite3_column_int64(version, 0) : 0
         let mutation = code == SQLITE_ROW ? sqlite3_column_int64(version, 1) : 0
         let old = previous.flatMap { $0.streamID == streamID ? $0 : nil }
         if let old, old.revision == revision, old.contains(from: from, to: to) {
-            return ReusableLinearFit(fit: old.fit, didRefit: false, streamID: streamID, revision: revision,
+            return ReusableLinearFit(
+                fit: old.fit, didRefit: false, streamID: streamID, revision: revision,
                 mutation: mutation, count: old.count, newestSequence: old.newestSequence,
                 first: old.first, last: old.last, before: old.before, after: old.after)
         }
         func endpoint(_ comparison: String, _ date: Date, _ order: String) throws -> Date? {
             var statement: OpaquePointer?
-            try prepare("SELECT timestamp FROM samples WHERE stream_id=? AND timestamp \(comparison) ? ORDER BY timestamp \(order),sequence \(order) LIMIT 1", &statement)
+            try prepare(
+                "SELECT timestamp FROM samples WHERE stream_id=? AND timestamp \(comparison) ? ORDER BY timestamp \(order),sequence \(order) LIMIT 1",
+                &statement)
             defer { sqlite3_finalize(statement) }
             bindText(statement, 1, streamID.uuidString.lowercased())
             sqlite3_bind_double(statement, 2, date.timeIntervalSince1970)
@@ -69,21 +77,27 @@ extension SampleStore {
             return Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
         }
         var membership: OpaquePointer?
-        try prepare("SELECT COUNT(*),COALESCE(MAX(sequence),-1) FROM samples WHERE stream_id=? AND timestamp>=? AND timestamp<=?", &membership)
+        try prepare(
+            "SELECT COUNT(*),COALESCE(MAX(sequence),-1) FROM samples WHERE stream_id=? AND timestamp>=? AND timestamp<=?",
+            &membership)
         defer { sqlite3_finalize(membership) }
         bindText(membership, 1, streamID.uuidString.lowercased())
         sqlite3_bind_double(membership, 2, from.timeIntervalSince1970)
         sqlite3_bind_double(membership, 3, to.timeIntervalSince1970)
-        guard sqlite3_step(membership) == SQLITE_ROW else { throw SampleStoreError.sql("Could not read fit membership") }
+        guard sqlite3_step(membership) == SQLITE_ROW else {
+            throw SampleStoreError.sql("Could not read fit membership")
+        }
         let count = sqlite3_column_int64(membership, 0), newest = sqlite3_column_int64(membership, 1)
         let first = try count > 0 ? endpoint(">=", from, "ASC") : nil
         let last = try count > 0 ? endpoint("<=", to, "DESC") : nil
-        let reuse = old.map {
-            $0.mutation == mutation && $0.count == count && $0.newestSequence == newest
-                && $0.first == first && $0.last == last
-        } ?? false
+        let reuse =
+            old.map {
+                $0.mutation == mutation && $0.count == count && $0.newestSequence == newest
+                    && $0.first == first && $0.last == last
+            } ?? false
         let fit = try reuse ? old?.fit : linearFit(streamID: streamID, from: from, to: to)
-        return try ReusableLinearFit(fit: fit, didRefit: !reuse, streamID: streamID, revision: revision,
+        return try ReusableLinearFit(
+            fit: fit, didRefit: !reuse, streamID: streamID, revision: revision,
             mutation: mutation, count: count, newestSequence: newest,
             first: first, last: last,
             before: endpoint("<", from, "DESC"), after: endpoint(">", to, "ASC"))

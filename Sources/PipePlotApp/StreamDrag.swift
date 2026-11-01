@@ -13,8 +13,14 @@ final class StreamDragState {
     private(set) var streamID: StreamID?
     var target: StreamDropTarget?
 
-    func begin(_ id: StreamID) { streamID = id; target = nil }
-    func end() { streamID = nil; target = nil }
+    func begin(_ id: StreamID) {
+        streamID = id
+        target = nil
+    }
+    func end() {
+        streamID = nil
+        target = nil
+    }
 }
 
 struct StreamDropTarget: Equatable {
@@ -54,8 +60,9 @@ struct StreamDropDelegate: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         defer { model.streamDrag.end() }
         guard validateDrop(info: info), let id = model.streamDrag.streamID else { return false }
-        return model.dropStream([id.uuidString], sessionID: target.sessionID,
-                                onto: target.onto, before: target.before, after: target.after)
+        return model.dropStream(
+            [id.uuidString], sessionID: target.sessionID,
+            onto: target.onto, before: target.before, after: target.after)
     }
 }
 
@@ -96,12 +103,15 @@ final class StreamDragHandleView: NSView, NSDraggingSource {
     override func mouseUp(with event: NSEvent) { mouseDownPoint = nil }
     override func mouseDragged(with event: NSEvent) {
         guard let origin = mouseDownPoint, let stream, let state,
-              hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) >= 3 else { return }
+            hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) >= 3
+        else { return }
         mouseDownPoint = nil
         let payload = NSPasteboardItem()
         payload.setString(stream.id.uuidString, forType: NSPasteboard.PasteboardType(StreamDragState.pasteboardType))
         let item = NSDraggingItem(pasteboardWriter: payload)
-        let label = NSAttributedString(string: stream.name, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .medium), .foregroundColor: NSColor.labelColor])
+        let label = NSAttributedString(
+            string: stream.name,
+            attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .medium), .foregroundColor: NSColor.labelColor])
         let size = NSSize(width: label.size().width + 20, height: 30)
         let image = NSImage(size: size, flipped: false) { rect in
             NSColor.controlBackgroundColor.setFill()
@@ -114,7 +124,9 @@ final class StreamDragHandleView: NSView, NSDraggingSource {
         beginDraggingSession(with: [item], event: event, source: self)
     }
 
-    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext)
+        -> NSDragOperation
+    {
         context == .withinApplication ? .move : []
     }
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }

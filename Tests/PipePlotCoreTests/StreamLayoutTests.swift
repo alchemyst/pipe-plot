@@ -18,7 +18,9 @@ final class StreamLayoutTests: XCTestCase {
         XCTAssertEqual(try chart().streams[0].sampleCount, 1)
         XCTAssertTrue(try chart().isVisible)
         XCTAssertTrue(try chart().isTarget)
-        XCTAssertEqual(try PipePlotStore(databaseURL: database).snapshot(sessionID: ready.sessionID)?.charts[0].streams[0].isLayoutHidden, true)
+        XCTAssertEqual(
+            try PipePlotStore(databaseURL: database).snapshot(sessionID: ready.sessionID)?.charts[0].streams[0]
+                .isLayoutHidden, true)
         XCTAssertTrue(try store.undo(sessionID: ready.sessionID))
         XCTAssertEqual(try chart().streams[0].isLayoutHidden, false)
         XCTAssertEqual(try chart().streams[0].colorHex, "#abcdef")
@@ -31,7 +33,8 @@ final class StreamLayoutTests: XCTestCase {
         XCTAssertTrue(try store.undo(sessionID: ready.sessionID))
         XCTAssertEqual(try chart().streams[0].isLayoutHidden, true)
         // Older IPC payloads have no presentation flag.
-        let legacy = Data("{\"id\":\"\(stream.uuidString)\",\"name\":\"legacy\",\"state\":\"ended\",\"sampleCount\":0}".utf8)
+        let legacy = Data(
+            "{\"id\":\"\(stream.uuidString)\",\"name\":\"legacy\",\"state\":\"ended\",\"sampleCount\":0}".utf8)
         XCTAssertNil(try JSONDecoder().decode(StreamDescriptor.self, from: legacy).isLayoutHidden)
     }
 }

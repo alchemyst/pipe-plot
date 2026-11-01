@@ -19,8 +19,7 @@ final class WatchSamplerTests: XCTestCase {
         defer { sampler.stop() }
         let deadline = Date().addingTimeInterval(3)
         while Date() < deadline {
-            do { _ = try sampler.next() }
-            catch {
+            do { _ = try sampler.next() } catch {
                 XCTAssertTrue(error.localizedDescription.contains("status 7"))
                 return
             }

@@ -8,7 +8,10 @@ final class RangeQueryTests: XCTestCase {
         let store = try SampleStore(databaseURL: directory.appendingPathComponent("history.sqlite"))
         let stream = UUID(), origin = Date(timeIntervalSince1970: 1_000)
         for index in 0..<50_010 {
-            try store.append(StoredSample(timestamp: origin.addingTimeInterval(Double(index)), sequence: UInt64(index), value: Double(index), segmentID: index < 25_000 ? "one" : "two"), to: stream)
+            try store.append(
+                StoredSample(
+                    timestamp: origin.addingTimeInterval(Double(index)), sequence: UInt64(index), value: Double(index),
+                    segmentID: index < 25_000 ? "one" : "two"), to: stream)
         }
         let end = origin.addingTimeInterval(50_009)
         let statistics = try XCTUnwrap(store.statistics(streamID: stream, from: origin, to: end))

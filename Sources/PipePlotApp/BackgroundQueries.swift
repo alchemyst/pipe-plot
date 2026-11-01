@@ -23,7 +23,8 @@ final class BackgroundQueries {
     @ObservationIgnored private var fitGeneration = 0
     @ObservationIgnored private var fitsNeedValidation: Set<UUID> = []
 
-    @ObservationIgnored private var derived: [StreamID: (QueryKey, DerivedSeriesConfiguration, Bool, DerivedSeriesResult)] = [:]
+    @ObservationIgnored private var derived:
+        [StreamID: (QueryKey, DerivedSeriesConfiguration, Bool, DerivedSeriesResult)] = [:]
     @ObservationIgnored private var derivedPending: Set<StreamID> = []
     @ObservationIgnored private var derivedGeneration = 0
 
@@ -32,7 +33,9 @@ final class BackgroundQueries {
             queue.async { continuation.resume(returning: try? store.suggestedDerivedInterval(streamID: id)) }
         }
     }
-    func derivedSeries(_ id: StreamID, key: QueryKey, configuration: DerivedSeriesConfiguration, live: Bool, store: SampleStore) -> DerivedSeriesResult? {
+    func derivedSeries(
+        _ id: StreamID, key: QueryKey, configuration: DerivedSeriesConfiguration, live: Bool, store: SampleStore
+    ) -> DerivedSeriesResult? {
         _ = revision
         if let cached = derived[id], cached.0 == key, cached.1 == configuration, cached.2 == live { return cached.3 }
         let generation = derivedGeneration
@@ -40,8 +43,12 @@ final class BackgroundQueries {
             submittedQueryCount &+= 1
             queue.async { [weak self] in
                 let result: DerivedSeriesResult
-                do { result = try store.derivedSeries(streamID: id, configuration: configuration, from: key.start, to: key.end, live: live) }
-                catch { result = DerivedSeriesResult(points: [], message: error.localizedDescription, processedSamples: 0) }
+                do {
+                    result = try store.derivedSeries(
+                        streamID: id, configuration: configuration, from: key.start, to: key.end, live: live)
+                } catch {
+                    result = DerivedSeriesResult(points: [], message: error.localizedDescription, processedSamples: 0)
+                }
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.derivedPending.remove(id)
@@ -69,17 +76,25 @@ final class BackgroundQueries {
         let count: Int64
         let last: Date?
     }
-    func display(_ id: StreamID, key: QueryKey, store: SampleStore, failed: @escaping (Error) -> Void) -> [StoredSample] {
+    func display(_ id: StreamID, key: QueryKey, store: SampleStore, failed: @escaping (Error) -> Void) -> [StoredSample]
+    {
         _ = revision
         if let entry = displays[id], entry.0 == key { return entry.1 }
         if displayPending.insert(id).inserted {
             submittedQueryCount &+= 1
             queue.async { [weak self] in
-                let result = Result { try store.displaySamples(streamID: id, from: key.start, to: key.end, bucketCount: 800) }
+                let result = Result {
+                    try store.displaySamples(streamID: id, from: key.start, to: key.end, bucketCount: 800)
+                }
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.displayPending.remove(id)
-                    switch result { case .success(let rows): self.displays[id] = (key, rows); case .failure(let error): self.displays[id] = (key, []); failed(error) }
+                    switch result {
+                    case .success(let rows): self.displays[id] = (key, rows)
+                    case .failure(let error):
+                        self.displays[id] = (key, [])
+                        failed(error)
+                    }
                     self.revision &+= 1
                 }
             }
@@ -92,7 +107,9 @@ final class BackgroundQueries {
         return cached.count == key.count && cached.last == last && cached.start <= last && last <= cached.end
     }
 
-    func stats(_ id: StreamID, key: QueryKey, store: SampleStore, failed: @escaping (Error) -> Void) -> SelectionStatistics? {
+    func stats(_ id: StreamID, key: QueryKey, store: SampleStore, failed: @escaping (Error) -> Void)
+        -> SelectionStatistics?
+    {
         _ = revision
         if let entry = statistics[id], entry.0 == key { return entry.1 }
         if statisticsPending.insert(id).inserted {
@@ -102,7 +119,12 @@ final class BackgroundQueries {
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.statisticsPending.remove(id)
-                    switch result { case .success(let stats): self.statistics[id] = (key, stats); case .failure(let error): self.statistics[id] = (key, nil); failed(error) }
+                    switch result {
+                    case .success(let stats): self.statistics[id] = (key, stats)
+                    case .failure(let error):
+                        self.statistics[id] = (key, nil)
+                        failed(error)
+                    }
                     self.revision &+= 1
                 }
             }
@@ -118,20 +140,25 @@ final class BackgroundQueries {
                 let sample = try? store.nearestSample(streamID: id, at: key.start)
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.nearestPending.remove(id); self.nearest[id] = (key, sample)
+                    self.nearestPending.remove(id)
+                    self.nearest[id] = (key, sample)
                     self.revision &+= 1
                 }
             }
         }
         return nil
     }
-    func fit(_ id: StreamID, cacheID: UUID, key: QueryKey, settings: TimeSelection, store: SampleStore, completed: @escaping () -> Void, failed: @escaping (Error) -> Void) -> LinearFit? {
+    func fit(
+        _ id: StreamID, cacheID: UUID, key: QueryKey, settings: TimeSelection, store: SampleStore,
+        completed: @escaping () -> Void, failed: @escaping (Error) -> Void
+    ) -> LinearFit? {
         // Counts/latest time detect arrivals; mapping and history edits call
         // invalidateFits even when those descriptors happen to be unchanged.
         if !fitsNeedValidation.contains(cacheID),
-           let entry = fits[cacheID], entry.2.streamID == id, entry.1 == settings,
-           entry.0.count == key.count, entry.0.last == key.last,
-           entry.2.contains(from: key.start, to: key.end) {
+            let entry = fits[cacheID], entry.2.streamID == id, entry.1 == settings,
+            entry.0.count == key.count, entry.0.last == key.last,
+            entry.2.contains(from: key.start, to: key.end)
+        {
             return entry.2.fit
         }
         let previous = fits[cacheID].flatMap { $0.1 == settings ? $0.2 : nil }
@@ -139,7 +166,9 @@ final class BackgroundQueries {
         if fitPending.insert(cacheID).inserted {
             submittedQueryCount &+= 1
             queue.async { [weak self] in
-                let result = Result { try store.reusableLinearFit(streamID: id, from: key.start, to: key.end, reusing: previous) }
+                let result = Result {
+                    try store.reusableLinearFit(streamID: id, from: key.start, to: key.end, reusing: previous)
+                }
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.fitPending.remove(cacheID)
@@ -166,6 +195,9 @@ final class BackgroundQueries {
         nearest = nearest.filter { ids.contains($0.key) }
         displays = displays.filter { ids.contains($0.key) }
         statistics = statistics.filter { ids.contains($0.key) }
-        if fits.count > 256 { fits.removeAll(); fitsNeedValidation.removeAll() }
+        if fits.count > 256 {
+            fits.removeAll()
+            fitsNeedValidation.removeAll()
+        }
     }
 }

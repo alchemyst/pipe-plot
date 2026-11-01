@@ -9,7 +9,8 @@ final class StreamInsertionTests: XCTestCase {
         let store = try PipePlotStore(databaseURL: directory.appendingPathComponent("test.sqlite"))
         let ready = try store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1))
         let id = try XCTUnwrap(ready.streams.first?.id)
-        var settings = AxisSettings(); settings.unit = "K"
+        var settings = AxisSettings()
+        settings.unit = "K"
         try store.updateSettings(settings, chartID: ready.chartID)
         let guide = Guide(orientation: .horizontalValue, value: 20)
         try store.upsertGuide(guide, chartID: ready.chartID)

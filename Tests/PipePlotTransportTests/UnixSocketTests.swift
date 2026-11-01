@@ -99,7 +99,8 @@ final class UnixSocketTests: XCTestCase {
         let server = UnixSocketServer(socketURL: path) { connection in
             accepted.fulfill()
             var sendBuffer: Int32 = 1_024
-            _ = setsockopt(connection.fileDescriptor, SOL_SOCKET, SO_SNDBUF, &sendBuffer, socklen_t(MemoryLayout<Int32>.size))
+            _ = setsockopt(
+                connection.fileDescriptor, SOL_SOCKET, SO_SNDBUF, &sendBuffer, socklen_t(MemoryLayout<Int32>.size))
             do {
                 try connection.send(bytes: Data(repeating: 0x61, count: 64 * 1_024 * 1_024), timeout: 0.1)
                 XCTFail("Expected the non-reading peer deadline")
@@ -150,7 +151,9 @@ final class UnixSocketTests: XCTestCase {
         let server = UnixSocketServer(socketURL: path) { connection in
             do {
                 if try connection.receiveFrame() == Data("client\n".dropLast().utf8) {
-                    lock.lock(); received += 1; lock.unlock()
+                    lock.lock()
+                    received += 1
+                    lock.unlock()
                     allReceived.fulfill()
                 }
             } catch { XCTFail("Client failed: \(error)") }
@@ -164,7 +167,9 @@ final class UnixSocketTests: XCTestCase {
         }
         clients.forEach { Darwin.close($0) }
         wait(for: [allReceived], timeout: 5)
-        lock.lock(); let total = received; lock.unlock()
+        lock.lock()
+        let total = received
+        lock.unlock()
         XCTAssertEqual(total, clientCount)
     }
 
@@ -217,7 +222,11 @@ final class UnixSocketTests: XCTestCase {
                 Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard result == 0 else { let code = errno; Darwin.close(fd); throw SocketError.system("test connect", code) }
+        guard result == 0 else {
+            let code = errno
+            Darwin.close(fd)
+            throw SocketError.system("test connect", code)
+        }
         return fd
     }
 

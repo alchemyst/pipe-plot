@@ -56,27 +56,42 @@ private func parseOptions(_ arguments: [String]) throws -> Options {
                 columns = parsed
                 index += 1
             }
-            guard (1...32).contains(columns) else { throw CLIError.usage("--test column count must be between 1 and 32\n\(usage)") }
+            guard (1...32).contains(columns) else {
+                throw CLIError.usage("--test column count must be between 1 and 32\n\(usage)")
+            }
             options.testColumns = columns
         case "--event": options.event = true
         case "--watch":
             index += 1
-            guard index < arguments.count, !arguments[index].isEmpty else { throw CLIError.usage("--watch needs a shell command\n\(usage)") }
+            guard index < arguments.count, !arguments[index].isEmpty else {
+                throw CLIError.usage("--watch needs a shell command\n\(usage)")
+            }
             options.watchCommand = arguments[index]
         case "--interval":
             index += 1
-            guard index < arguments.count, let value = Double(arguments[index]), value.isFinite, value > 0, value <= 86400 else { throw CLIError.usage("--interval must be a number of seconds greater than zero and at most 86400\n\(usage)") }
+            guard index < arguments.count, let value = Double(arguments[index]), value.isFinite, value > 0,
+                value <= 86400
+            else {
+                throw CLIError.usage(
+                    "--interval must be a number of seconds greater than zero and at most 86400\n\(usage)")
+            }
             options.interval = value
             options.intervalSpecified = true
         default:
-            if argument == "ls" && arguments.count == 1 { options.listing = true }
-            else if argument.hasPrefix("-") { throw CLIError.usage("unknown option: \(argument)\n\(usage)") }
-            else { positional.append(argument) }
+            if argument == "ls" && arguments.count == 1 {
+                options.listing = true
+            } else if argument.hasPrefix("-") {
+                throw CLIError.usage("unknown option: \(argument)\n\(usage)")
+            } else {
+                positional.append(argument)
+            }
         }
         index += 1
     }
     if !positional.isEmpty {
-        guard let number = Int(positional[0]), number > 0, (options.event ? positional.count == 1 : positional.count > 1) else {
+        guard let number = Int(positional[0]), number > 0,
+            (options.event ? positional.count == 1 : positional.count > 1)
+        else {
             throw CLIError.usage("expected `pp <session-number> <line-name> [line-name ...]`\n\(usage)")
         }
         options.sink = .sessionNumber(number, lineNames: Array(positional.dropFirst()))
@@ -85,26 +100,30 @@ private func parseOptions(_ arguments: [String]) throws -> Options {
     if options.event && (options.testColumns != nil || options.names != nil || options.unit != nil) {
         throw CLIError.usage("--event cannot be combined with numeric test, line naming, or unit options\n\(usage)")
     }
-    if options.watchCommand != nil && (options.testColumns != nil || options.event) { throw CLIError.usage("--watch cannot be combined with --test or --event\n\(usage)") }
-    if options.intervalSpecified && options.watchCommand == nil { throw CLIError.usage("--interval requires --watch\n\(usage)") }
+    if options.watchCommand != nil && (options.testColumns != nil || options.event) {
+        throw CLIError.usage("--watch cannot be combined with --test or --event\n\(usage)")
+    }
+    if options.intervalSpecified && options.watchCommand == nil {
+        throw CLIError.usage("--interval requires --watch\n\(usage)")
+    }
     return options
 }
 
 private let usage = """
-Usage:
-  sampler | pp                         attach to the target chart
-  sampler | pp -n memory -u MiB        name a single line and set its unit hint
-  sampler | pp -c                      create and target a chart
-  sampler | pp -s                      create and target a session
-  producer | pp --event                add each input line as a session time guide
-  producer | pp --event 2              attach events to session 2
-  sampler | pp 2 memory [free ...]     attach named lines in session 2
-  pp ls                                list sessions, charts and lines
-  pp --test [columns]                  generate one sine sample per second (default 1)
-  pp --watch 'command'                 run a shell command repeatedly (default 2 seconds)
-  pp --watch 'command' --interval 0.5  wait 0.5 seconds between runs
-  Options: --fresh starts a new group; --label LABEL describes the sampler.
-"""
+    Usage:
+      sampler | pp                         attach to the target chart
+      sampler | pp -n memory -u MiB        name a single line and set its unit hint
+      sampler | pp -c                      create and target a chart
+      sampler | pp -s                      create and target a session
+      producer | pp --event                add each input line as a session time guide
+      producer | pp --event 2              attach events to session 2
+      sampler | pp 2 memory [free ...]     attach named lines in session 2
+      pp ls                                list sessions, charts and lines
+      pp --test [columns]                  generate one sine sample per second (default 1)
+      pp --watch 'command'                 run a shell command repeatedly (default 2 seconds)
+      pp --watch 'command' --interval 0.5  wait 0.5 seconds between runs
+      Options: --fresh starts a new group; --label LABEL describes the sampler.
+    """
 
 // The server answers hello immediately, but valid sampler registration can wait
 // behind serialized store work. Bound the wait without treating a quiet live
@@ -149,7 +168,10 @@ private func runEvents(_ options: Options) throws {
             pollfd(fd: connection.fileDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0),
         ]
         let ready = Darwin.poll(&descriptors, nfds_t(descriptors.count), -1)
-        if ready < 0 { if errno == EINTR { continue }; throw SocketError.system("poll", errno) }
+        if ready < 0 {
+            if errno == EINTR { continue }
+            throw SocketError.system("poll", errno)
+        }
         let socketEvents = descriptors[1].revents
         if socketEvents & Int16(POLLIN | POLLHUP | POLLERR) != 0 {
             guard let message = try connection.receive(ServerMessage.self, timeout: 0.1) else {
@@ -163,7 +185,10 @@ private func runEvents(_ options: Options) throws {
         }
         if descriptors[0].revents & Int16(POLLIN | POLLHUP | POLLERR) == 0 { continue }
         let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)
-        if count < 0 { if errno == EINTR { continue }; throw SocketError.system("read stdin", errno) }
+        if count < 0 {
+            if errno == EINTR { continue }
+            throw SocketError.system("read stdin", errno)
+        }
         if count == 0 { break }
         try consume(parser.append(Data(buffer[..<count])))
     }
@@ -206,13 +231,16 @@ private final class InterruptMonitor {
         source = signalSource
         signalSource.setEventHandler { [weak self] in
             guard let self else { return }
-            self.lock.lock(); self.didInterrupt = true; self.lock.unlock()
+            self.lock.lock()
+            self.didInterrupt = true
+            self.lock.unlock()
         }
         signalSource.resume()
     }
 
     var interrupted: Bool {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return didInterrupt
     }
 
@@ -223,15 +251,16 @@ private final class InterruptMonitor {
 }
 
 private func connectOrLaunch() throws -> SocketConnection {
-    do { return try PipePlotLocations.connect(timeout: 0.35) }
-    catch {
+    do { return try PipePlotLocations.connect(timeout: 0.35) } catch {
         try PipePlotLocations.launchInstalledApp()
         return try PipePlotLocations.connect(timeout: 12)
     }
 }
 
 private func readServerMessage(_ connection: SocketConnection, timeout: TimeInterval = 30) throws -> ServerMessage {
-    guard let message = try connection.receive(ServerMessage.self, timeout: timeout) else { throw CLIError.protocolFailure("PipePlot closed the connection unexpectedly") }
+    guard let message = try connection.receive(ServerMessage.self, timeout: timeout) else {
+        throw CLIError.protocolFailure("PipePlot closed the connection unexpectedly")
+    }
     if case .error(let problem) = message { throw CLIError.protocolFailure(problem.message) }
     return message
 }
@@ -244,8 +273,12 @@ private func sendCommand(_ command: AppCommand) throws {
     while true {
         switch try readServerMessage(connection) {
         case .hello: continue
-        case .listing(let listing): printListing(listing); return
-        case .snapshot(let snapshot): printSnapshot(snapshot); return
+        case .listing(let listing):
+            printListing(listing)
+            return
+        case .snapshot(let snapshot):
+            printSnapshot(snapshot)
+            return
         case .closed: return
         default: throw CLIError.protocolFailure("Unexpected response to command")
         }
@@ -267,7 +300,10 @@ private func fetchListing() throws -> Listing {
 }
 
 private func printListing(_ listing: Listing) {
-    if listing.sessions.isEmpty { print("No sessions."); return }
+    if listing.sessions.isEmpty {
+        print("No sessions.")
+        return
+    }
     for session in listing.sessions {
         print("Session \(session.number): \(session.title)\(session.isOpen ? "" : " [closed]")")
         for (position, chart) in session.charts.enumerated() {
@@ -286,7 +322,10 @@ private func printSnapshot(_ session: SessionSnapshot) {
 
 private func runSampler(_ options: Options) throws {
     let startedAt = Date()
-    if options.listing { try sendCommand(.list); return }
+    if options.listing {
+        try sendCommand(.list)
+        return
+    }
     let parser = InputParser()
     let interrupt = InterruptMonitor()
     let sine = options.testColumns.map(SineSampler.init(columns:))
@@ -317,22 +356,32 @@ private func runSampler(_ options: Options) throws {
         }
         let connection = try connectOrLaunch()
         let names = options.names
-        let request = SamplerIntent(columnCount: width, sourceLabel: options.sourceLabel, requestedNames: names, unitHint: options.unit, startedAt: startedAt)
-        try connection.send(ClientMessage.hello(HelloRequest(clientLabel: "pp", sink: options.sink.asSinkIntent(fresh: options.fresh), sampler: request)))
+        let request = SamplerIntent(
+            columnCount: width, sourceLabel: options.sourceLabel, requestedNames: names, unitHint: options.unit,
+            startedAt: startedAt)
+        try connection.send(
+            ClientMessage.hello(
+                HelloRequest(clientLabel: "pp", sink: options.sink.asSinkIntent(fresh: options.fresh), sampler: request)
+            ))
         var gotHello = false
         while true {
             switch try readServerMessage(connection, timeout: samplerReadyTimeout) {
             case .hello: gotHello = true
             case .ready(let ready):
                 guard gotHello else { throw CLIError.protocolFailure("PipePlot sent ready before protocol hello") }
-                if ready.streams.count != width { throw CLIError.protocolFailure("PipePlot acknowledged \(ready.streams.count) streams for \(width) columns") }
+                if ready.streams.count != width {
+                    throw CLIError.protocolFailure(
+                        "PipePlot acknowledged \(ready.streams.count) streams for \(width) columns")
+                }
                 if ready.continued { fputs("pp: continuing previous stream group\n", stderr) }
                 for rejection in pendingRejections { try connection.send(ClientMessage.rejected(rejection)) }
                 for total in pendingRejectionTotals.values {
-                    let summary = InputRejection(kind: total.kind,
-                                                 lineNumber: total.lastLine,
-                                                 message: "\(total.count) additional \(total.kind.rawValue) input rows rejected before registration",
-                                                 rejectedCount: total.count)
+                    let summary = InputRejection(
+                        kind: total.kind,
+                        lineNumber: total.lastLine,
+                        message:
+                            "\(total.count) additional \(total.kind.rawValue) input rows rejected before registration",
+                        rejectedCount: total.count)
                     try connection.send(ClientMessage.rejected(summary))
                 }
                 pendingRejections.removeAll(keepingCapacity: true)
@@ -351,11 +400,15 @@ private func runSampler(_ options: Options) throws {
             parser.expectedColumnCount = row.values.count
         }
         guard row.values.count == columnCount else {
-            reportBounded(message: "expected \(columnCount!) columns, got \(row.values.count)", lineNumber: row.sequence)
+            reportBounded(
+                message: "expected \(columnCount!) columns, got \(row.values.count)", lineNumber: row.sequence)
             if let connection = readyConnection {
-                try connection.send(ClientMessage.rejected(InputRejection(kind: .wrongColumnCount,
-                                                                            lineNumber: row.sequence,
-                                                                            message: "expected \(columnCount!) columns, got \(row.values.count)")))
+                try connection.send(
+                    ClientMessage.rejected(
+                        InputRejection(
+                            kind: .wrongColumnCount,
+                            lineNumber: row.sequence,
+                            message: "expected \(columnCount!) columns, got \(row.values.count)")))
             }
             return
         }
@@ -375,9 +428,11 @@ private func runSampler(_ options: Options) throws {
             case .rejected(let issue):
                 reportBounded(issue)
                 let rejection = InputRejection(issue)
-                if let connection = readyConnection { try connection.send(ClientMessage.rejected(rejection)) }
-                else if pendingRejections.count < 8 { pendingRejections.append(rejection) }
-                else {
+                if let connection = readyConnection {
+                    try connection.send(ClientMessage.rejected(rejection))
+                } else if pendingRejections.count < 8 {
+                    pendingRejections.append(rejection)
+                } else {
                     let key = issue.kind.rawValue
                     let prior = pendingRejectionTotals[key]
                     pendingRejectionTotals[key] = (issue.kind, (prior?.count ?? 0) + 1, issue.lineNumber)
@@ -400,11 +455,14 @@ private func runSampler(_ options: Options) throws {
         }
         var descriptors: [pollfd] = []
         let inputIndex: Int? = sine == nil && watcher == nil ? descriptors.count : nil
-        if inputIndex != nil { descriptors.append(pollfd(fd: inputDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)) }
+        if inputIndex != nil {
+            descriptors.append(pollfd(fd: inputDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0))
+        }
         let socketIndex: Int?
         if let connection = readyConnection {
             socketIndex = descriptors.count
-            descriptors.append(pollfd(fd: connection.fileDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0))
+            descriptors.append(
+                pollfd(fd: connection.fileDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0))
         } else {
             socketIndex = nil
         }
@@ -420,7 +478,7 @@ private func runSampler(_ options: Options) throws {
                 guard let connection = readyConnection else { continue }
                 let message = try readServerMessage(connection)
                 switch message {
-                case .accepted: break // no row is currently awaiting an acknowledgement
+                case .accepted: break  // no row is currently awaiting an acknowledgement
                 case .closed: throw CLIError.protocolFailure("PipePlot disconnected while waiting for input")
                 case .hello, .ready: break
                 default: throw CLIError.protocolFailure("Unexpected PipePlot message while waiting for input")
@@ -437,8 +495,7 @@ private func runSampler(_ options: Options) throws {
                 if errno == EINTR { continue }
                 throw SocketError.system("read stdin", errno)
             }
-            if count == 0 { inputEnded = true }
-            else { try consume(parser.append(Data(buffer[..<count]))) }
+            if count == 0 { inputEnded = true } else { try consume(parser.append(Data(buffer[..<count]))) }
         }
     }
     try consume(parser.finish())
@@ -463,7 +520,7 @@ private enum ParsedSink {
         case .target: return fresh ? .fresh : .target
         case .newChart: return .newChart
         case .newSession: return .newSession
-        case .sessionNumber: return .target // resolved before sampler registration
+        case .sessionNumber: return .target  // resolved before sampler registration
         case .explicitSession(let id, let names): return .session(sessionID: id, lineNames: names)
         }
     }
@@ -471,7 +528,10 @@ private enum ParsedSink {
 
 do {
     let arguments = Array(CommandLine.arguments.dropFirst())
-    if arguments.contains("--help") || arguments.contains("-h") { print(usage); exit(EXIT_SUCCESS) }
+    if arguments.contains("--help") || arguments.contains("-h") {
+        print(usage)
+        exit(EXIT_SUCCESS)
+    }
     let options = try parseOptions(arguments)
     if case .sessionNumber(let number, let names) = options.sink {
         let listing = try fetchListing()

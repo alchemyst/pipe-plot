@@ -11,14 +11,17 @@ final class LiveForecastReuseTests: XCTestCase {
         let ready = try model.store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1))
         let start = Date(timeIntervalSince1970: 1000)
         for (time, value) in [(0.0, 0.0), (10, 10), (20, 40)] {
-            _ = try model.store.append(SampleRow(timestamp: start.addingTimeInterval(time), values: [value]), to: ready.attachmentID)
+            _ = try model.store.append(
+                SampleRow(timestamp: start.addingTimeInterval(time), values: [value]), to: ready.attachmentID)
         }
         let guide = Guide(orientation: .horizontalValue, value: 100)
         try model.store.upsertGuide(guide, chartID: ready.chartID)
         model.tick(ready.sessionID, now: start.addingTimeInterval(20))
-        let selection = TimeSelection(start: start, end: start.addingTimeInterval(20), mode: .bothFollowNow(duration: 25))
-        model.setForecast(ForecastConfiguration(streamID: ready.streams[0].id, guideID: guide.id, selection: selection),
-                          session: try XCTUnwrap(model.sessions[ready.sessionID]))
+        let selection = TimeSelection(
+            start: start, end: start.addingTimeInterval(20), mode: .bothFollowNow(duration: 25))
+        model.setForecast(
+            ForecastConfiguration(streamID: ready.streams[0].id, guideID: guide.id, selection: selection),
+            session: try XCTUnwrap(model.sessions[ready.sessionID]))
         func waitForFit() async throws -> ForecastStatus {
             for _ in 0..<100 {
                 if let status = model.allForecastStatuses[ready.sessionID]?.first, status.fit != nil { return status }
@@ -41,7 +44,7 @@ final class LiveForecastReuseTests: XCTestCase {
         XCTAssertEqual(silent.fitRange?.upperBound, start.addingTimeInterval(24))
         XCTAssertEqual(model.sessions[ready.sessionID]?.charts[0].streams[0].state, .live)
         model.tick(ready.sessionID, now: start.addingTimeInterval(25))
-        XCTAssertEqual(model.queries.rawFitCount, fits) // inclusive left endpoint
+        XCTAssertEqual(model.queries.rawFitCount, fits)  // inclusive left endpoint
         model.tick(ready.sessionID, now: start.addingTimeInterval(25.001))
         let rolled = try await waitForFit()
         XCTAssertEqual(rolled.fit?.count, 2)
@@ -51,7 +54,8 @@ final class LiveForecastReuseTests: XCTestCase {
         XCTAssertEqual(model.queries.submittedQueryCount, queries + 1)
         print("FORECAST_REUSE silentTicks=40 queries=0 rawFits=0 boundaryQueries=1 boundaryFits=1 crossing=40s")
 
-        _ = try model.store.append(SampleRow(timestamp: start.addingTimeInterval(26), values: [80]), to: ready.attachmentID)
+        _ = try model.store.append(
+            SampleRow(timestamp: start.addingTimeInterval(26), values: [80]), to: ready.attachmentID)
         model.tick(ready.sessionID, now: start.addingTimeInterval(26))
         let arrival = try await waitForFit()
         XCTAssertEqual(arrival.fit?.count, 3)

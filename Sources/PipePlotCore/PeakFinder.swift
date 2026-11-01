@@ -9,8 +9,10 @@ public enum PeakFinder {
         public let prominence: Double
     }
 
-    public static func extrema(samples: [StoredSample], visibleRange: ClosedRange<Date>, plotWidth: Double,
-                               valueRange: ClosedRange<Double>, maximumCount: Int = 3) -> [Extremum] {
+    public static func extrema(
+        samples: [StoredSample], visibleRange: ClosedRange<Date>, plotWidth: Double,
+        valueRange: ClosedRange<Double>, maximumCount: Int = 3
+    ) -> [Extremum] {
         guard samples.count >= 3, plotWidth > 1, maximumCount > 0 else { return [] }
         let span = visibleRange.upperBound.timeIntervalSince(visibleRange.lowerBound)
         guard span > 0 else { return [] }
@@ -19,13 +21,16 @@ public enum PeakFinder {
         var start = 0
         while start < samples.count {
             guard samples[start].timestamp >= visibleRange.lowerBound,
-                  samples[start].timestamp <= visibleRange.upperBound, samples[start].value.isFinite else {
-                start += 1; continue
+                samples[start].timestamp <= visibleRange.upperBound, samples[start].value.isFinite
+            else {
+                start += 1
+                continue
             }
             var end = start + 1
             while end < samples.count, samples[end].timestamp <= visibleRange.upperBound,
-                  samples[end].timestamp >= visibleRange.lowerBound, samples[end].value.isFinite,
-                  samples[end].segmentID == samples[end - 1].segmentID { end += 1 }
+                samples[end].timestamp >= visibleRange.lowerBound, samples[end].value.isFinite,
+                samples[end].segmentID == samples[end - 1].segmentID
+            { end += 1 }
             let count = end - start
             if count >= 3 {
                 for kind in [Kind.peak, .trough] {
@@ -52,9 +57,16 @@ public enum PeakFinder {
                     func minimum(_ lo: Int, _ hi: Int) -> Double {
                         var l = lo + count, r = hi + count + 1, result = Double.infinity
                         while l < r {
-                            if l % 2 == 1 { result = min(result, tree[l]); l += 1 }
-                            if r % 2 == 1 { r -= 1; result = min(result, tree[r]) }
-                            l /= 2; r /= 2
+                            if l % 2 == 1 {
+                                result = min(result, tree[l])
+                                l += 1
+                            }
+                            if r % 2 == 1 {
+                                r -= 1
+                                result = min(result, tree[r])
+                            }
+                            l /= 2
+                            r /= 2
                         }
                         return result
                     }
@@ -64,8 +76,12 @@ public enum PeakFinder {
                         while plateauEnd + 1 < count && values[plateauEnd + 1] == values[i] { plateauEnd += 1 }
                         if plateauEnd < count - 1, values[i] > values[i - 1], values[i] > values[plateauEnd + 1] {
                             let middle = (i + plateauEnd) / 2
-                            let prominence = values[i] - max(minimum(left[i], i), minimum(plateauEnd, right[plateauEnd]))
-                            if prominence > 0 { candidates.append(Extremum(sampleIndex: start + middle, kind: kind, prominence: prominence)) }
+                            let prominence =
+                                values[i] - max(minimum(left[i], i), minimum(plateauEnd, right[plateauEnd]))
+                            if prominence > 0 {
+                                candidates.append(
+                                    Extremum(sampleIndex: start + middle, kind: kind, prominence: prominence))
+                            }
                         }
                         i = plateauEnd + 1
                     }
@@ -80,7 +96,8 @@ public enum PeakFinder {
         var selected: [Extremum] = []
         for candidate in ranked {
             let date = samples[candidate.sampleIndex].timestamp
-            guard selected.allSatisfy({ abs(date.timeIntervalSince(samples[$0.sampleIndex].timestamp)) >= spacing }) else { continue }
+            guard selected.allSatisfy({ abs(date.timeIntervalSince(samples[$0.sampleIndex].timestamp)) >= spacing })
+            else { continue }
             selected.append(candidate)
             if selected.count == maximumCount { break }
         }

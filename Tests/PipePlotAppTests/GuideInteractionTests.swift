@@ -16,7 +16,9 @@ final class GuideInteractionTests: XCTestCase {
         var alertEdit = captured
         alertEdit.alert = GuideAlert(direction: .rising, hysteresis: 0.2, cooldown: 3)
         model.updateGuide(alertEdit, chartID: chart.id, sessionID: session.id)
-        model.updateGuideDetails(captured.id, value: 2, label: "After", chartID: chart.id, sessionID: session.id, orientation: captured.orientation)
+        model.updateGuideDetails(
+            captured.id, value: 2, label: "After", chartID: chart.id, sessionID: session.id,
+            orientation: captured.orientation)
         let saved = try XCTUnwrap(model.store.snapshot(sessionID: session.id)?.charts.first?.guides.first)
         XCTAssertEqual(saved.alert, alertEdit.alert)
         XCTAssertEqual(saved.value, 2)
@@ -24,7 +26,9 @@ final class GuideInteractionTests: XCTestCase {
         model.undo(session.id)
         XCTAssertEqual(model.sessions[session.id]?.charts.first?.guides.first?.alert, alertEdit.alert)
         model.removeGuide(saved, chartID: chart.id, sessionID: session.id)
-        model.updateGuideDetails(captured.id, value: 3, label: nil, chartID: chart.id, sessionID: session.id, orientation: captured.orientation)
+        model.updateGuideDetails(
+            captured.id, value: 3, label: nil, chartID: chart.id, sessionID: session.id,
+            orientation: captured.orientation)
         XCTAssertTrue(try XCTUnwrap(model.store.snapshot(sessionID: session.id)?.charts.first?.guides).isEmpty)
     }
     func testNavigationPreservesPreferencesAndReferenceUndoPreservesViewport() throws {
@@ -39,7 +43,8 @@ final class GuideInteractionTests: XCTestCase {
         model.addTimeGuide(at: Date(timeIntervalSince1970: 100), sessionID: initial.id)
         let guide = try XCTUnwrap(session().timeGuides.first)
         var moved = try session().timeline
-        moved.followNow = false; moved.visibleStart = Date(timeIntervalSince1970: 10)
+        moved.followNow = false
+        moved.visibleStart = Date(timeIntervalSince1970: 10)
         moved.visibleEnd = Date(timeIntervalSince1970: 50)
         model.navigate(moved, session: try session())
         model.setTimeZone(.utc, session: try session())

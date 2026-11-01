@@ -53,10 +53,13 @@ struct PlotCanvas: View {
                                 previewStart = end.addingTimeInterval(-duration)
                                 previewEnd = end
                             }
-                            selectionStart = previewStart; selectionPreview = previewEnd
+                            selectionStart = previewStart
+                            selectionPreview = previewEnd
                             selectionLinkedPreview = endFollowsNow || (selection.map { $0.mode != .fixed } ?? false)
                         case .ended:
-                            selectionStart = nil; selectionPreview = nil; selectionLinkedPreview = false
+                            selectionStart = nil
+                            selectionPreview = nil
+                            selectionLinkedPreview = false
                             if abs(end.timeIntervalSince(start)) > 0.5 {
                                 var mode: SelectionMode = .fixed
                                 let duration = max(0.5, abs(end.timeIntervalSince(start)))
@@ -64,9 +67,11 @@ struct PlotCanvas: View {
                                 case (.start, .endFollowsNow?): mode = .endFollowsNow
                                 case (.start, .startFollowsEnd?): mode = .startFollowsEnd(duration: duration)
                                 case (.start, .bothFollowNow?): mode = .bothFollowNow(duration: duration)
-                                case (.end, .startFollowsEnd?) where endFollowsNow: mode = .bothFollowNow(duration: duration)
+                                case (.end, .startFollowsEnd?) where endFollowsNow:
+                                    mode = .bothFollowNow(duration: duration)
                                 case (.end, .startFollowsEnd?): mode = .startFollowsEnd(duration: duration)
-                                case (.end, .bothFollowNow?) where endFollowsNow: mode = .bothFollowNow(duration: duration)
+                                case (.end, .bothFollowNow?) where endFollowsNow:
+                                    mode = .bothFollowNow(duration: duration)
                                 case (_, _) where endFollowsNow: mode = .endFollowsNow
                                 default: break
                                 }
@@ -74,7 +79,9 @@ struct PlotCanvas: View {
                                 onSelectionCommit(start, committedEnd, mode)
                             }
                         case .cancelled:
-                            selectionStart = nil; selectionPreview = nil; selectionLinkedPreview = false
+                            selectionStart = nil
+                            selectionPreview = nil
+                            selectionLinkedPreview = false
                         }
                     },
                     onPan: { delta, phase in onPan(delta, phase, plot.width) },
@@ -112,10 +119,18 @@ struct PlotCanvas: View {
         selection.map { item in
             let start: Date, end: Date
             switch item.mode {
-            case .fixed: start = item.start; end = item.end
-            case .endFollowsNow: start = item.start; end = now
-            case .bothFollowNow(let duration): start = now.addingTimeInterval(-duration); end = now
-            case .startFollowsEnd(let duration): start = item.end.addingTimeInterval(-duration); end = item.end
+            case .fixed:
+                start = item.start
+                end = item.end
+            case .endFollowsNow:
+                start = item.start
+                end = now
+            case .bothFollowNow(let duration):
+                start = now.addingTimeInterval(-duration)
+                end = now
+            case .startFollowsEnd(let duration):
+                start = item.end.addingTimeInterval(-duration)
+                end = item.end
             }
             return min(start, end)...max(start, end)
         }
@@ -125,7 +140,9 @@ struct PlotCanvas: View {
         if case .bothFollowNow = mode { return true }
         return false
     }
-    private func plotRect(for size: CGSize) -> CGRect { CGRect(x: 56, y: 4, width: max(1, size.width - 56), height: max(1, size.height - 22)) }
+    private func plotRect(for size: CGSize) -> CGRect {
+        CGRect(x: 56, y: 4, width: max(1, size.width - 56), height: max(1, size.height - 22))
+    }
     private func date(at x: CGFloat, width: CGFloat, plot: CGRect) -> Date {
         let fraction = min(1, max(0, (x - plot.minX) / max(plot.width, 1)))
         return domain.lowerBound.addingTimeInterval(timeSpan * Double(fraction))
@@ -143,10 +160,12 @@ struct PlotCanvas: View {
         let valueRange = yRange
         var grid = Path()
         let numericScale = chart.settings.numericScale ?? .decimal
-        let yTicks = NumericText.ticks(in: valueRange, scale: numericScale, targetCount: max(2, min(6, Int(plot.height / 55))))
+        let yTicks = NumericText.ticks(
+            in: valueRange, scale: numericScale, targetCount: max(2, min(6, Int(plot.height / 55))))
         for value in yTicks {
             let position = y(value, range: valueRange, in: plot)
-            grid.move(to: CGPoint(x: plot.minX, y: position)); grid.addLine(to: CGPoint(x: plot.maxX, y: position))
+            grid.move(to: CGPoint(x: plot.minX, y: position))
+            grid.addLine(to: CGPoint(x: plot.maxX, y: position))
         }
         context.stroke(grid, with: .color(.secondary.opacity(0.13)), lineWidth: 1)
 
@@ -158,13 +177,21 @@ struct PlotCanvas: View {
             let date = domain.lowerBound.addingTimeInterval(timeSpan * fraction)
             let x = plot.minX + plot.width * CGFloat(fraction)
             let label = TimeText.format(date, zone: session.timeline.timeZone ?? .local, reference: referenceTime)
-            context.draw(Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary), at: CGPoint(x: x, y: plot.maxY + 12), anchor: index == 0 ? .leading : (index == tickCount ? .trailing : .center))
+            context.draw(
+                Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary),
+                at: CGPoint(x: x, y: plot.maxY + 12),
+                anchor: index == 0 ? .leading : (index == tickCount ? .trailing : .center))
         }
-        let referenceValue = chart.guides.first(where: { $0.id == chart.settings.referenceGuideID && $0.orientation == .horizontalValue })?.value
+        let referenceValue = chart.guides.first(where: {
+            $0.id == chart.settings.referenceGuideID && $0.orientation == .horizontalValue
+        })?.value
         for value in yTicks {
-            let label = NumericText.format(value - (referenceValue ?? 0), scale: numericScale, unit: chart.settings.unit)
+            let label = NumericText.format(
+                value - (referenceValue ?? 0), scale: numericScale, unit: chart.settings.unit)
             let yPosition = y(value, range: valueRange, in: plot)
-            context.draw(Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary), at: CGPoint(x: plot.minX - 7, y: yPosition), anchor: .trailing)
+            context.draw(
+                Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary),
+                at: CGPoint(x: plot.minX - 7, y: yPosition), anchor: .trailing)
         }
 
         context.clip(to: Path(plot))
@@ -179,26 +206,35 @@ struct PlotCanvas: View {
                 var path = Path()
                 var previousSegment: String?
                 for (pointIndex, sample) in data.enumerated() {
-                    let position = CGPoint(x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
-                    if pointIndex == 0 || sample.segmentID != previousSegment { path.move(to: position) }
-                    else { path.addLine(to: position) }
+                    let position = CGPoint(
+                        x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
+                    if pointIndex == 0 || sample.segmentID != previousSegment {
+                        path.move(to: position)
+                    } else {
+                        path.addLine(to: position)
+                    }
                     previousSegment = sample.segmentID
                 }
-                context.stroke(path, with: .color(color.opacity(0.85)), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+                context.stroke(
+                    path, with: .color(color.opacity(0.85)),
+                    style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
             }
             if linesVisible && !dotsVisible {
                 for (pointIndex, sample) in data.enumerated() {
-                    let hasSameSegmentNeighbor = (pointIndex > 0 && data[pointIndex - 1].segmentID == sample.segmentID)
+                    let hasSameSegmentNeighbor =
+                        (pointIndex > 0 && data[pointIndex - 1].segmentID == sample.segmentID)
                         || (pointIndex + 1 < data.count && data[pointIndex + 1].segmentID == sample.segmentID)
                     guard !hasSameSegmentNeighbor else { continue }
-                    let point = CGPoint(x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
+                    let point = CGPoint(
+                        x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
                     let marker = CGRect(x: point.x - 3.2, y: point.y - 3.2, width: 6.4, height: 6.4)
                     context.fill(Path(ellipseIn: marker), with: .color(color))
                 }
             }
             if dotsVisible {
                 for sample in data {
-                    let point = CGPoint(x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
+                    let point = CGPoint(
+                        x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
                     guard plot.contains(point) else { continue }
                     let rect = CGRect(x: point.x - 3, y: point.y - 3, width: 6, height: 6)
                     context.fill(Path(ellipseIn: rect), with: .color(color))
@@ -211,14 +247,19 @@ struct PlotCanvas: View {
                 }
             }
             if chart.settings.showExtrema != false, chart.streams.count <= 6, data.count >= 3 {
-                let extrema = PeakFinder.extrema(samples: data, visibleRange: domain, plotWidth: Double(plot.width), valueRange: valueRange, maximumCount: 3)
+                let extrema = PeakFinder.extrema(
+                    samples: data, visibleRange: domain, plotWidth: Double(plot.width), valueRange: valueRange,
+                    maximumCount: 3)
                 for extremum in extrema {
                     let sample = data[extremum.sampleIndex]
-                    let point = CGPoint(x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
+                    let point = CGPoint(
+                        x: x(sample.timestamp, in: plot), y: y(sample.value, range: valueRange, in: plot))
                     let symbol = extremum.kind == .peak ? "▲" : "▼"
                     let name = chart.streams.count > 1 ? "\(stream.name) " : ""
-                    let label = Text("\(symbol) \(name)\(NumericText.format(sample.value, scale: numericScale, unit: chart.settings.unit))")
-                        .font(.system(size: 9, weight: .semibold)).foregroundColor(color)
+                    let label = Text(
+                        "\(symbol) \(name)\(NumericText.format(sample.value, scale: numericScale, unit: chart.settings.unit))"
+                    )
+                    .font(.system(size: 9, weight: .semibold)).foregroundColor(color)
                     let resolved = context.resolve(label)
                     let labelSize = resolved.measure(in: plot.size)
                     let width = min(plot.width, labelSize.width + 6)
@@ -226,9 +267,12 @@ struct PlotCanvas: View {
                     let preferredY = extremum.kind == .peak ? point.y - height - 5 : point.y + 5
                     let alternateY = extremum.kind == .peak ? point.y + 5 : point.y - height - 5
                     for candidateY in [preferredY, alternateY] {
-                        let rect = CGRect(x: min(max(point.x - width / 2, plot.minX), plot.maxX - width),
-                                          y: min(max(candidateY, plot.minY), plot.maxY - height), width: width, height: height)
-                        guard !extremaLabels.contains(where: { $0.intersects(rect.insetBy(dx: -2, dy: -2)) }) else { continue }
+                        let rect = CGRect(
+                            x: min(max(point.x - width / 2, plot.minX), plot.maxX - width),
+                            y: min(max(candidateY, plot.minY), plot.maxY - height), width: width, height: height)
+                        guard !extremaLabels.contains(where: { $0.intersects(rect.insetBy(dx: -2, dy: -2)) }) else {
+                            continue
+                        }
                         context.fill(Path(roundedRect: rect, cornerRadius: 3), with: .color(.black.opacity(0.75)))
                         context.draw(resolved, at: CGPoint(x: rect.midX, y: rect.midY), anchor: .center)
                         extremaLabels.append(rect)
@@ -241,36 +285,54 @@ struct PlotCanvas: View {
 
         var annotationRects: [CGRect] = []
         if domain.contains(now) {
-            annotationRects.append(CGRect(x: min(plot.maxX - 42, x(now, in: plot) - 42), y: plot.minY, width: 42, height: 18))
+            annotationRects.append(
+                CGRect(x: min(plot.maxX - 42, x(now, in: plot) - 42), y: plot.minY, width: 42, height: 18))
         }
         for guide in chart.guides + session.timeGuides {
             let color = Color(hex: guide.color)
             if guide.orientation == .horizontalValue {
                 let yPos = y(guide.value, range: valueRange, in: plot)
-                var path = Path(); path.move(to: CGPoint(x: plot.minX, y: yPos)); path.addLine(to: CGPoint(x: plot.maxX, y: yPos))
+                var path = Path()
+                path.move(to: CGPoint(x: plot.minX, y: yPos))
+                path.addLine(to: CGPoint(x: plot.maxX, y: yPos))
                 context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
                 if draggingGuideID == guide.id || !(guide.label ?? "").isEmpty {
-                    let label = GuideReadout.horizontal(guide, settings: chart.settings, dragging: draggingGuideID == guide.id)
-                    annotationRects.append(drawBadge(label,
-                              color: color, at: CGPoint(x: plot.maxX, y: yPos - 20), in: plot, context: context, trailing: true, occupied: annotationRects))
+                    let label = GuideReadout.horizontal(
+                        guide, settings: chart.settings, dragging: draggingGuideID == guide.id)
+                    annotationRects.append(
+                        drawBadge(
+                            label,
+                            color: color, at: CGPoint(x: plot.maxX, y: yPos - 20), in: plot, context: context,
+                            trailing: true, occupied: annotationRects))
                 }
             } else {
                 let date = Date(timeIntervalSince1970: guide.value)
                 let xPos = x(date, in: plot)
-                var path = Path(); path.move(to: CGPoint(x: xPos, y: plot.minY)); path.addLine(to: CGPoint(x: xPos, y: plot.maxY))
+                var path = Path()
+                path.move(to: CGPoint(x: xPos, y: plot.minY))
+                path.addLine(to: CGPoint(x: xPos, y: plot.maxY))
                 context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
-                let label = GuideReadout.vertical(guide, timeline: session.timeline, reference: referenceTime,
-                                                  dragging: draggingGuideID == guide.id, includeDate: timeSpan > 86_400)
-                annotationRects.append(drawBadge(label, color: color, at: CGPoint(x: xPos + 5, y: plot.minY + 2), in: plot, context: context, occupied: annotationRects))
+                let label = GuideReadout.vertical(
+                    guide, timeline: session.timeline, reference: referenceTime,
+                    dragging: draggingGuideID == guide.id, includeDate: timeSpan > 86_400)
+                annotationRects.append(
+                    drawBadge(
+                        label, color: color, at: CGPoint(x: xPos + 5, y: plot.minY + 2), in: plot, context: context,
+                        occupied: annotationRects))
             }
         }
         for forecast in forecasts {
-            let forecastColor: Color = chart.streams.first(where: { $0.id == forecast.streamID }).map { Self.color(for: $0, fallback: 0) } ?? .orange
+            let forecastColor: Color =
+                chart.streams.first(where: { $0.id == forecast.streamID }).map { Self.color(for: $0, fallback: 0) }
+                ?? .orange
             let start = min(max(forecast.range.upperBound, domain.lowerBound), now)
             if forecast.crossing > start {
                 var path = Path()
-                path.move(to: CGPoint(x: x(start, in: plot), y: y(forecast.fit.value(at: start), range: valueRange, in: plot)))
-                path.addLine(to: CGPoint(x: x(forecast.crossing, in: plot), y: y(forecast.value, range: valueRange, in: plot)))
+                path.move(
+                    to: CGPoint(x: x(start, in: plot), y: y(forecast.fit.value(at: start), range: valueRange, in: plot))
+                )
+                path.addLine(
+                    to: CGPoint(x: x(forecast.crossing, in: plot), y: y(forecast.value, range: valueRange, in: plot)))
                 context.stroke(path, with: .color(forecastColor), style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
             }
         }
@@ -283,14 +345,17 @@ struct PlotCanvas: View {
             }
         }
         if let selectionStart, let selectionPreview {
-            drawSelection(from: selectionStart, to: selectionPreview, linked: selectionLinkedPreview, in: plot, context: context)
+            drawSelection(
+                from: selectionStart, to: selectionPreview, linked: selectionLinkedPreview, in: plot, context: context)
         } else if let (start, end) = savedSelection {
             drawSelection(from: start, to: end, linked: selection?.mode != .fixed, in: plot, context: context)
         }
         // Separate labelled lanes distinguish saved fits from the active selection and dashed extrapolation.
         for (index, training) in trainingRanges.enumerated() {
             guard training.range.overlaps(domain) else { continue }
-            let color = chart.streams.first(where: { $0.id == training.streamID }).map { Self.color(for: $0, fallback: 0) } ?? .orange
+            let color =
+                chart.streams.first(where: { $0.id == training.streamID }).map { Self.color(for: $0, fallback: 0) }
+                ?? .orange
             let left = x(max(training.range.lowerBound, domain.lowerBound), in: plot)
             let right = x(min(training.range.upperBound, domain.upperBound), in: plot)
             let laneY = min(plot.maxY - 8, plot.minY + 38 + CGFloat(index) * 24)
@@ -300,34 +365,47 @@ struct PlotCanvas: View {
             bracket.addLine(to: CGPoint(x: right, y: laneY))
             bracket.addLine(to: CGPoint(x: right, y: laneY - 4))
             context.stroke(bracket, with: .color(color), lineWidth: 2)
-            annotationRects.append(drawBadge(training.label + (training.linked ? " · linked" : ""), color: color,
-                      at: CGPoint(x: left, y: laneY - 20), in: plot, context: context, occupied: annotationRects))
+            annotationRects.append(
+                drawBadge(
+                    training.label + (training.linked ? " · linked" : ""), color: color,
+                    at: CGPoint(x: left, y: laneY - 20), in: plot, context: context, occupied: annotationRects))
         }
         if domain.contains(now) {
             let nowX = x(now, in: plot)
-            var path = Path(); path.move(to: CGPoint(x: nowX, y: plot.minY)); path.addLine(to: CGPoint(x: nowX, y: plot.maxY))
+            var path = Path()
+            path.move(to: CGPoint(x: nowX, y: plot.minY))
+            path.addLine(to: CGPoint(x: nowX, y: plot.maxY))
             context.stroke(path, with: .color(.orange.opacity(0.8)), style: StrokeStyle(lineWidth: 1.2, dash: [2, 3]))
-            context.draw(Text("NOW").font(.system(size: 9, weight: .bold)).foregroundColor(.orange), at: CGPoint(x: min(plot.maxX - 4, nowX - 4), y: plot.minY + 8), anchor: .trailing)
+            context.draw(
+                Text("NOW").font(.system(size: 9, weight: .bold)).foregroundColor(.orange),
+                at: CGPoint(x: min(plot.maxX - 4, nowX - 4), y: plot.minY + 8), anchor: .trailing)
         }
         if let hoverDate {
             let xPos = x(hoverDate, in: plot)
-            var path = Path(); path.move(to: CGPoint(x: xPos, y: plot.minY)); path.addLine(to: CGPoint(x: xPos, y: plot.maxY))
-            context.stroke(path, with: .color(.primary.opacity(0.6)), style: StrokeStyle(lineWidth: 1, dash: [3,3]))
+            var path = Path()
+            path.move(to: CGPoint(x: xPos, y: plot.minY))
+            path.addLine(to: CGPoint(x: xPos, y: plot.maxY))
+            context.stroke(path, with: .color(.primary.opacity(0.6)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
         }
         // Place labels after collecting extrema so neither kind obscures the other.
         var labelRects = extremaLabels + annotationRects
         for (index, stream) in chart.streams.enumerated() {
             guard currentDisplays.contains(stream.id), let last = samples[stream.id]?.last,
-                  last.timestamp == stream.lastSampleAt, domain.contains(last.timestamp) else { continue }
+                last.timestamp == stream.lastSampleAt, domain.contains(last.timestamp)
+            else { continue }
             let point = CGPoint(x: x(last.timestamp, in: plot), y: y(last.value, range: valueRange, in: plot))
             guard point.x >= plot.minX, point.x <= plot.maxX,
-                  point.y >= plot.minY, point.y <= plot.maxY else { continue }
+                point.y >= plot.minY, point.y <= plot.maxY
+            else { continue }
             let name = chart.streams.count > 1 ? "\(stream.name) " : ""
             let label = Text(name + NumericText.format(last.value, scale: numericScale, unit: chart.settings.unit))
                 .font(.system(size: 9, weight: .medium)).foregroundColor(Self.color(for: stream, fallback: index))
             let resolved = context.resolve(label)
-            let size = resolved.measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
-            guard let rect = LatestLabelLayout.place(point: point, size: size, plot: plot, occupied: labelRects) else { continue }
+            let size = resolved.measure(
+                in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+            guard let rect = LatestLabelLayout.place(point: point, size: size, plot: plot, occupied: labelRects) else {
+                continue
+            }
             context.fill(Path(rect), with: .color(.black.opacity(0.8)))
             context.draw(resolved, at: CGPoint(x: rect.minX, y: rect.midY), anchor: .leading)
             labelRects.append(rect)
@@ -335,8 +413,10 @@ struct PlotCanvas: View {
 
     }
 
-    private func drawBadge(_ label: String, color: Color, at origin: CGPoint, in plot: CGRect,
-                           context: GraphicsContext, trailing: Bool = false, occupied: [CGRect] = []) -> CGRect {
+    private func drawBadge(
+        _ label: String, color: Color, at origin: CGPoint, in plot: CGRect,
+        context: GraphicsContext, trailing: Bool = false, occupied: [CGRect] = []
+    ) -> CGRect {
         let text = context.resolve(Text(label).font(.system(size: 10, weight: .medium)).foregroundColor(color))
         let size = text.measure(in: CGSize(width: max(1, plot.width - 10), height: .greatestFiniteMagnitude))
         let preferred = CGPoint(x: trailing ? origin.x - size.width - 10 : origin.x, y: origin.y)
@@ -346,12 +426,13 @@ struct PlotCanvas: View {
         return rect
     }
 
-    private func drawSelection(from start: Date, to end: Date, linked: Bool, in plot: CGRect, context: GraphicsContext) {
-            let a = x(start, in: plot), b = x(end, in: plot)
-            let rect = CGRect(x: min(a,b), y: plot.minY, width: abs(b-a), height: plot.height)
-            let color: Color = linked ? .green : .accentColor
-            context.fill(Path(rect), with: .color(color.opacity(0.13)))
-            context.stroke(Path(rect), with: .color(color.opacity(0.8)), lineWidth: 1)
+    private func drawSelection(from start: Date, to end: Date, linked: Bool, in plot: CGRect, context: GraphicsContext)
+    {
+        let a = x(start, in: plot), b = x(end, in: plot)
+        let rect = CGRect(x: min(a, b), y: plot.minY, width: abs(b - a), height: plot.height)
+        let color: Color = linked ? .green : .accentColor
+        context.fill(Path(rect), with: .color(color.opacity(0.13)))
+        context.stroke(Path(rect), with: .color(color.opacity(0.8)), lineWidth: 1)
     }
 
     private var yRange: ClosedRange<Double> {
@@ -359,20 +440,24 @@ struct PlotCanvas: View {
         var values = chart.streams.flatMap { samples[$0.id, default: []].map(\.value) }
         values.append(contentsOf: chart.guides.filter { $0.orientation == .horizontalValue }.map(\.value))
         if chart.settings.includeZero == true { values.append(0) }
-        values.append(contentsOf: forecasts.filter { forecast in
-            forecast.value.isFinite && chart.streams.contains(where: { $0.id == forecast.streamID })
-        }.map(\.value))
+        values.append(
+            contentsOf: forecasts.filter { forecast in
+                forecast.value.isFinite && chart.streams.contains(where: { $0.id == forecast.streamID })
+            }.map(\.value))
         return PlotValueRange.automatic(values)
     }
 
-    private func x(_ date: Date, in rect: CGRect) -> CGFloat { rect.minX + rect.width * CGFloat(date.timeIntervalSince(domain.lowerBound) / timeSpan) }
+    private func x(_ date: Date, in rect: CGRect) -> CGFloat {
+        rect.minX + rect.width * CGFloat(date.timeIntervalSince(domain.lowerBound) / timeSpan)
+    }
     private func y(_ value: Double, range: ClosedRange<Double>, in rect: CGRect) -> CGFloat {
         let scale = max(abs(range.lowerBound), abs(range.upperBound), abs(value.isFinite ? value : 0), 1)
         let low = range.lowerBound / scale
         let high = range.upperBound / scale
         let normalized = value.isFinite ? value / scale : (value.sign == .minus ? low : high)
         let rawFraction = (normalized - low) / max(high - low, Double.leastNonzeroMagnitude)
-        let safeFraction = rawFraction.isFinite ? min(16, max(-16, rawFraction)) : (rawFraction.sign == .minus ? -16 : 16)
+        let safeFraction =
+            rawFraction.isFinite ? min(16, max(-16, rawFraction)) : (rawFraction.sign == .minus ? -16 : 16)
         return rect.maxY - rect.height * CGFloat(safeFraction)
     }
 
@@ -399,7 +484,8 @@ struct PlotCanvas: View {
     static func color(for stream: StreamDescriptor, fallback: Int) -> Color {
         if let colorHex = stream.colorHex, !colorHex.isEmpty { return color(hex: colorHex) }
         let bytes = withUnsafeBytes(of: stream.id.uuid) { Array($0) }
-        let stableIndex = bytes.isEmpty ? UInt32(fallback % 9) : bytes.prefix(4).reduce(UInt32(0)) { ($0 &* 31) &+ UInt32($1) } % 9
+        let stableIndex =
+            bytes.isEmpty ? UInt32(fallback % 9) : bytes.prefix(4).reduce(UInt32(0)) { ($0 &* 31) &+ UInt32($1) } % 9
         return color(Int(stableIndex))
     }
 
@@ -419,6 +505,8 @@ extension Color {
         let value = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         var number: UInt64 = 0
         Scanner(string: value).scanHexInt64(&number)
-        self.init(.sRGB, red: Double((number >> 16) & 0xff) / 255, green: Double((number >> 8) & 0xff) / 255, blue: Double(number & 0xff) / 255, opacity: 1)
+        self.init(
+            .sRGB, red: Double((number >> 16) & 0xff) / 255, green: Double((number >> 8) & 0xff) / 255,
+            blue: Double(number & 0xff) / 255, opacity: 1)
     }
 }

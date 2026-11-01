@@ -18,13 +18,16 @@ struct DerivedSeriesSheet: View {
     }
     private var validation: String? {
         guard let configuration else { return "Enter finite numbers in seconds." }
-        do { try configuration.validate(cadence: cadence); return nil }
-        catch { return error.localizedDescription }
+        do {
+            try configuration.validate(cadence: cadence)
+            return nil
+        } catch { return error.localizedDescription }
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Smoothing and derivative · \(stream.name)").font(.headline)
-            Text("Adds separate derived plots. Original observations, hover values, statistics and forecasts stay raw.").font(.callout).foregroundStyle(.secondary)
+            Text("Adds separate derived plots. Original observations, hover values, statistics and forecasts stay raw.")
+                .font(.callout).foregroundStyle(.secondary)
             Form {
                 TextField("Grid interval (seconds)", text: $interval)
                 TextField("Centered window (seconds)", text: $window)
@@ -37,27 +40,50 @@ struct DerivedSeriesSheet: View {
                     Text("Observed grid points only").tag(ResamplingPolicy.observedOnly)
                 }
             }.textFieldStyle(.roundedBorder)
-            if let cadence { Text("Suggested interval: \(cadence.formatted(.number.precision(.significantDigits(5)))) s (median initial cadence). Fixed until edited; larger intervals require antialiasing and are unavailable.").font(.caption) }
-            else { Text(loaded ? "Capture at least two distinct timestamps to estimate cadence." : "Reading initial cadence…").font(.caption) }
-            if let error = validation { Text(error).font(.caption).foregroundStyle(.red) }
-            else if let c = configuration {
-                Text("Actual window: \(c.effectiveWindow.formatted()) s · delay: \(c.delay.formatted()) s. Cubic fit; first derivative in value/second. No padded or provisional edges. Reconnects and long gaps restart the window.").font(.caption)
+            if let cadence {
+                Text(
+                    "Suggested interval: \(cadence.formatted(.number.precision(.significantDigits(5)))) s (median initial cadence). Fixed until edited; larger intervals require antialiasing and are unavailable."
+                ).font(.caption)
+            } else {
+                Text(
+                    loaded
+                        ? "Capture at least two distinct timestamps to estimate cadence." : "Reading initial cadence…"
+                ).font(.caption)
             }
-            Text("Linear interpolation can attenuate fast changes and biases derivatives in missing runs. Derived estimates report interpolation in their support. Observed-only mode may produce no estimates with jitter.").font(.caption).foregroundStyle(.secondary)
+            if let error = validation {
+                Text(error).font(.caption).foregroundStyle(.red)
+            } else if let c = configuration {
+                Text(
+                    "Actual window: \(c.effectiveWindow.formatted()) s · delay: \(c.delay.formatted()) s. Cubic fit; first derivative in value/second. No padded or provisional edges. Reconnects and long gaps restart the window."
+                ).font(.caption)
+            }
+            Text(
+                "Linear interpolation can attenuate fast changes and biases derivatives in missing runs. Derived estimates report interpolation in their support. Observed-only mode may produce no estimates with jitter."
+            ).font(.caption).foregroundStyle(.secondary)
             HStack {
-                if stream.derivedSeries != nil { Button("Remove derived plots") { if model.setDerivedSeries(nil, streamID: stream.id) { dismiss() } } }
-                Spacer(); Button("Cancel", action: dismiss).keyboardShortcut(.cancelAction)
+                if stream.derivedSeries != nil {
+                    Button("Remove derived plots") { if model.setDerivedSeries(nil, streamID: stream.id) { dismiss() } }
+                }
+                Spacer()
+                Button("Cancel", action: dismiss).keyboardShortcut(.cancelAction)
                 Button("Apply") {
                     if let configuration, model.setDerivedSeries(configuration, streamID: stream.id) { dismiss() }
                 }.disabled(!loaded || cadence == nil || validation != nil).keyboardShortcut(.defaultAction)
             }
         }.padding(22).frame(width: 520)
-        .task {
-            cadence = await model.suggestedDerivedInterval(stream.id)
-            let c = stream.derivedSeries ?? DerivedSeriesConfiguration(interval: cadence ?? 1, window: (cadence ?? 1) * 10, maximumGap: (cadence ?? 1) * 3)
-            interval = String(c.interval); window = String(c.window); gap = String(c.maximumGap)
-            kernel = c.kernel; policy = c.resampling; loaded = true
-        }
+            .task {
+                cadence = await model.suggestedDerivedInterval(stream.id)
+                let c =
+                    stream.derivedSeries
+                    ?? DerivedSeriesConfiguration(
+                        interval: cadence ?? 1, window: (cadence ?? 1) * 10, maximumGap: (cadence ?? 1) * 3)
+                interval = String(c.interval)
+                window = String(c.window)
+                gap = String(c.maximumGap)
+                kernel = c.kernel
+                policy = c.resampling
+                loaded = true
+            }
     }
 }
 
@@ -74,7 +100,9 @@ struct DerivedSeriesPanel: View {
             HStack {
                 Text("Derived · \(stream.name)").font(.caption.weight(.semibold))
                 Text(stream.derivedSeries?.kernel.title ?? "").font(.caption).foregroundStyle(.secondary)
-                Spacer(); Button("Edit…", action: edit); Button("Remove", action: disable)
+                Spacer()
+                Button("Edit…", action: edit)
+                Button("Remove", action: disable)
             }.buttonStyle(.borderless).font(.caption)
             Text(result?.message ?? "Calculating derived estimates…").font(.caption2).foregroundStyle(.secondary)
             trace(derivative: false)
@@ -93,23 +121,33 @@ struct DerivedSeriesPanel: View {
             Canvas { context, size in
                 let plot = CGRect(x: 56, y: 4, width: max(1, size.width - 56), height: max(1, size.height - 14))
                 let timeSpan = max(0.001, domain.upperBound.timeIntervalSince(domain.lowerBound))
-                func x(_ time: Date) -> Double { plot.minX + time.timeIntervalSince(domain.lowerBound) / timeSpan * plot.width }
+                func x(_ time: Date) -> Double {
+                    plot.minX + time.timeIntervalSince(domain.lowerBound) / timeSpan * plot.width
+                }
                 var path = Path(), previous: DerivedPoint?
                 for p in points where domain.contains(p.timestamp) {
                     let value = derivative ? p.derivative : p.smoothed
                     let position = CGPoint(x: x(p.timestamp), y: plot.maxY - (value / scale - low) / span * plot.height)
-                    if let previous, p.run == previous.run { path.addLine(to: position) }
-                    else { path.move(to: position) }
+                    if let previous, p.run == previous.run {
+                        path.addLine(to: position)
+                    } else {
+                        path.move(to: position)
+                    }
                     previous = p
                 }
-                var clipped = context; clipped.clip(to: Path(plot))
+                var clipped = context
+                clipped.clip(to: Path(plot))
                 clipped.stroke(path, with: .color(derivative ? .orange : .cyan), lineWidth: 1.5)
                 if let hoverDate, domain.contains(hoverDate) {
-                    var hover = Path(); hover.move(to: CGPoint(x: x(hoverDate), y: plot.minY)); hover.addLine(to: CGPoint(x: x(hoverDate), y: plot.maxY))
+                    var hover = Path()
+                    hover.move(to: CGPoint(x: x(hoverDate), y: plot.minY))
+                    hover.addLine(to: CGPoint(x: x(hoverDate), y: plot.maxY))
                     clipped.stroke(hover, with: .color(.secondary), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                 }
                 for (value, y) in [(range.upperBound, plot.minY), (range.lowerBound, plot.maxY)] {
-                    context.draw(Text(value.formatted(.number.precision(.significantDigits(3)))).font(.system(size: 9)).foregroundStyle(.secondary), at: CGPoint(x: 50, y: y), anchor: .trailing)
+                    context.draw(
+                        Text(value.formatted(.number.precision(.significantDigits(3)))).font(.system(size: 9))
+                            .foregroundStyle(.secondary), at: CGPoint(x: 50, y: y), anchor: .trailing)
                 }
             }.frame(height: 82)
         }

@@ -14,13 +14,16 @@ final class ForecastTargetTests: XCTestCase {
         let before = try XCTUnwrap(store.snapshot(sessionID: ready.sessionID))
         XCTAssertThrowsError(try store.createForecastTarget(value: .infinity, streamID: stream, selection: selection))
         XCTAssertEqual(try store.snapshot(sessionID: ready.sessionID), before)
-        let guide = try store.createForecastTarget(value: 10 * pow(1024, 3), label: "target", streamID: stream, selection: selection)
+        let guide = try store.createForecastTarget(
+            value: 10 * pow(1024, 3), label: "target", streamID: stream, selection: selection)
         let added = try XCTUnwrap(store.snapshot(sessionID: ready.sessionID))
         XCTAssertEqual(added.charts.first?.guides, [guide])
         XCTAssertEqual(added.timeline.forecasts?.first?.selection, selection)
         XCTAssertEqual(added.timeline.forecasts?.first?.streamID, stream)
         XCTAssertEqual(added.timeline.forecasts?.first?.guideID, guide.id)
-        XCTAssertEqual(try PipePlotStore(databaseURL: database).snapshot(sessionID: ready.sessionID)?.charts.first?.guides, [guide])
+        XCTAssertEqual(
+            try PipePlotStore(databaseURL: database).snapshot(sessionID: ready.sessionID)?.charts.first?.guides, [guide]
+        )
         try store.append(SampleRow(timestamp: selection.end, values: [3], sequence: 1), to: ready.attachmentID)
         XCTAssertTrue(try store.undo(sessionID: ready.sessionID))
         let undone = try XCTUnwrap(store.snapshot(sessionID: ready.sessionID))

@@ -7,11 +7,16 @@ import PipePlotCore
 @MainActor
 final class WindowVisibilityTests: XCTestCase {
     func testWindowVisibilityPolicy() {
-        XCTAssertTrue(WindowStateView.displayIsActive(visible: true, miniaturized: false, occluded: false, appHidden: false))
-        for state in [(false, false, false, false), (true, true, false, false),
-                      (true, false, true, false), (true, false, false, true)] {
-            XCTAssertFalse(WindowStateView.displayIsActive(visible: state.0, miniaturized: state.1,
-                                                          occluded: state.2, appHidden: state.3))
+        XCTAssertTrue(
+            WindowStateView.displayIsActive(visible: true, miniaturized: false, occluded: false, appHidden: false))
+        for state in [
+            (false, false, false, false), (true, true, false, false),
+            (true, false, true, false), (true, false, false, true),
+        ] {
+            XCTAssertFalse(
+                WindowStateView.displayIsActive(
+                    visible: state.0, miniaturized: state.1,
+                    occluded: state.2, appHidden: state.3))
         }
     }
 
@@ -38,7 +43,8 @@ final class WindowVisibilityTests: XCTestCase {
         let refreshes = model.displayRefreshCount
         let queries = model.queries.submittedQueryCount
         for i in 1...10 {
-            _ = try model.store.append(SampleRow(timestamp: start.addingTimeInterval(Double(i)), values: [Double(i)]), to: ready.attachmentID)
+            _ = try model.store.append(
+                SampleRow(timestamp: start.addingTimeInterval(Double(i)), values: [Double(i)]), to: ready.attachmentID)
             model.tick(ready.sessionID)
             XCTAssertTrue(model.visibleSamples(for: before.charts[0], session: before).samples.isEmpty)
             XCTAssertNil(model.stats(for: ready.streams[0].id, in: timeline.selection!))
@@ -87,14 +93,16 @@ final class WindowVisibilityTests: XCTestCase {
         let ready = try model.store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1))
         let start = Date().addingTimeInterval(-10)
         for i in 0..<5 {
-            _ = try model.store.append(SampleRow(timestamp: start.addingTimeInterval(Double(i)), values: [Double(i)]), to: ready.attachmentID)
+            _ = try model.store.append(
+                SampleRow(timestamp: start.addingTimeInterval(Double(i)), values: [Double(i)]), to: ready.attachmentID)
         }
         model.refreshAll()
         model.setDisplayActive(false, for: ready.sessionID)
         let guide = Guide(orientation: .horizontalValue, value: 100)
         try model.store.upsertGuide(guide, chartID: ready.chartID)
-        let configuration = ForecastConfiguration(streamID: ready.streams[0].id, guideID: guide.id,
-                                                  selection: TimeSelection(start: start, end: start.addingTimeInterval(4)))
+        let configuration = ForecastConfiguration(
+            streamID: ready.streams[0].id, guideID: guide.id,
+            selection: TimeSelection(start: start, end: start.addingTimeInterval(4)))
         try model.store.setForecasts([configuration], sessionID: ready.sessionID)
         model.refreshAll()
         XCTAssertEqual(model.queries.submittedQueryCount, 0)
@@ -117,8 +125,10 @@ final class WindowVisibilityTests: XCTestCase {
         Task { @MainActor in
             do { try await measureNativeWindows() } catch { failure = error }
             NSApp.stop(nil)
-            if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [],
-                                             timestamp: 0, windowNumber: 0, context: nil, subtype: 0, data1: 0, data2: 0) {
+            if let event = NSEvent.otherEvent(
+                with: .applicationDefined, location: .zero, modifierFlags: [],
+                timestamp: 0, windowNumber: 0, context: nil, subtype: 0, data1: 0, data2: 0)
+            {
                 NSApp.postEvent(event, atStart: true)
             }
         }
@@ -139,10 +149,12 @@ final class WindowVisibilityTests: XCTestCase {
         NSApp.activate()
         for index in 0..<4 {
             let session = try model.store.createSession()
-            let ready = try model.store.registerSampler(intent: .session(sessionID: session.id, lineNames: []), sampler: SamplerIntent(columnCount: 1))
+            let ready = try model.store.registerSampler(
+                intent: .session(sessionID: session.id, lineNames: []), sampler: SamplerIntent(columnCount: 1))
             producers.append(ready)
-            let window = NSWindow(contentRect: NSRect(x: 40 + index * 40, y: 40 + index * 40, width: 850, height: 580),
-                                  styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            let window = NSWindow(
+                contentRect: NSRect(x: 40 + index * 40, y: 40 + index * 40, width: 850, height: 580),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             window.contentView = NSHostingView(rootView: SessionWindow(sessionID: session.id, model: model))
             windows.append(window)
@@ -154,11 +166,17 @@ final class WindowVisibilityTests: XCTestCase {
         for minimized in [false, true] {
             if minimized { windows.dropFirst().forEach { $0.miniaturize(nil) } }
             for _ in 0..<100 {
-                if producers.enumerated().allSatisfy({ model.isDisplayActive($0.element.sessionID) == (!minimized || $0.offset == 0) }) { break }
+                if producers.enumerated().allSatisfy({
+                    model.isDisplayActive($0.element.sessionID) == (!minimized || $0.offset == 0)
+                }) {
+                    break
+                }
                 try await Task.sleep(for: .milliseconds(50))
             }
             for (index, ready) in producers.enumerated() {
-                print("WINDOW_STATE index=\(index) visible=\(windows[index].isVisible) mini=\(windows[index].isMiniaturized) occlusion=\(windows[index].occlusionState.rawValue) hidden=\(NSApp.isHidden)")
+                print(
+                    "WINDOW_STATE index=\(index) visible=\(windows[index].isVisible) mini=\(windows[index].isMiniaturized) occlusion=\(windows[index].occlusionState.rawValue) hidden=\(NSApp.isHidden)"
+                )
                 XCTAssertEqual(model.isDisplayActive(ready.sessionID), !minimized || index == 0)
             }
             for ingest in [false, true] {
@@ -178,11 +196,14 @@ final class WindowVisibilityTests: XCTestCase {
                 }
                 let wall = Date().timeIntervalSince(began)
                 let cpuSeconds = Double(clock() - cpu) / Double(CLOCKS_PER_SEC)
-                print("WINDOW_MEASUREMENT minimized=\(minimized ? 3 : 0) ingest=\(ingest) wall=\(wall) cpuSeconds=\(cpuSeconds) cpuPercent=\(100 * cpuSeconds / wall) queries=\(model.queries.submittedQueryCount - queries) refreshes=\(model.displayRefreshCount - refreshes) rowsPerSession=\(rows)")
+                print(
+                    "WINDOW_MEASUREMENT minimized=\(minimized ? 3 : 0) ingest=\(ingest) wall=\(wall) cpuSeconds=\(cpuSeconds) cpuPercent=\(100 * cpuSeconds / wall) queries=\(model.queries.submittedQueryCount - queries) refreshes=\(model.displayRefreshCount - refreshes) rowsPerSession=\(rows)"
+                )
             }
         }
         for ready in producers {
-            XCTAssertGreaterThan(try XCTUnwrap(model.store.snapshot(sessionID: ready.sessionID)).charts[0].streams[0].sampleCount, 0)
+            XCTAssertGreaterThan(
+                try XCTUnwrap(model.store.snapshot(sessionID: ready.sessionID)).charts[0].streams[0].sampleCount, 0)
         }
         windows.dropFirst().forEach { $0.deminiaturize(nil) }
         for _ in 0..<100 {

@@ -11,8 +11,9 @@ final class AccelerateAnalysisTests: XCTestCase {
         // Alternating intervals, an incomplete final batch, and a large value offset.
         let samples = (0..<2053).map { index in
             let time = Double(index * 2 + index % 2)
-            return StoredSample(timestamp: origin.addingTimeInterval(time), sequence: UInt64(index),
-                                value: baseline - 0.25 * time)
+            return StoredSample(
+                timestamp: origin.addingTimeInterval(time), sequence: UInt64(index),
+                value: baseline - 0.25 * time)
         }
         for sample in samples { try store.append(sample, to: stream) }
         let end = try XCTUnwrap(samples.last).timestamp

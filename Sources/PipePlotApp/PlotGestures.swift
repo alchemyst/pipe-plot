@@ -29,21 +29,25 @@ struct PlotInteractionOverlay: NSViewRepresentable {
     func makeNSView(context: Context) -> PlotInteractionView {
         let view = PlotInteractionView()
         view.guideHitRects = guideHitRects
-        view.update(guides: guides, selectionRange: selectionRange, selectionMode: selectionMode, now: now, plotBounds: plotBounds, timeAtX: timeAtX,
-                    valueAtY: valueAtY, xAtTime: xAtTime, yAtValue: yAtValue,
-                    onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover,
-                    onBackgroundClick: onBackgroundClick, onBackgroundDoubleClick: onBackgroundDoubleClick,
-                    onGuideSelected: onGuideSelected, onSelectionModeToggle: onSelectionModeToggle)
+        view.update(
+            guides: guides, selectionRange: selectionRange, selectionMode: selectionMode, now: now,
+            plotBounds: plotBounds, timeAtX: timeAtX,
+            valueAtY: valueAtY, xAtTime: xAtTime, yAtValue: yAtValue,
+            onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover,
+            onBackgroundClick: onBackgroundClick, onBackgroundDoubleClick: onBackgroundDoubleClick,
+            onGuideSelected: onGuideSelected, onSelectionModeToggle: onSelectionModeToggle)
         return view
     }
 
     func updateNSView(_ view: PlotInteractionView, context: Context) {
         view.guideHitRects = guideHitRects
-        view.update(guides: guides, selectionRange: selectionRange, selectionMode: selectionMode, now: now, plotBounds: plotBounds, timeAtX: timeAtX,
-                    valueAtY: valueAtY, xAtTime: xAtTime, yAtValue: yAtValue,
-                    onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover,
-                    onBackgroundClick: onBackgroundClick, onBackgroundDoubleClick: onBackgroundDoubleClick,
-                    onGuideSelected: onGuideSelected, onSelectionModeToggle: onSelectionModeToggle)
+        view.update(
+            guides: guides, selectionRange: selectionRange, selectionMode: selectionMode, now: now,
+            plotBounds: plotBounds, timeAtX: timeAtX,
+            valueAtY: valueAtY, xAtTime: xAtTime, yAtValue: yAtValue,
+            onGuide: onGuide, onSelection: onSelection, onPan: onPan, onZoom: onZoom, onHover: onHover,
+            onBackgroundClick: onBackgroundClick, onBackgroundDoubleClick: onBackgroundDoubleClick,
+            onGuideSelected: onGuideSelected, onSelectionModeToggle: onSelectionModeToggle)
     }
 }
 
@@ -94,18 +98,21 @@ final class PlotInteractionView: NSView {
         updateTrackingAreas()
     }
 
-    func update(guides: [Guide], selectionRange: ClosedRange<Date>?, selectionMode: SelectionMode?, now: Date, plotBounds: CGRect,
-                timeAtX: @escaping (CGFloat) -> Date, valueAtY: @escaping (CGFloat) -> Double,
-                xAtTime: @escaping (Date) -> CGFloat, yAtValue: @escaping (Double) -> CGFloat,
-                onGuide: @escaping (Guide, PlotGesturePhase) -> Void,
-                onSelection: @escaping (Date, Date, PlotSelectionEdge?, Bool, PlotGesturePhase) -> Void,
-                onPan: @escaping (CGSize, PlotGesturePhase) -> Void,
-                onZoom: @escaping (Double, Date, PlotGesturePhase) -> Void,
-                onHover: @escaping (Date?) -> Void,
-                onBackgroundClick: @escaping () -> Void,
-                onBackgroundDoubleClick: @escaping (Date) -> Void,
-                onGuideSelected: @escaping (Guide) -> Void,
-                onSelectionModeToggle: @escaping (PlotSelectionEdge) -> Void) {
+    func update(
+        guides: [Guide], selectionRange: ClosedRange<Date>?, selectionMode: SelectionMode?, now: Date,
+        plotBounds: CGRect,
+        timeAtX: @escaping (CGFloat) -> Date, valueAtY: @escaping (CGFloat) -> Double,
+        xAtTime: @escaping (Date) -> CGFloat, yAtValue: @escaping (Double) -> CGFloat,
+        onGuide: @escaping (Guide, PlotGesturePhase) -> Void,
+        onSelection: @escaping (Date, Date, PlotSelectionEdge?, Bool, PlotGesturePhase) -> Void,
+        onPan: @escaping (CGSize, PlotGesturePhase) -> Void,
+        onZoom: @escaping (Double, Date, PlotGesturePhase) -> Void,
+        onHover: @escaping (Date?) -> Void,
+        onBackgroundClick: @escaping () -> Void,
+        onBackgroundDoubleClick: @escaping (Date) -> Void,
+        onGuideSelected: @escaping (Guide) -> Void,
+        onSelectionModeToggle: @escaping (PlotSelectionEdge) -> Void
+    ) {
         self.guides = guides
         self.selectionRange = selectionRange
         self.selectionMode = selectionMode
@@ -130,9 +137,10 @@ final class PlotInteractionView: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for area in trackingAreas { removeTrackingArea(area) }
-        let area = NSTrackingArea(rect: .zero,
-                                  options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
-                                  owner: self, userInfo: nil)
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self, userInfo: nil)
         addTrackingArea(area)
     }
 
@@ -155,7 +163,8 @@ final class PlotInteractionView: NSView {
             return
         }
         if event.clickCount >= 2, plotBounds.contains(point), hitGuide(at: point) == nil,
-           hitSelectionHandle(at: point) == nil {
+            hitSelectionHandle(at: point) == nil
+        {
             onBackgroundDoubleClick(timeAtX(point.x))
             activeDrag = nil
             return
@@ -228,7 +237,9 @@ final class PlotInteractionView: NSView {
             if !dragMoved {
                 onGuide(guide, .cancelled)
                 if !isNew { onGuideSelected(guide) }
-            } else { onGuide(replacingValue(in: guide, at: point), .ended) }
+            } else {
+                onGuide(replacingValue(in: guide, at: point), .ended)
+            }
         case let .selection(start, end, edge):
             if !dragMoved {
                 onSelection(start, end, edge, false, .cancelled)

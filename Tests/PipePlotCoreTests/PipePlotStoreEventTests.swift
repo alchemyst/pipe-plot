@@ -3,7 +3,8 @@ import XCTest
 
 final class PipePlotStoreEventTests: XCTestCase {
     private func makeStore() throws -> (PipePlotStore, URL) {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return (try PipePlotStore(databaseURL: directory.appendingPathComponent("state.sqlite")), directory)
     }
@@ -65,7 +66,9 @@ final class PipePlotStoreEventTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let ready = try store.registerEventConnection(intent: .newSession)
         XCTAssertThrowsError(try store.appendEvent("bad\0event", to: ready.attachmentID))
-        XCTAssertThrowsError(try store.appendEvent(String(repeating: "x", count: EventInputParser.maximumLineBytes + 1), to: ready.attachmentID))
+        XCTAssertThrowsError(
+            try store.appendEvent(
+                String(repeating: "x", count: EventInputParser.maximumLineBytes + 1), to: ready.attachmentID))
         XCTAssertThrowsError(try store.appendEvent("   ", to: ready.attachmentID))
 
         let numeric = try store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1))

@@ -3,7 +3,9 @@ import XCTest
 
 final class PlotAnnotationLayoutTests: XCTestCase {
     func testAutomaticRangePadsBothEndsAndRemainsFinite() {
-        for values: [Double] in [[10, 20, 100], [-100, -20, -10], [0, 10], [-10, 0], [5], [0], [-5, 5], [1e308], [-1e308, 1e308]] {
+        for values: [Double] in [
+            [10, 20, 100], [-100, -20, -10], [0, 10], [-10, 0], [5], [0], [-5, 5], [1e308], [-1e308, 1e308],
+        ] {
             let range = PlotValueRange.automatic(values)
             XCTAssertTrue(range.lowerBound.isFinite && range.upperBound.isFinite)
             XCTAssertLessThan(range.lowerBound, values.min()!)

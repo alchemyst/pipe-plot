@@ -11,12 +11,17 @@ final class BackgroundAnalysisTests: XCTestCase {
         let model = PipePlotAppModel(databaseURL: directory.appendingPathComponent("test.sqlite"))
         let ready = try model.store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1))
         let start = Date().addingTimeInterval(-100)
-        for i in 0..<100 { _ = try model.store.append(SampleRow(timestamp: start.addingTimeInterval(Double(i)), values: [Double(i)]), to: ready.attachmentID) }
+        for i in 0..<100 {
+            _ = try model.store.append(
+                SampleRow(timestamp: start.addingTimeInterval(Double(i)), values: [Double(i)]), to: ready.attachmentID)
+        }
         let guide = Guide(orientation: .horizontalValue, value: 200)
         try model.store.upsertGuide(guide, chartID: ready.chartID)
         model.refreshAll()
         let session = try XCTUnwrap(model.sessions[ready.sessionID])
-        let configuration = ForecastConfiguration(streamID: ready.streams[0].id, guideID: guide.id, selection: TimeSelection(start: start, end: start.addingTimeInterval(99)))
+        let configuration = ForecastConfiguration(
+            streamID: ready.streams[0].id, guideID: guide.id,
+            selection: TimeSelection(start: start, end: start.addingTimeInterval(99)))
         model.setForecast(configuration, session: session)
         model.undo(session.id)
         // Allow the queued calculation and its main-thread completion to finish.
@@ -41,7 +46,10 @@ final class BackgroundAnalysisTests: XCTestCase {
         let model = PipePlotAppModel(databaseURL: directory.appendingPathComponent("test.sqlite"))
         let ready = try model.store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1))
         let start = Date().addingTimeInterval(-10)
-        for i in 0..<10 { _ = try model.store.append(SampleRow(timestamp: start.addingTimeInterval(Double(i)), values: [Double(i)]), to: ready.attachmentID) }
+        for i in 0..<10 {
+            _ = try model.store.append(
+                SampleRow(timestamp: start.addingTimeInterval(Double(i)), values: [Double(i)]), to: ready.attachmentID)
+        }
         let firstGuide = Guide(orientation: .horizontalValue, value: 100)
         let secondGuide = Guide(orientation: .horizontalValue, value: 200)
         try model.store.upsertGuide(firstGuide, chartID: ready.chartID)
@@ -50,7 +58,9 @@ final class BackgroundAnalysisTests: XCTestCase {
         model.refreshAll()
         for guide in [firstGuide, secondGuide] {
             let session = try XCTUnwrap(model.sessions[ready.sessionID])
-            model.setForecast(ForecastConfiguration(streamID: ready.streams[0].id, guideID: guide.id, selection: selection), session: session)
+            model.setForecast(
+                ForecastConfiguration(streamID: ready.streams[0].id, guideID: guide.id, selection: selection),
+                session: session)
         }
         for _ in 0..<50 {
             if model.allForecastStatuses[ready.sessionID]?.filter({ $0.fit != nil }).count == 2 { break }
@@ -62,13 +72,15 @@ final class BackgroundAnalysisTests: XCTestCase {
         let session = try XCTUnwrap(model.sessions[ready.sessionID])
         XCTAssertGreaterThan(model.domain(for: session).upperBound, start.addingTimeInterval(200))
         let fitsBeforeArrival = model.queries.rawFitCount
-        _ = try model.store.append(SampleRow(timestamp: start.addingTimeInterval(10), values: [-1000]), to: ready.attachmentID)
+        _ = try model.store.append(
+            SampleRow(timestamp: start.addingTimeInterval(10), values: [-1000]), to: ready.attachmentID)
         model.refreshAll()
         for _ in 0..<50 {
             if model.allForecastStatuses[ready.sessionID]?.compactMap(\.fit).count == 2 { break }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertEqual(model.allForecastStatuses[ready.sessionID]?.compactMap(\.crossing), before.compactMap(\.crossing))
+        XCTAssertEqual(
+            model.allForecastStatuses[ready.sessionID]?.compactMap(\.crossing), before.compactMap(\.crossing))
         XCTAssertEqual(model.queries.rawFitCount, fitsBeforeArrival)
         model.removeForecast(before[0].configuration.id, session: try XCTUnwrap(model.sessions[ready.sessionID]))
         XCTAssertEqual(model.allForecastStatuses[ready.sessionID]?.count, 1)
@@ -81,11 +93,15 @@ final class BackgroundAnalysisTests: XCTestCase {
         let store = try PipePlotStore(databaseURL: directory.appendingPathComponent("test.sqlite"))
         let ready = try store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1))
         let start = Date(timeIntervalSince1970: 1000)
-        for i in 0..<4 { _ = try store.append(SampleRow(timestamp: start.addingTimeInterval(Double(i)), values: [Double(i)]), to: ready.attachmentID) }
+        for i in 0..<4 {
+            _ = try store.append(
+                SampleRow(timestamp: start.addingTimeInterval(Double(i)), values: [Double(i)]), to: ready.attachmentID)
+        }
         let queries = BackgroundQueries()
         let id = ready.streams[0].id
         let first = BackgroundQueries.QueryKey(start: start, end: start.addingTimeInterval(1), count: 4, last: nil)
-        let second = BackgroundQueries.QueryKey(start: start.addingTimeInterval(2), end: start.addingTimeInterval(3), count: 4, last: nil)
+        let second = BackgroundQueries.QueryKey(
+            start: start.addingTimeInterval(2), end: start.addingTimeInterval(3), count: 4, last: nil)
         XCTAssertNil(queries.stats(id, key: first, store: store.samples) { XCTFail("\($0)") })
         var result: SelectionStatistics?
         for _ in 0..<50 {

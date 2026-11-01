@@ -14,7 +14,8 @@ final class ForecastTrainingRangeTests: XCTestCase {
         try model.store.upsertGuide(guide, chartID: ready.chartID)
         let selection = TimeSelection(start: Date(timeIntervalSince1970: 10), end: Date(timeIntervalSince1970: 20))
         let fixed = ForecastConfiguration(streamID: ready.streams[0].id, guideID: guide.id, selection: selection)
-        var moving = selection; moving.mode = .bothFollowNow(duration: 5)
+        var moving = selection
+        moving.mode = .bothFollowNow(duration: 5)
         let linked = ForecastConfiguration(streamID: ready.streams[0].id, guideID: guide.id, selection: moving)
         try model.store.setForecasts([fixed, linked], sessionID: ready.sessionID)
         model.refreshAll()

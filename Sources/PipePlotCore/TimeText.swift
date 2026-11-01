@@ -2,7 +2,9 @@ import Foundation
 
 public enum TimeText {
     /// Formats an absolute local/UTC clock time, or a signed elapsed time from `reference`.
-    public static func format(_ date: Date, zone: PlotTimeZone, reference: Date? = nil, includeDate: Bool = false) -> String {
+    public static func format(_ date: Date, zone: PlotTimeZone, reference: Date? = nil, includeDate: Bool = false)
+        -> String
+    {
         if let reference {
             let interval = date.timeIntervalSince(reference)
             let sign = interval < 0 ? "−" : "+"

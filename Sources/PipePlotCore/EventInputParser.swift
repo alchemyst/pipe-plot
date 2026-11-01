@@ -38,7 +38,10 @@ public struct EventInputParser {
 
     /// Accept a final unterminated line at EOF.
     public mutating func finish() -> [EventParseResult] {
-        defer { pending.removeAll(keepingCapacity: true); discardingOversize = false }
+        defer {
+            pending.removeAll(keepingCapacity: true)
+            discardingOversize = false
+        }
         if discardingOversize { return [.rejected("event exceeds 65536 UTF-8 bytes")] }
         var results: [EventParseResult] = []
         emitPending(into: &results)
@@ -49,8 +52,14 @@ public struct EventInputParser {
         guard !pending.isEmpty else { return }
         if pending.last == 0x0d { pending.removeLast() }
         guard !pending.isEmpty else { return }
-        guard !pending.contains(0) else { results.append(.rejected("event contains a NUL byte")); return }
-        guard let text = String(data: pending, encoding: .utf8) else { results.append(.rejected("event is not valid UTF-8")); return }
+        guard !pending.contains(0) else {
+            results.append(.rejected("event contains a NUL byte"))
+            return
+        }
+        guard let text = String(data: pending, encoding: .utf8) else {
+            results.append(.rejected("event is not valid UTF-8"))
+            return
+        }
         if !text.trimmingCharacters(in: .whitespaces).isEmpty { results.append(.event(text)) }
     }
 }

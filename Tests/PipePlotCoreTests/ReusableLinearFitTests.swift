@@ -13,7 +13,8 @@ final class ReusableLinearFitTests: XCTestCase {
             try writer.append(values: [value], timestamp: start.addingTimeInterval(time), to: [id], segmentID: "a")
         }
         func query(_ from: Double, _ to: Double, _ old: ReusableLinearFit? = nil) throws -> ReusableLinearFit {
-            try reader.reusableLinearFit(streamID: id, from: start.addingTimeInterval(from), to: start.addingTimeInterval(to), reusing: old)
+            try reader.reusableLinearFit(
+                streamID: id, from: start.addingTimeInterval(from), to: start.addingTimeInterval(to), reusing: old)
         }
         var result = try query(0, 20)
         XCTAssertTrue(result.didRefit)
@@ -21,20 +22,21 @@ final class ReusableLinearFitTests: XCTestCase {
             result = try query(0, 20 + Double(i) / 10, result)
             XCTAssertFalse(result.didRefit)
         }
-        result = try query(0, 30, result) // inclusive upper boundary
+        result = try query(0, 30, result)  // inclusive upper boundary
         XCTAssertTrue(result.didRefit)
         XCTAssertEqual(result.fit?.count, 4)
-        result = try query(0.001, 30, result) // lower boundary leaves
+        result = try query(0.001, 30, result)  // lower boundary leaves
         XCTAssertTrue(result.didRefit)
         XCTAssertEqual(result.fit?.count, 3)
         XCTAssertEqual(try XCTUnwrap(result.fit).slope, 4, accuracy: 1e-10)
-        XCTAssertEqual(try XCTUnwrap(result.fit?.crossing(value: 100)).timeIntervalSince(start), 33.333333333, accuracy: 1e-6)
+        XCTAssertEqual(
+            try XCTUnwrap(result.fit?.crossing(value: 100)).timeIntervalSince(start), 33.333333333, accuracy: 1e-6)
         try writer.append(values: [999], timestamp: start.addingTimeInterval(100), to: [id])
         result = try query(0.001, 30, result)
-        XCTAssertFalse(result.didRefit) // arrival outside selection
+        XCTAssertFalse(result.didRefit)  // arrival outside selection
         try writer.append(values: [20], timestamp: start.addingTimeInterval(15), to: [id])
         result = try query(0.001, 30, result)
-        XCTAssertTrue(result.didRefit) // interior arrival, unchanged first/last
+        XCTAssertTrue(result.didRefit)  // interior arrival, unchanged first/last
         XCTAssertEqual(result.fit?.count, 4)
         try writer.reassignSegments(["a"], from: id, to: other)
         result = try query(0.001, 30, result)
@@ -62,7 +64,8 @@ final class ReusableLinearFitTests: XCTestCase {
         try store.append(values: [1], timestamp: start.addingTimeInterval(1), to: [id])
         let first = try store.reusableLinearFit(streamID: id, from: start, to: start.addingTimeInterval(1))
         XCTAssertTrue(first.contains(from: start, to: start.addingTimeInterval(1)))
-        let second = try store.reusableLinearFit(streamID: id, from: start, to: start.addingTimeInterval(1), reusing: first)
+        let second = try store.reusableLinearFit(
+            streamID: id, from: start, to: start.addingTimeInterval(1), reusing: first)
         XCTAssertFalse(second.didRefit)
         XCTAssertEqual(second.fit, first.fit)
     }
@@ -77,8 +80,9 @@ final class ReusableLinearFitTests: XCTestCase {
             try store.append(values: [time * time], timestamp: start.addingTimeInterval(time), to: [id])
         }
         let first = try store.reusableLinearFit(streamID: id, from: start, to: start.addingTimeInterval(20))
-        let second = try store.reusableLinearFit(streamID: id, from: start.addingTimeInterval(10),
-                                                 to: start.addingTimeInterval(30), reusing: first)
+        let second = try store.reusableLinearFit(
+            streamID: id, from: start.addingTimeInterval(10),
+            to: start.addingTimeInterval(30), reusing: first)
         XCTAssertTrue(second.didRefit)
         XCTAssertEqual(first.fit?.count, second.fit?.count)
         XCTAssertEqual(try XCTUnwrap(first.fit).slope, 20, accuracy: 1e-10)
@@ -94,7 +98,9 @@ final class ReusableLinearFitTests: XCTestCase {
             try store.append(values: [time], timestamp: Date(timeIntervalSince1970: time), to: [id])
         }
         func query(_ from: Double, _ to: Double, _ old: ReusableLinearFit? = nil) throws -> ReusableLinearFit {
-            try store.reusableLinearFit(streamID: id, from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: to), reusing: old)
+            try store.reusableLinearFit(
+                streamID: id, from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: to), reusing: old
+            )
         }
         var result = try query(1, 5)
         XCTAssertNil(result.fit)
@@ -102,7 +108,7 @@ final class ReusableLinearFitTests: XCTestCase {
         XCTAssertFalse(result.didRefit)
         result = try query(2, 10, result)
         XCTAssertTrue(result.didRefit)
-        XCTAssertNil(result.fit) // two equal timestamps
+        XCTAssertNil(result.fit)  // two equal timestamps
         result = try query(2, 20, result)
         XCTAssertTrue(result.didRefit)
         XCTAssertEqual(result.fit?.count, 3)
