@@ -330,6 +330,17 @@ final class PipePlotAppModel {
         })
         return (samples, current)
     }
+    func suggestedDerivedInterval(_ id: StreamID) async -> Double? {
+        await queries.suggestedInterval(id, store: queryStore)
+    }
+    @discardableResult func setDerivedSeries(_ configuration: DerivedSeriesConfiguration?, streamID: StreamID) -> Bool {
+        do { try store.setDerivedSeries(configuration, streamID: streamID); refreshAll(); return true }
+        catch { errorMessage = error.localizedDescription; return false }
+    }
+    func derivedSeries(_ stream: StreamDescriptor, range: ClosedRange<Date>, sessionID: SessionID) -> DerivedSeriesResult? {
+        guard isDisplayActive(sessionID), let configuration = stream.derivedSeries else { return nil }
+        return queries.derivedSeries(stream.id, key: queryKey(stream.id, range: range), configuration: configuration, live: stream.state == .live || stream.state == .quiet, store: queryStore)
+    }
     private func queryKey(_ stream: StreamID, range: ClosedRange<Date>) -> BackgroundQueries.QueryKey {
         let descriptor = sessions.values.lazy.flatMap(\.charts).flatMap(\.streams).first { $0.id == stream }
         return .init(start: range.lowerBound, end: range.upperBound, count: descriptor?.sampleCount ?? 0, last: descriptor?.lastSampleAt)

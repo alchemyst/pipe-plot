@@ -1,5 +1,7 @@
 # Feature completion audit — 2026-10-31
 
+Status update (2026-11-01): implementation tickets #1–#13 are complete. The tables below preserve the original audit findings; #14 remains open for native/lifecycle/resource acceptance. #19 is implemented separately; see [derived analysis](DERIVED_SERIES.md).
+
 GitHub tracking issue: [Full coverage audit #15](https://github.com/alchemyst/pipe-plot/issues/15).
 
 ## Scope and method

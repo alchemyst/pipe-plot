@@ -520,6 +520,7 @@ private struct ChartRow: View {
     @State private var guideSecond = "0"
     @State private var editingGuide: Guide?
     @State private var isAddingGuide = false
+    @State private var derivedStream: StreamDescriptor?
     @State private var renameStream: StreamDescriptor?
     @State private var renameText = ""
     @State private var renameChartText = ""
@@ -664,6 +665,14 @@ private struct ChartRow: View {
                 }
             }
             .frame(height: 25)
+            if model.isDisplayActive(session.id) {
+                ForEach(layoutStreams.filter { $0.derivedSeries != nil }) { stream in
+                    DerivedSeriesPanel(stream: stream, unit: chart.settings.unit, domain: plotDomain,
+                                       result: model.derivedSeries(stream, range: plotDomain, sessionID: session.id), hoverDate: hoverDate,
+                                       edit: { derivedStream = stream },
+                                       disable: { model.setDerivedSeries(nil, streamID: stream.id) })
+                }
+            }
             ForEach(model.allForecastStatuses[session.id, default: []].filter { status in layoutStreams.contains(where: { $0.id == status.configuration.streamID }) }, id: \.configuration.id) { status in
                 HStack(spacing: 8) {
                     Label("Linear forecast", systemImage: "arrow.up.right")
@@ -684,6 +693,9 @@ private struct ChartRow: View {
             if start == nil, gestureBaseDomain == nil { sharedGestureDomain = nil }
         }
         .sheet(isPresented: $showGuideManager) { guideManagerSheet }
+        .sheet(item: $derivedStream) { stream in
+            DerivedSeriesSheet(stream: stream, model: model) { derivedStream = nil }
+        }
         .sheet(item: $renameStream) { stream in
             VStack(alignment: .leading, spacing: 14) {
                 Text("Rename stream").font(.title3.weight(.semibold))
@@ -799,6 +811,7 @@ private struct ChartRow: View {
          .submenu("Insert as New Chart Before", session.charts.filter(\.isVisible).map { destination in
              .command(destination.title) { _ = model.dropStream([stream.id.uuidString], sessionID: session.id, before: destination.id) }
          }),
+         .command("Smoothing and derivative…") { derivedStream = stream },
          .command("Continue / Reassociate Group…") { reassociationSource = stream },
          .command("Hide from Layout") { model.setStreamLayoutHidden(true, streamID: stream.id) }]
     }

@@ -484,6 +484,22 @@ public final class PipePlotStore {
         return guide
     }
 
+    public func setDerivedSeries(_ proposed: DerivedSeriesConfiguration?, streamID: StreamID) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard let (si,ci) = streamIndices(streamID), let ix = sessions[si].charts[ci].streams.firstIndex(where: { $0.id == streamID }) else { throw DomainError.unknownStream }
+        var configuration = proposed
+        if let c = configuration {
+            let cadence = try samples.suggestedDerivedInterval(streamID: streamID)
+            try c.validate(cadence: cadence)
+            configuration?.referenceCadence = cadence ?? c.referenceCadence
+        }
+        let old = sessions[si].charts[ci].streams[ix].derivedSeries
+        guard old != configuration else { return }
+        sessions[si].charts[ci].streams[ix].derivedSeries = configuration
+        record(.derivedSeries(streamID,old:old,new:configuration),in:sessions[si].id)
+        try persist()
+    }
+
     public func updateStreamStyle(_ id:StreamID,colorHex:String?,dotsVisible:Bool?,linesVisible:Bool?)throws {lock.lock();defer{lock.unlock()};guard let(si,ci)=streamIndices(id),let ix=sessions[si].charts[ci].streams.firstIndex(where:{$0.id==id})else{throw DomainError.unknownStream};let old=sessions[si].charts[ci].streams[ix];let color=colorHex ?? old.colorHex,dots=dotsVisible ?? old.dotsVisible,lines=linesVisible ?? old.linesVisible;guard color != old.colorHex || dots != old.dotsVisible || lines != old.linesVisible else{return};sessions[si].charts[ci].streams[ix].colorHex=color;sessions[si].charts[ci].streams[ix].dotsVisible=dots;sessions[si].charts[ci].streams[ix].linesVisible=lines;record(.streamStyle(id,oldColor:old.colorHex,newColor:color,oldDots:old.dotsVisible,newDots:dots,oldLines:old.linesVisible,newLines:lines),in:sessions[si].id);try persist()}
     public func setSessionOpen(_ open:Bool,sessionID:SessionID) throws { lock.lock();defer{lock.unlock()};guard let i=sessionIndex(sessionID),!sessions[i].isDeleted || !open else{throw DomainError.unknownSession};sessions[i].isOpen=open;if !open { let active=attachments.values.filter{$0.sessionID==sessionID && $0.active};for a in active { try finishAttachment(a.id,reason:.sessionClosed) }; if let t=targetChartID, sessions[i].charts.contains(where:{$0.id==t}) { targetChartID=nil; fallbackTarget() } };try persist() }
 
@@ -543,6 +559,10 @@ public final class PipePlotStore {
                     if let current=streamIndices(id),let stream=removeStream(id,at:current),let dest=findChartIndices(chartID) { sessions[dest.0].charts[dest.1].streams.append(stream);sessions[dest.0].charts[dest.1].isVisible=true }
                     if let nowSource=findChartIndices(from),sessions[nowSource.0].charts[nowSource.1].streams.isEmpty { sessions[nowSource.0].charts[nowSource.1].isVisible=false;if targetChartID==from{fallbackTarget()} }
                 }
+            }
+        case .derivedSeries(let id, let old, let new):
+            if let (a,b) = streamIndices(id), let ix = sessions[a].charts[b].streams.firstIndex(where: { $0.id == id }) {
+                sessions[a].charts[b].streams[ix].derivedSeries = undo ? old : new
             }
         case .streamLayout(let id, let old, let new):
             if let (a, b) = streamIndices(id), let index = sessions[a].charts[b].streams.firstIndex(where: { $0.id == id }) {
@@ -668,7 +688,7 @@ public final class PipePlotStore {
     private func findSessionIndex(forChart id:ChartID)->Int?{sessions.firstIndex{$0.charts.contains(where:{$0.id==id})}}
     private func streamIndices(_ id:StreamID)->(Int,Int)?{for i in sessions.indices{for j in sessions[i].charts.indices where sessions[i].charts[j].streams.contains(where:{$0.id==id}){return(i,j)}};return nil}
     private func streamLocation(_ id:StreamID)->(Int,Int)?{streamIndices(id)}
-    private func descriptor(_ s:StreamRecord)->StreamDescriptor{StreamDescriptor(id:s.id,name:s.name,state:s.state,sampleCount:s.sampleCount,firstSampleAt:s.firstSampleAt,lastSampleAt:s.lastSampleAt,unitHint:s.unitHint,colorHex:s.colorHex,dotsVisible:s.dotsVisible,linesVisible:s.linesVisible,isLayoutHidden:s.isLayoutHidden)}
+    private func descriptor(_ s:StreamRecord)->StreamDescriptor{StreamDescriptor(id:s.id,name:s.name,state:s.state,sampleCount:s.sampleCount,firstSampleAt:s.firstSampleAt,lastSampleAt:s.lastSampleAt,unitHint:s.unitHint,colorHex:s.colorHex,dotsVisible:s.dotsVisible,linesVisible:s.linesVisible,isLayoutHidden:s.isLayoutHidden,derivedSeries:s.derivedSeries)}
     private func stableColor(_ id:UUID)->String {let h=id.uuidString.utf8.reduce(UInt64(1469598103934665603)){($0 ^ UInt64($1)) &* 1099511628211};let palette=["#38A3D1","#D97932","#438A57","#B459AD","#CF5562","#8B78CB","#35978C","#B28A23"];return palette[Int(h % UInt64(palette.count))]}
     private func findStream(_ id:StreamID)->StreamRecord?{guard let (i,j)=streamIndices(id) else{return nil};return sessions[i].charts[j].streams.first{$0.id==id}}
     private func nextDefaultLineName(sessionIndex:Int)->String { let existing=Set(sessions[sessionIndex].charts.flatMap(\.streams).map(\.name));var n=1;while existing.contains("Line \(n)"){n+=1};return "Line \(n)" }
@@ -685,12 +705,12 @@ private struct MemoryState {var previouslyOpenSessionIDs:Set<SessionID>;var sess
 private struct AttachmentRecord {var id:AttachmentID;var owner:UUID;var sessionID:SessionID;var chartID:ChartID;var streamIDs:[StreamID];var active:Bool}
 private struct SessionRecord:Codable {var id:SessionID;var number:Int;var title:String;var charts:[ChartRecord];var timeGuides:[Guide];var timeline:TimelineState;var isOpen:Bool;var rejectedLineCount:Int;var isDeleted:Bool=false}
 private struct ChartRecord:Codable {var id:ChartID;var title:String;var streams:[StreamRecord];var settings:AxisSettings;var guides:[Guide];var isVisible:Bool}
-private struct StreamRecord:Codable {var id:StreamID;var name:String;var state:StreamState;var sampleCount:Int64=0;var firstSampleAt:Date?;var lastSampleAt:Date?;var unitHint:String?;var colorHex:String?;var dotsVisible:Bool?;var linesVisible:Bool?;var isLayoutHidden:Bool?}
+private struct StreamRecord:Codable {var id:StreamID;var name:String;var state:StreamState;var sampleCount:Int64=0;var firstSampleAt:Date?;var lastSampleAt:Date?;var unitHint:String?;var colorHex:String?;var dotsVisible:Bool?;var linesVisible:Bool?;var isLayoutHidden:Bool?;var derivedSeries:DerivedSeriesConfiguration?}
 private struct PersistedState:Codable {var sessions:[SessionRecord];var targetChartID:ChartID?;var nextNumber:Int;var recency:[ChartID];var restoreOpenSessionIDs:Set<SessionID>?}
 private struct ReassociationItem {var sourceID:StreamID;var destinationID:StreamID;var segmentIDs:[String];var sourceRecord:StreamRecord;var sourceChartID:ChartID;var sourceChartIndex:Int;var sourceStreamIndex:Int;var destinationChartID:ChartID}
 private struct ReassociationAction {var sessionID:SessionID;var attachmentID:AttachmentID;var items:[ReassociationItem];var chartVisibility:[ChartID:Bool]}
 private struct StreamStyleSnapshot {var id:StreamID;var color:String?;var dots:Bool?;var lines:Bool?}
-private enum UndoRecord {case streamLayout(StreamID,old:Bool,new:Bool),forecastTarget(ChartID,guide:Guide,old:[ForecastConfiguration],new:[ForecastConfiguration]),createdChart(sessionID:SessionID,chartID:ChartID,index:Int),restoredChart(sessionID:SessionID,chart:ChartRecord,index:Int,streamIDs:[StreamID]),movedStream(StreamID,from:ChartID,to:ChartID,fromWasVisible:Bool,toWasVisible:Bool,fromNowVisible:Bool,toNowVisible:Bool),moveToNewChart(StreamID,from:ChartID,chart:ChartRecord,index:Int,streamIndex:Int,sourceWasVisible:Bool,targetBefore:ChartID?,targetAfter:ChartID?),renamedStream(StreamID,old:String,new:String),sessionTitle(SessionID,old:String,new:String),chartTitle(ChartID,old:String,new:String),chartReordered(ChartID,from:Int,to:Int),chartDeleted(SessionID,chart:ChartRecord,index:Int),chartVisibility(ChartID,old:Bool,new:Bool),sessionDeleted(SessionID,wasOpen:Bool,targetBefore:ChartID?,targetAfter:ChartID?),sessionRestored(SessionID,targetBefore:ChartID?,targetAfter:ChartID?),settings(ChartID,old:AxisSettings,new:AxisSettings,oldStyles:[StreamStyleSnapshot]),guide(ChartID,id:UUID,old:Guide?,new:Guide?),timeGuide(SessionID,id:UUID,old:Guide?,new:Guide?),timeReference(SessionID,old:UUID?,new:UUID?),selection(SessionID,old:TimeSelection?,new:TimeSelection?),forecast(SessionID,old:ForecastConfiguration?,new:ForecastConfiguration?),forecasts(SessionID,old:[ForecastConfiguration],new:[ForecastConfiguration]),streamStyle(StreamID,oldColor:String?,newColor:String?,oldDots:Bool?,newDots:Bool?,oldLines:Bool?,newLines:Bool?),reassociation(ReassociationAction)}
+private enum UndoRecord {case derivedSeries(StreamID,old:DerivedSeriesConfiguration?,new:DerivedSeriesConfiguration?),streamLayout(StreamID,old:Bool,new:Bool),forecastTarget(ChartID,guide:Guide,old:[ForecastConfiguration],new:[ForecastConfiguration]),createdChart(sessionID:SessionID,chartID:ChartID,index:Int),restoredChart(sessionID:SessionID,chart:ChartRecord,index:Int,streamIDs:[StreamID]),movedStream(StreamID,from:ChartID,to:ChartID,fromWasVisible:Bool,toWasVisible:Bool,fromNowVisible:Bool,toNowVisible:Bool),moveToNewChart(StreamID,from:ChartID,chart:ChartRecord,index:Int,streamIndex:Int,sourceWasVisible:Bool,targetBefore:ChartID?,targetAfter:ChartID?),renamedStream(StreamID,old:String,new:String),sessionTitle(SessionID,old:String,new:String),chartTitle(ChartID,old:String,new:String),chartReordered(ChartID,from:Int,to:Int),chartDeleted(SessionID,chart:ChartRecord,index:Int),chartVisibility(ChartID,old:Bool,new:Bool),sessionDeleted(SessionID,wasOpen:Bool,targetBefore:ChartID?,targetAfter:ChartID?),sessionRestored(SessionID,targetBefore:ChartID?,targetAfter:ChartID?),settings(ChartID,old:AxisSettings,new:AxisSettings,oldStyles:[StreamStyleSnapshot]),guide(ChartID,id:UUID,old:Guide?,new:Guide?),timeGuide(SessionID,id:UUID,old:Guide?,new:Guide?),timeReference(SessionID,old:UUID?,new:UUID?),selection(SessionID,old:TimeSelection?,new:TimeSelection?),forecast(SessionID,old:ForecastConfiguration?,new:ForecastConfiguration?),forecasts(SessionID,old:[ForecastConfiguration],new:[ForecastConfiguration]),streamStyle(StreamID,oldColor:String?,newColor:String?,oldDots:Bool?,newDots:Bool?,oldLines:Bool?,newLines:Bool?),reassociation(ReassociationAction)}
 
 private extension SessionRecord {
     enum CodingKeys: String, CodingKey { case id, number, title, charts, timeGuides, timeline, isOpen, rejectedLineCount, isDeleted }
@@ -729,6 +749,7 @@ private extension UndoRecord {
         case .forecasts: return "Linear Forecasts"
         case .forecastTarget: return "Create Forecast Target"
         case .streamStyle: return "Stream Style"
+        case .derivedSeries: return "Derived Series"
         case .streamLayout: return "Stream Visibility"
         case .reassociation: return "Reassociate Streams"
         }

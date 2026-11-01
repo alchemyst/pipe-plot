@@ -77,12 +77,13 @@ public struct StreamDescriptor: Codable, Equatable, Sendable {
     public var colorHex: String?
     public var dotsVisible: Bool?
     public var linesVisible: Bool?
+    public var derivedSeries: DerivedSeriesConfiguration?
     public var isLayoutHidden: Bool?
     public init(id: StreamID, name: String, state: StreamState = .disconnected, sampleCount: Int64 = 0,
-                firstSampleAt: Date? = nil, lastSampleAt: Date? = nil, unitHint: String? = nil, colorHex: String? = nil, dotsVisible: Bool? = nil, linesVisible: Bool? = nil, isLayoutHidden: Bool? = nil) {
+                firstSampleAt: Date? = nil, lastSampleAt: Date? = nil, unitHint: String? = nil, colorHex: String? = nil, dotsVisible: Bool? = nil, linesVisible: Bool? = nil, isLayoutHidden: Bool? = nil, derivedSeries: DerivedSeriesConfiguration? = nil) {
         self.id=id; self.name=name; self.state=state; self.sampleCount=sampleCount
         self.firstSampleAt=firstSampleAt; self.lastSampleAt=lastSampleAt; self.unitHint=unitHint
-        self.colorHex=colorHex; self.dotsVisible=dotsVisible; self.linesVisible=linesVisible; self.isLayoutHidden=isLayoutHidden
+        self.derivedSeries=derivedSeries; self.colorHex=colorHex; self.dotsVisible=dotsVisible; self.linesVisible=linesVisible; self.isLayoutHidden=isLayoutHidden
     }
 }
 public struct ReadyReply: Codable, Equatable, Sendable {

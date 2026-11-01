@@ -23,7 +23,42 @@ final class BackgroundQueries {
     @ObservationIgnored private var fitGeneration = 0
     @ObservationIgnored private var fitsNeedValidation: Set<UUID> = []
 
+    @ObservationIgnored private var derived: [StreamID: (QueryKey, DerivedSeriesConfiguration, Bool, DerivedSeriesResult)] = [:]
+    @ObservationIgnored private var derivedPending: Set<StreamID> = []
+    @ObservationIgnored private var derivedGeneration = 0
+
+    func suggestedInterval(_ id: StreamID, store: SampleStore) async -> Double? {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: try? store.suggestedDerivedInterval(streamID: id)) }
+        }
+    }
+    func derivedSeries(_ id: StreamID, key: QueryKey, configuration: DerivedSeriesConfiguration, live: Bool, store: SampleStore) -> DerivedSeriesResult? {
+        _ = revision
+        if let cached = derived[id], cached.0 == key, cached.1 == configuration, cached.2 == live { return cached.3 }
+        let generation = derivedGeneration
+        if derivedPending.insert(id).inserted {
+            submittedQueryCount &+= 1
+            queue.async { [weak self] in
+                let result: DerivedSeriesResult
+                do { result = try store.derivedSeries(streamID: id, configuration: configuration, from: key.start, to: key.end, live: live) }
+                catch { result = DerivedSeriesResult(points: [], message: error.localizedDescription, processedSamples: 0) }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.derivedPending.remove(id)
+                    if generation == self.derivedGeneration { self.derived[id] = (key, configuration, live, result) }
+                    self.revision &+= 1
+                }
+            }
+        }
+        // Keep real coordinates during live range updates, but never show results
+        // from different settings or after undo/reassociation invalidation.
+        if let cached = derived[id], cached.1 == configuration, cached.2 == live { return cached.3 }
+        return nil
+    }
+
     func invalidateFits() {
+        derivedGeneration &+= 1
+        derived.removeAll()
         fitGeneration &+= 1
         fitsNeedValidation.formUnion(fits.keys)
     }
@@ -127,6 +162,7 @@ final class BackgroundQueries {
     func isCalculatingStatistics(_ id: StreamID) -> Bool { statisticsPending.contains(id) }
     func isFitting(_ id: UUID) -> Bool { fitPending.contains(id) }
     func retain(_ ids: Set<StreamID>) {
+        derived = derived.filter { ids.contains($0.key) }
         nearest = nearest.filter { ids.contains($0.key) }
         displays = displays.filter { ids.contains($0.key) }
         statistics = statistics.filter { ids.contains($0.key) }
