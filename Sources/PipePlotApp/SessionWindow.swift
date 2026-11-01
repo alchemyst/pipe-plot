@@ -123,9 +123,8 @@ struct SessionWindow: View {
                 .help("Create a session in a new window (⌘N)")
             Button { createChart() } label: { Label("Add Chart", systemImage: "chart.bar.xaxis") }
                 .help("Create a chart below and make it the Target (⌘⇧D)")
-                .dropDestination(for: String.self) { items, _ in
-                    return model.dropStream(items, sessionID: sessionID, after: selectedChartID)
-                }
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(newChartDropTarget.isTargeted(model) ? Color.accentColor : .clear, lineWidth: 3))
+                .onDrop(of: [StreamDragState.contentType], delegate: StreamDropDelegate(target: newChartDropTarget, model: model))
             Menu {
                 Button("Rename Session…") { sessionTitle = session?.title ?? ""; showRenameSession = true }
                 Button("Move Session to Trash", role: .destructive) { model.deleteSession(sessionID) }
@@ -146,6 +145,11 @@ struct SessionWindow: View {
                 StreamInsertionTarget(sessionID: session.id, before: nil, after: visibleCharts.last?.id, model: model)
             }.padding(16)
         }.background(Color(nsColor: .underPageBackgroundColor))
+    }
+
+    private var newChartDropTarget: StreamDropTarget {
+        let anchor = visibleCharts.first(where: { $0.id == selectedChartID })?.id ?? visibleCharts.last?.id
+        return StreamDropTarget(sessionID: sessionID, after: anchor)
     }
 
     private var errorPresented: Binding<Bool> {
@@ -417,7 +421,8 @@ private struct StreamInsertionTarget: View {
     let before: ChartID?
     let after: ChartID?
     let model: PipePlotAppModel
-    @State private var targeted = false
+    private var target: StreamDropTarget { StreamDropTarget(sessionID: sessionID, before: before, after: after) }
+    private var targeted: Bool { target.isTargeted(model) }
 
     var body: some View {
         ZStack {
@@ -428,10 +433,7 @@ private struct StreamInsertionTarget: View {
             }
         }.frame(height: 20).contentShape(Rectangle())
             .accessibilityLabel("Drop stream here to insert a new chart")
-            .dropDestination(for: String.self) { items, _ in
-                targeted = false
-                return model.dropStream(items, sessionID: sessionID, before: before, after: after)
-            } isTargeted: { targeted = $0 }
+            .onDrop(of: [StreamDragState.contentType], delegate: StreamDropDelegate(target: target, model: model))
     }
 }
 
@@ -442,7 +444,8 @@ private struct ChartRowHost: View {
     @Binding var hoverDate: Date?
     let gestures: SessionGesturePreview
     @Binding var selectedChartID: ChartID?
-    @State private var mergeTargeted = false
+    private var target: StreamDropTarget { StreamDropTarget(sessionID: session.id, onto: chart.id) }
+    private var mergeTargeted: Bool { target.isTargeted(model) }
 
     var body: some View {
         let display = model.visibleSamples(for: chart, session: session, range: gestures.domain)
@@ -470,10 +473,7 @@ private struct ChartRowHost: View {
                         .background(.regularMaterial, in: Capsule()).padding(8).allowsHitTesting(false)
                 }
             }
-            .dropDestination(for: String.self) { items, _ in
-                mergeTargeted = false
-                return model.dropStream(items, sessionID: session.id, onto: chart.id)
-            } isTargeted: { mergeTargeted = $0 }
+            .onDrop(of: [StreamDragState.contentType], delegate: StreamDropDelegate(target: target, model: model))
     }
 }
 
@@ -757,6 +757,7 @@ private struct ChartRow: View {
             HStack(spacing: 8) {
                 ForEach(Array(layoutStreams.enumerated()), id: \.element.id) { index, stream in
                     HStack(spacing: 6) {
+                        StreamDragHandle(stream: stream, state: model.streamDrag).frame(width: 18, height: 22)
                         Circle().fill(PlotCanvas.color(for: stream, fallback: index)).frame(width: 8, height: 8)
                         Text(stream.name).font(.caption.weight(.medium))
                         if !(stream.linesVisible ?? chart.settings.linesVisible) && !(stream.dotsVisible ?? chart.settings.dotsVisible) {
@@ -780,13 +781,12 @@ private struct ChartRow: View {
                     .padding(.leading, 8).padding(.trailing, 4).padding(.vertical, 5)
                     .background(.quaternary.opacity(0.6), in: Capsule())
                     .background(SnapshotContextMenu { streamActions(stream) })
-                    .draggable(stream.id.uuidString)
 
                 }
                 if layoutStreams.isEmpty { Text(chart.streams.isEmpty ? "No streams" : "\(hiddenStreams.count) hidden stream(s) · restore from Chart actions").font(.caption).foregroundStyle(.secondary) }
             }.padding(.horizontal, 14).padding(.vertical, 9)
         }.scrollIndicators(.hidden)
-            .help("Drag a stream onto a chart to merge, or onto a separator to insert a row")
+            .help("Drag a stream's handle onto a chart to merge, or onto a separator to insert a row")
     }
 
 

@@ -27,6 +27,7 @@ final class PipePlotAppModel {
     @ObservationIgnored private var commandNotifications: [NSObjectProtocol] = []
     private(set) var activeSessionID: SessionID?
     private(set) var selectedChartIDs: [SessionID: ChartID] = [:]
+    let streamDrag = StreamDragState()
     private(set) var forecastStatuses: [SessionID: ForecastStatus] = [:]
     private(set) var allForecastStatuses: [SessionID: [ForecastStatus]] = [:]
     private(set) var openedSessionIDs: Set<SessionID> = []
@@ -203,13 +204,25 @@ final class PipePlotAppModel {
             refreshAll()
         } catch { errorMessage = error.localizedDescription; refresh(sessionID) }
     }
-    func dropStream(_ items: [String], sessionID: SessionID, onto destination: ChartID? = nil, before: ChartID? = nil, after: ChartID? = nil) -> Bool {
+    func canDropStream(_ items: [String], sessionID: SessionID, onto destination: ChartID? = nil, before: ChartID? = nil, after: ChartID? = nil) -> Bool {
         guard items.count == 1, let id = UUID(uuidString: items[0]),
               let session = try? store.snapshot(sessionID: sessionID),
-              let source = session.charts.first(where: { $0.streams.contains(where: { $0.id == id }) }) else { return false }
+              !session.isDeleted,
+              let source = session.charts.first(where: { $0.isVisible && $0.streams.contains(where: { $0.id == id && $0.isLayoutHidden != true }) }) else { return false }
+        if let destination {
+            return before == nil && after == nil && destination != source.id && session.charts.contains(where: { $0.id == destination && $0.isVisible })
+        }
+        guard before == nil || after == nil else { return false }
+        return [before, after].compactMap { $0 }.allSatisfy { anchor in
+            session.charts.contains(where: { $0.id == anchor && $0.isVisible })
+        }
+    }
+
+    func dropStream(_ items: [String], sessionID: SessionID, onto destination: ChartID? = nil, before: ChartID? = nil, after: ChartID? = nil) -> Bool {
+        guard canDropStream(items, sessionID: sessionID, onto: destination, before: before, after: after),
+              let id = UUID(uuidString: items[0]) else { return false }
         do {
             if let destination {
-                guard destination != source.id, session.charts.contains(where: { $0.id == destination && $0.isVisible }) else { return false }
                 try store.moveStream(id, to: destination)
             } else {
                 _ = try store.moveStreamToNewChart(id, after: after, before: before)
