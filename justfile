@@ -2,6 +2,14 @@
 default:
     @just --list
 
+# Format only the package manifest and maintained Swift sources/tests.
+format:
+    xcrun swift-format format --configuration .swift-format --in-place --recursive Package.swift Sources Tests
+
+# Check formatting without changing files; findings fail the command.
+format-check:
+    xcrun swift-format lint --configuration .swift-format --strict --recursive Package.swift Sources Tests
+
 # Build release products and sign the app bundle without installing it.
 build:
     ./scripts/build-app-bundle.sh
