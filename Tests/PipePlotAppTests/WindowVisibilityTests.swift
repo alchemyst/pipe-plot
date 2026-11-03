@@ -39,7 +39,7 @@ final class WindowVisibilityTests: XCTestCase {
         model.selectChart(ready.chartID, sessionID: ready.sessionID)
         let before = try XCTUnwrap(model.sessions[ready.sessionID])
         model.setDisplayActive(false, for: ready.sessionID)
-        let pulse = model.clockPulse
+        let pulse = model.sessionModel(for: ready.sessionID).clockPulse
         let refreshes = model.displayRefreshCount
         let queries = model.queries.submittedQueryCount
         for i in 1...10 {
@@ -52,7 +52,7 @@ final class WindowVisibilityTests: XCTestCase {
             XCTAssertNil(model.fit(for: ready.streams[0].id, selection: timeline.selection!))
         }
         XCTAssertEqual(model.displayRefreshCount, refreshes)
-        XCTAssertEqual(model.clockPulse, pulse)
+        XCTAssertEqual(model.sessionModel(for: ready.sessionID).clockPulse, pulse)
         XCTAssertEqual(model.queries.submittedQueryCount, queries)
         XCTAssertEqual(model.sessions[ready.sessionID], before)
         // Even an unrelated command refreshing all snapshots must not start hidden fits.
@@ -62,7 +62,7 @@ final class WindowVisibilityTests: XCTestCase {
         let revealed = try XCTUnwrap(model.sessions[ready.sessionID])
         XCTAssertEqual(revealed.charts[0].streams[0].sampleCount, 11)
         XCTAssertEqual(revealed.timeline, before.timeline)
-        XCTAssertEqual(model.selectedChartIDs[ready.sessionID], ready.chartID)
+        XCTAssertEqual(model.sessionModel(for: ready.sessionID).selectedChartID, ready.chartID)
         XCTAssertEqual(model.displayRefreshCount, refreshes + 1)
         model.setDisplayActive(true, for: ready.sessionID)
         XCTAssertEqual(model.displayRefreshCount, refreshes + 1)

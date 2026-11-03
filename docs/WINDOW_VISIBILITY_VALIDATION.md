@@ -1,5 +1,7 @@
 # Window visibility validation — 2026-10-31
 
+Current Swift 6/Xcode app-target reproduction and a 2026-11-03 four-window recheck are in `REFINEMENT_ISSUE_26.md`. The `swift test` commands below describe the earlier package-hosted harness and are retained as historical evidence.
+
 Issue [#12](https://github.com/alchemyst/pipe-plot/issues/12).
 
 Session windows observe AppKit occlusion, miniaturisation, focus, and app hide/unhide notifications. A visible background window remains active. Fully occluded, minimised, or app-hidden windows skip display timer refreshes and display/statistics/nearest/fit query submission. Their canvases, ruler, and selection inspector are suspended; chart row identity is retained so open editors survive. Uncommitted pointer gesture previews are cleared.

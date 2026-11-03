@@ -5,7 +5,7 @@ import PipePlotCore
 struct SessionPicker: View {
     @Bindable var model: PipePlotAppModel
     let onSelect: (SessionID) -> Void
-    @State private var renaming: SessionSnapshot?
+    @State private var renaming: SessionListing?
     @State private var sessionTitle = ""
 
     var body: some View {
@@ -20,12 +20,12 @@ struct SessionPicker: View {
             }
             Divider()
             Text("Saved sessions").font(.headline)
-            if model.sessions.isEmpty {
+            if model.sessionCatalog.isEmpty {
                 ContentUnavailableView(
                     "No saved sessions", systemImage: "chart.xyaxis.line",
                     description: Text("Create a session or start a pipeline with `pp`."))
             } else {
-                List(model.sessions.values.filter { !$0.isDeleted }.sorted { $0.number < $1.number }) { session in
+                List(model.sessionCatalog.values.filter { !$0.isDeleted }.sorted { $0.number < $1.number }) { session in
                     Button {
                         onSelect(session.id)
                     } label: {
@@ -34,7 +34,7 @@ struct SessionPicker: View {
                             VStack(alignment: .leading) {
                                 Text("\(session.number) · \(session.title)").font(.headline)
                                 Text(
-                                    "\(session.charts.count) charts · \(session.charts.reduce(0) { $0 + $1.streams.count }) streams"
+                                    "\(session.chartCount) charts · \(session.streamCount) streams"
                                 ).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -56,9 +56,10 @@ struct SessionPicker: View {
                         }
                 }.listStyle(.inset)
             }
-            if model.sessions.values.contains(where: \.isDeleted) {
+            if model.sessionCatalog.values.contains(where: \.isDeleted) {
                 Menu("Recently deleted sessions") {
-                    ForEach(model.sessions.values.filter(\.isDeleted).sorted { $0.number < $1.number }) { session in
+                    ForEach(model.sessionCatalog.values.filter(\.isDeleted).sorted { $0.number < $1.number }) {
+                        session in
                         Button("Restore \(session.number) · \(session.title)") { model.restoreSession(session.id) }
                     }
                 }
@@ -98,7 +99,8 @@ struct SettingsView: View {
     @State private var minValue = ""
     @State private var maxValue = ""
 
-    private var charts: [ChartSnapshot] { selectedSession.flatMap { model.sessions[$0]?.charts } ?? [] }
+    private var selectedSnapshot: SessionSnapshot? { selectedSession.flatMap { model.sessionModel(for: $0).snapshot } }
+    private var charts: [ChartSnapshot] { selectedSnapshot?.charts ?? [] }
     private var chart: ChartSnapshot? { charts.first { $0.id == selectedChart } }
 
     var body: some View {
@@ -106,7 +108,7 @@ struct SettingsView: View {
             Section("Axis presentation") {
                 Picker("Session", selection: $selectedSession) {
                     Text("Choose session").tag(SessionID?.none)
-                    ForEach(model.sessions.values.filter { !$0.isDeleted }.sorted { $0.number < $1.number }) {
+                    ForEach(model.sessionCatalog.values.filter { !$0.isDeleted }.sorted { $0.number < $1.number }) {
                         Text("\($0.number) · \($0.title)").tag(Optional($0.id))
                     }
                 }
@@ -164,16 +166,16 @@ struct SettingsView: View {
                 Picker(
                     "Relative time origin",
                     selection: Binding(
-                        get: { selectedSession.flatMap { model.sessions[$0]?.timeline.referenceTimeGuideID } },
+                        get: { selectedSnapshot?.timeline.referenceTimeGuideID },
                         set: { value in
-                            if let session = selectedSession.flatMap({ model.sessions[$0] }) {
+                            if let session = selectedSnapshot {
                                 model.setTimeReference(value, session: session)
                             }
                         })
                 ) {
                     Text("Absolute time").tag(UUID?.none)
-                    ForEach(selectedSession.flatMap { model.sessions[$0]?.timeGuides } ?? []) { guide in
-                        let session = selectedSession.flatMap { model.sessions[$0] }
+                    ForEach(selectedSnapshot?.timeGuides ?? []) { guide in
+                        let session = selectedSnapshot
                         let zone = session?.timeline.timeZone ?? .local
                         Text(
                             guide.label?.isEmpty == false
@@ -239,7 +241,9 @@ struct GuideAlertSettingsRow: View {
     @State private var hysteresis = "0"
     @State private var cooldown = "10"
     private var currentGuide: Guide {
-        model.sessions[sessionID]?.charts.first(where: { $0.id == chartID })?.guides.first(where: { $0.id == guide.id })
+        model.sessionModel(for: sessionID).snapshot?.charts.first(where: { $0.id == chartID })?.guides.first(where: {
+            $0.id == guide.id
+        })
             ?? guide
     }
     private var enabled: Bool { currentGuide.alert != nil }
@@ -257,7 +261,7 @@ struct GuideAlertSettingsRow: View {
             Toggle(
                 currentGuide.label?.isEmpty == false
                     ? currentGuide.label!
-                    : "Guide at \(NumericText.format(currentGuide.value, scale: model.sessions[sessionID]?.charts.first(where: { $0.id == chartID })?.settings.numericScale ?? .decimal, unit: unit))",
+                    : "Guide at \(NumericText.format(currentGuide.value, scale: model.sessionModel(for: sessionID).snapshot?.charts.first(where: { $0.id == chartID })?.settings.numericScale ?? .decimal, unit: unit))",
                 isOn: Binding(
                     get: { enabled },
                     set: { value in
@@ -349,8 +353,8 @@ struct PipePlotCommands: Commands {
                 if let id = model.activeSessionID {
                     model.createChart(
                         in: id,
-                        after: model.selectedChartIDs[id]
-                            ?? model.sessions[id]?.charts.last(where: { $0.isVisible })?.id)
+                        after: model.sessionModel(for: id).selectedChartID
+                            ?? model.sessionModel(for: id).snapshot?.charts.last(where: { $0.isVisible })?.id)
                 }
             }
             .keyboardShortcut("d", modifiers: [.command, .shift]).disabled(model.activeSessionID == nil)

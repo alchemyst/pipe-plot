@@ -6,8 +6,7 @@ import PipePlotCore
 struct SessionWindow: View {
     let sessionID: SessionID
     @Bindable var model: PipePlotAppModel
-    @State private var displayActive = false
-    @State private var selectedChartID: ChartID?
+    @Bindable var sessionModel: SessionModel
     @State private var hoverDate: Date?
     @State private var dragStart: Date?
     @State private var gestures = SessionGesturePreview()
@@ -15,7 +14,13 @@ struct SessionWindow: View {
     @State private var sessionTitle = ""
     @State private var editingLocator: Guide?
 
-    private var session: SessionSnapshot? { model.sessions[sessionID] }
+    init(sessionID: SessionID, model: PipePlotAppModel) {
+        self.sessionID = sessionID
+        self.model = model
+        self.sessionModel = model.sessionModel(for: sessionID)
+    }
+
+    private var session: SessionSnapshot? { sessionModel.snapshot }
     private var visibleCharts: [ChartSnapshot] { session?.charts.filter(\.isVisible) ?? [] }
     private func timeReference(_ session: SessionSnapshot) -> Date? {
         session.timeGuides.first(where: { $0.id == session.timeline.referenceTimeGuideID }).map {
@@ -32,9 +37,6 @@ struct SessionWindow: View {
         .navigationTitle(session.map { "\($0.number) · \($0.title)" } ?? "PipePlot")
         .onAppear { model.refresh(sessionID) }
         .onAppear { model.becameActive(sessionID) }
-        .onChange(of: model.selectedChartIDs[sessionID]) { _, chartID in
-            if let chartID { selectedChartID = chartID }
-        }
         .onReceive(model.refreshTimer) { _ in model.tick(sessionID) }
         .onReceive(NotificationCenter.default.publisher(for: .pipePlotWillTerminate)) { _ in
             model.prepareForTermination()
@@ -67,7 +69,6 @@ struct SessionWindow: View {
                     transaction.disablesAnimations = true
                     withTransaction(transaction) {
                         model.setDisplayActive(active, for: sessionID)
-                        displayActive = active
                         if !active {
                             hoverDate = nil
                             gestures = SessionGesturePreview()
@@ -131,17 +132,17 @@ struct SessionWindow: View {
                     "No charts yet", systemImage: "chart.xyaxis.line",
                     description: Text("Create a chart or pipe values into pp."))
             } else {
-                if displayActive { sharedRuler(session) }
+                if sessionModel.displayActive { sharedRuler(session) }
                 // Retain row identity (including open editors) while their canvases
                 // and query entry points are suspended.
                 chartRows(session)
-                if displayActive, let selection = session.timeline.selection {
+                if sessionModel.displayActive, let selection = session.timeline.selection {
                     SelectionInspector(session: session, selection: selection, model: model) {
                         model.setSelection($0, session: session)
                     }
                 }
             }
-            if displayActive { timelineBar(session) }
+            if sessionModel.displayActive { timelineBar(session) }
         } else {
             ProgressView().task { model.refresh(sessionID) }
         }
@@ -195,7 +196,7 @@ struct SessionWindow: View {
                     StreamInsertionTarget(sessionID: session.id, destination: .before(chart.id), model: model)
                     ChartRowHost(
                         chart: chart, session: session, model: model, hoverDate: $hoverDate,
-                        gestures: gestures, selectedChartID: $selectedChartID)
+                        gestures: gestures, sessionModel: sessionModel, selectedChartID: $sessionModel.selectedChartID)
                 }
                 StreamInsertionTarget(
                     sessionID: session.id,
@@ -206,7 +207,7 @@ struct SessionWindow: View {
     }
 
     private var newChartDropTarget: StreamDropTarget {
-        let anchor = visibleCharts.first(where: { $0.id == selectedChartID })?.id ?? visibleCharts.last?.id
+        let anchor = visibleCharts.first(where: { $0.id == sessionModel.selectedChartID })?.id ?? visibleCharts.last?.id
         return StreamDropTarget(sessionID: sessionID, destination: anchor.map { .after($0) } ?? .unanchored)
     }
 
@@ -343,7 +344,7 @@ struct SessionWindow: View {
     }
 
     private func createChart() {
-        model.createChart(in: sessionID, after: selectedChartID)
+        model.createChart(in: sessionID, after: sessionModel.selectedChartID)
     }
 
     private var isEditingText: Bool {
@@ -592,6 +593,7 @@ private struct ChartRowHost: View {
     let model: PipePlotAppModel
     @Binding var hoverDate: Date?
     let gestures: SessionGesturePreview
+    let sessionModel: SessionModel
     @Binding var selectedChartID: ChartID?
     private var target: StreamDropTarget { StreamDropTarget(sessionID: session.id, destination: .onto(chart.id)) }
     private var mergeTargeted: Bool { target.isTargeted(model) }
@@ -607,7 +609,7 @@ private struct ChartRowHost: View {
             sharedSelectionLinked: Binding(get: { gestures.selectionLinked }, set: { gestures.selectionLinked = $0 }),
             sharedGuidePreview: Binding(get: { gestures.guide }, set: { gestures.guide = $0 }),
             sharedGuideChartID: Binding(get: { gestures.guideChartID }, set: { gestures.guideChartID = $0 }),
-            model: model,
+            model: model, sessionModel: sessionModel,
             onTarget: { model.setTarget(chart.id) },
             onToggleDots: { model.toggleDots(chart) }, onToggleLines: { model.toggleLines(chart) },
             onAddGuide: { value, label in model.addGuide(value: value, chart: chart, session: session, label: label) },
@@ -619,7 +621,6 @@ private struct ChartRowHost: View {
         )
         .onTapGesture {
             selectedChartID = chart.id
-            model.selectChart(chart.id, sessionID: session.id)
         }
         .overlay(
             RoundedRectangle(cornerRadius: 13).stroke(
@@ -662,6 +663,7 @@ private struct ChartRow: View {
     @Binding var sharedGuidePreview: Guide?
     @Binding var sharedGuideChartID: ChartID?
     let model: PipePlotAppModel
+    let sessionModel: SessionModel
     let onTarget: () -> Void
     let onToggleDots: () -> Void
     let onToggleLines: () -> Void
@@ -740,7 +742,7 @@ private struct ChartRow: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             ZStack(alignment: .topLeading) {
-                if model.isDisplayActive(session.id) {
+                if sessionModel.displayActive {
                     PlotCanvas(
                         chart: plotChart, session: plotSession, samples: samples, currentDisplays: currentDisplays,
                         domain: plotDomain, now: now, hoverDate: $hoverDate, selectionStart: $sharedSelectionStart,
@@ -882,7 +884,7 @@ private struct ChartRow: View {
                 }
             }
             .frame(height: 25)
-            if model.isDisplayActive(session.id) {
+            if sessionModel.displayActive {
                 ForEach(layoutStreams.filter { $0.derivedSeries != nil }) { stream in
                     DerivedSeriesPanel(
                         stream: stream, unit: chart.settings.unit, domain: plotDomain,
@@ -893,7 +895,7 @@ private struct ChartRow: View {
                 }
             }
             ForEach(
-                model.allForecastStatuses[session.id, default: []].filter { status in
+                sessionModel.forecastStatuses.filter { status in
                     layoutStreams.contains(where: { $0.id == status.configuration.streamID })
                 }, id: \.configuration.id
             ) { status in
@@ -1137,7 +1139,7 @@ private struct ChartRow: View {
     }
 
     private var isCurrentChart: Bool {
-        (model.selectedChartIDs[session.id] ?? session.charts.last(where: \.isVisible)?.id) == chart.id
+        (sessionModel.selectedChartID ?? session.charts.last(where: \.isVisible)?.id) == chart.id
     }
 
     @ViewBuilder private var guideManagerSheet: some View {
