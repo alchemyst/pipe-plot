@@ -18,6 +18,7 @@ final class PipePlotAppModel {
     private var didBootstrap = false
     private var serverStarted = false
     @ObservationIgnored private var sessionModels: [SessionID: SessionModel] = [:]
+    @ObservationIgnored private var undoManagers: [SessionID: SessionUndoManager] = [:]
     @ObservationIgnored private var streamSessions: [StreamID: SessionID] = [:]
     private(set) var sessionCatalog: [SessionID: SessionListing] = [:]
     var sessions: [SessionID: SessionSnapshot] {
@@ -31,8 +32,6 @@ final class PipePlotAppModel {
     }
     private(set) var errorMessage: String?
     private(set) var editRevision = 0
-    private(set) var commandRevision = 0
-    @ObservationIgnored private var commandNotifications: [NSObjectProtocol] = []
     let streamDrag = StreamDragState()
     var forecastStatuses: [SessionID: ForecastStatus] {
         sessionModels.compactMapValues { $0.forecastStatuses.first }
@@ -67,20 +66,6 @@ final class PipePlotAppModel {
         }
         ingestion = IngestionService(
             store: store, socketURL: socketURL ?? PipePlotLocations.socketURL, emit: { mailbox.post($0) })
-        let commandEvents: [Notification.Name] = [
-            NSText.didBeginEditingNotification, NSText.didChangeNotification, NSText.didEndEditingNotification,
-            NSControl.textDidBeginEditingNotification, NSControl.textDidChangeNotification,
-            NSControl.textDidEndEditingNotification,
-            NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
-            .NSUndoManagerDidUndoChange, .NSUndoManagerDidRedoChange, .NSUndoManagerDidCloseUndoGroup,
-        ]
-        commandNotifications = commandEvents.map { name in
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                // Native field editing does not mutate session metadata. Commands
-                // must nevertheless re-read the current field editor's UndoManager.
-                DispatchQueue.main.async { [weak self] in self?.commandRevision &+= 1 }
-            }
-        }
         refreshAll()
         // IPC readiness must not wait for a background/occluded SwiftUI scene
         // to appear. Model-only test clients keep their isolated stores offline.
@@ -89,7 +74,15 @@ final class PipePlotAppModel {
 
     isolated deinit {
         ingestion?.stop()
-        commandNotifications.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    func undoManager(for id: SessionID) -> SessionUndoManager {
+        if let existing = undoManagers[id] { return existing }
+        let created = SessionUndoManager(sessionID: id, store: store) { [weak self] redo in
+            if redo { self?.redo(id) } else { self?.undo(id) }
+        }
+        undoManagers[id] = created
+        return created
     }
 
     func installOpenWindow(_ action: @escaping (SessionID) -> Void) {

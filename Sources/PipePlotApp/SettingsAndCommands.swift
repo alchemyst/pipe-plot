@@ -341,14 +341,6 @@ struct SessionCommandTarget {
         guard chart != nil, let snapshot else { return }
         model.addTimeGuide(at: model.sessionNow(snapshot), sessionID: snapshot.id)
     }
-    func undo(using model: PipePlotAppModel) {
-        guard let snapshot else { return }
-        model.undo(snapshot.id)
-    }
-    func redo(using model: PipePlotAppModel) {
-        guard let snapshot else { return }
-        model.redo(snapshot.id)
-    }
 }
 
 struct PipePlotCommands: Commands {
@@ -362,42 +354,10 @@ struct PipePlotCommands: Commands {
     private var sessionTarget: SessionCommandTarget {
         SessionCommandTarget(focused: focusedSession, editingText: isEditingText)
     }
-    private var textUndo: UndoManager? {
-        _ = model.commandRevision
-        let responder = NSApp.keyWindow?.firstResponder
-        let editor = (responder as? NSTextView) ?? (responder as? NSTextField)?.currentEditor() as? NSTextView
-        guard let editor, editor.isEditable else { return nil }
-        return editor.undoManager
-    }
-    private var undoName: String? {
-        _ = model.editRevision
-        return sessionTarget.snapshot.flatMap { model.store.undoActionName(sessionID: $0.id) }
-    }
-    private var redoName: String? {
-        _ = model.editRevision
-        return sessionTarget.snapshot.flatMap { model.store.redoActionName(sessionID: $0.id) }
-    }
-    private var canUndo: Bool { textUndo?.canUndo ?? (undoName != nil) }
-    private var canRedo: Bool { textUndo?.canRedo ?? (redoName != nil) }
-    private var undoTitle: String { textUndo?.undoMenuItemTitle ?? undoName.map { "Undo \($0)" } ?? "Undo" }
-    private var redoTitle: String { textUndo?.redoMenuItemTitle ?? redoName.map { "Redo \($0)" } ?? "Redo" }
-    private func performUndo(redo: Bool) {
-        if let manager = textUndo {
-            if redo { manager.redo() } else { manager.undo() }
-        } else {
-            if redo { sessionTarget.redo(using: model) } else { sessionTarget.undo(using: model) }
-        }
-    }
     var body: some Commands {
         let _ = installInitialWindowOpener?(openWindow)
         CommandGroup(replacing: .newItem) {
             Button("New Session") { model.createSessionWindow() }.keyboardShortcut("n", modifiers: [.command])
-        }
-        CommandGroup(replacing: .undoRedo) {
-            Button(undoTitle) { performUndo(redo: false) }
-                .keyboardShortcut("z", modifiers: [.command]).disabled(!canUndo)
-            Button(redoTitle) { performUndo(redo: true) }
-                .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!canRedo)
         }
         CommandMenu("Session") {
             Button("New Chart Below") { sessionTarget.createChart(using: model) }

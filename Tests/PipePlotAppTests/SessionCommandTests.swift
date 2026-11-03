@@ -49,9 +49,9 @@ final class SessionCommandTests: XCTestCase {
             try XCTUnwrap(a.snapshot?.timeGuides.first?.value), expectedTimeGuide.timeIntervalSince1970, accuracy: 0.001
         )
         XCTAssertEqual(b.snapshot?.timeGuides.count, 0)
-        focusedA.undo(using: model)
+        model.undoManager(for: first.id).undo()
         XCTAssertEqual(a.snapshot?.timeGuides.count, 0)
-        focusedA.redo(using: model)
+        model.undoManager(for: first.id).redo()
         XCTAssertEqual(a.snapshot?.timeGuides.count, 1)
         XCTAssertEqual(b.snapshot?.timeGuides.count, 0)
     }
@@ -78,7 +78,6 @@ final class SessionCommandTests: XCTestCase {
             target.createChart(using: model)
             target.addTimeGuide(using: model)
             target.requestValueGuide()
-            target.undo(using: model)
         }
         XCTAssertEqual(session.snapshot?.charts.count, 1)
         XCTAssertTrue(session.snapshot?.timeGuides.isEmpty == true)

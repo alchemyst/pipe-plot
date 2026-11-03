@@ -1791,11 +1791,18 @@ private extension UndoRecord {
         case .chartTitle: return "Rename Chart"
         case .chartReordered: return "Reorder Chart"
         case .chartDeleted: return "Delete Chart"
-        case .chartVisibility: return "Delete Chart"
+        case .chartVisibility(_, _, let new): return new ? "Restore Chart" : "Hide Chart"
         case .sessionDeleted: return "Delete Session"
         case .sessionRestored: return "Restore Session"
         case .settings: return "Axis Settings"
-        case .guide, .timeGuide: return "Guide Edit"
+        case .guide(_, _, let old, let new):
+            if old == nil { return "Add Guide" }
+            if new == nil { return "Delete Guide" }
+            return "Edit Guide"
+        case .timeGuide(_, _, let old, let new):
+            if old == nil { return "Add Time Guide" }
+            if new == nil { return "Delete Time Guide" }
+            return "Edit Time Guide"
         case .timeReference: return "Time Reference"
         case .selection: return "Selection"
         case .forecast: return "Linear Forecast"

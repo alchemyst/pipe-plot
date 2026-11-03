@@ -74,7 +74,8 @@ struct SessionWindow: View {
                             gestures = SessionGesturePreview()
                         }
                     }
-                }
+                },
+                sessionUndoManager: model.undoManager(for: sessionID)
             ).frame(width: 1, height: 1)
         )
         .focusedSceneValue(
