@@ -7,13 +7,15 @@ struct ChartHeader: View {
     let model: PipePlotAppModel
     let sessionModel: SessionModel
     let onManageGuides: () -> Void
+    let onSelectVisibleRange: () -> Void
+    let onClearSelection: () -> Void
     @State private var renameChartText = ""
     @State private var showRenameChart = false
     private var hiddenStreams: [StreamDescriptor] { chart.streams.filter { $0.isLayoutHidden == true } }
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "chart.xyaxis.line").foregroundStyle(Color.accentColor)
+            Image(systemName: "chart.xyaxis.line").foregroundStyle(Color.accentColor).accessibilityHidden(true)
             Text(chart.title).font(.headline)
             if let unit = chart.settings.unit, !unit.isEmpty {
                 Text(unit).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 7).padding(.vertical, 3)
@@ -39,6 +41,14 @@ struct ChartHeader: View {
                     }
                 ]
                 let charts = session.charts.filter(\.isVisible)
+                items += [
+                    .separator,
+                    .command(
+                        "Select Visible Time Range",
+                        enabled: chart.streams.contains { $0.isLayoutHidden != true },
+                        action: onSelectVisibleRange),
+                    .command("Clear Selection", enabled: session.timeline.selection != nil, action: onClearSelection),
+                ]
                 if let index = charts.firstIndex(where: { $0.id == chart.id }) {
                     items += [
                         .command("Move Up", enabled: index > 0) { model.reorderChart(chart.id, to: index - 1) },
@@ -81,7 +91,10 @@ struct ChartHeader: View {
                         : "point.topleft.down.to.point.bottomright.curvepath")
             }
             .buttonStyle(.plain).foregroundStyle(chart.settings.linesVisible ? Color.accentColor : .secondary).help(
-                "Toggle connecting lines")
+                "Toggle connecting lines"
+            )
+            .accessibilityLabel(
+                chart.settings.linesVisible ? "Hide chart connecting lines" : "Show chart connecting lines")
             Button {
                 model.toggleDots(chart)
             } label: {
@@ -89,6 +102,7 @@ struct ChartHeader: View {
             }.buttonStyle(.plain).foregroundStyle(
                 chart.settings.dotsVisible ? Color.accentColor : .secondary
             ).help("Toggle dots")
+                .accessibilityLabel(chart.settings.dotsVisible ? "Hide chart dots" : "Show chart dots")
             Button {
                 model.setTarget(chart.id)
             } label: {

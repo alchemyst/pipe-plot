@@ -34,14 +34,14 @@ enum Issue33AcceptanceFixture {
             if try store.listSessions().isEmpty {
                 let first = try store.createSession(title: "Acceptance · voltage")
                 let second = try store.createSession(title: "Acceptance · pressure")
-                for (session, name, unit, value) in [
-                    (first, "Voltage", "mV", 12.0),
-                    (second, "Pressure", "kPa", 85.0),
+                for (session, names, unit, value) in [
+                    (first, ["Voltage", "Aux voltage"], "mV", 12.0),
+                    (second, ["Pressure"], "kPa", 85.0),
                 ] {
                     let chart = session.charts[0]
                     let ready = try store.registerSampler(
-                        intent: .chart(chartID: chart.id, lineNames: [name]),
-                        sampler: SamplerIntent(columnCount: 1, requestedNames: [name]))
+                        intent: .chart(chartID: chart.id, lineNames: names),
+                        sampler: SamplerIntent(columnCount: names.count, requestedNames: names))
                     var settings = chart.settings
                     settings.unit = unit
                     try store.updateSettings(settings, chartID: chart.id)
@@ -51,8 +51,14 @@ enum Issue33AcceptanceFixture {
                         _ = try store.append(
                             SampleRow(
                                 timestamp: Date().addingTimeInterval(Double(index - 30)),
-                                values: [value + sin(Double(index) / 5)]),
+                                values: names.count == 1
+                                    ? [value + sin(Double(index) / 5)]
+                                    : [value + sin(Double(index) / 5), value / 2 + cos(Double(index) / 5)]),
                             to: ready.attachmentID)
+                    }
+                    if names.count > 1 {
+                        try store.updateStreamStyle(
+                            ready.streams[1].id, colorHex: nil, dotsVisible: false, linesVisible: false)
                     }
                 }
                 try store.recordTerminationOpenSessions([first.id, second.id])

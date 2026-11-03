@@ -115,13 +115,15 @@ struct TimelineLocators: View {
                     onGuide: { guide, phase in if guide.orientation == .verticalTime { onGuide(guide, phase) } },
                     onSelection: onSelection, onPan: { _, _ in }, onZoom: { _, _, _ in }, onHover: onHover,
                     onBackgroundClick: onClear, onBackgroundDoubleClick: onAddGuide,
-                    onGuideSelected: onGuideSelected, onSelectionModeToggle: onToggle)
+                    onGuideSelected: onGuideSelected, onSelectionModeToggle: onToggle
+                )
+                .accessibilityHidden(true)
             }
         }.frame(height: 78).background(.bar)
             .help(
                 "Drag a locator to move it; click to edit. Drag interval endpoints; double-click each triangle to toggle tracking."
             )
-            .accessibilityLabel("Shared timeline locators and interval brace")
+            .accessibilityHidden(true)
     }
     private func flagHitRects(in plot: CGRect, x: (Date) -> CGFloat) -> [UUID: CGRect] {
         var ends = [CGFloat](repeating: plot.minX - 4, count: 2)

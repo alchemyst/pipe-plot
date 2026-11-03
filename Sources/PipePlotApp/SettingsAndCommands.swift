@@ -225,6 +225,7 @@ struct SessionCommandTarget {
     }
     var canCreateChart: Bool { snapshot != nil }
     var canAddGuide: Bool { chart != nil }
+    var canSelectVisibleRange: Bool { chart?.streams.contains(where: { $0.isLayoutHidden != true }) == true }
 
     func createChart(using model: PipePlotAppModel) {
         guard let snapshot else { return }
@@ -237,6 +238,11 @@ struct SessionCommandTarget {
     func addTimeGuide(using model: PipePlotAppModel) {
         guard chart != nil, let snapshot else { return }
         model.addTimeGuide(at: model.sessionNow(snapshot), sessionID: snapshot.id)
+    }
+    func selectVisibleRange(using model: PipePlotAppModel) {
+        guard canSelectVisibleRange, let chart, let snapshot else { return }
+        model.setSelection(
+            TimeSelection.visibleRange(model.domain(for: snapshot), streams: chart.streams), session: snapshot)
     }
 }
 
@@ -278,6 +284,9 @@ struct PipePlotCommands: Commands {
                 .keyboardShortcut("g", modifiers: [.command, .option]).disabled(!sessionTarget.canAddGuide)
             Button("Add Time Guide at Now") { sessionTarget.addTimeGuide(using: model) }
                 .keyboardShortcut("t", modifiers: [.command, .option]).disabled(!sessionTarget.canAddGuide)
+            Button("Select Visible Time Range") { sessionTarget.selectVisibleRange(using: model) }
+                .keyboardShortcut("v", modifiers: [.command, .option])
+                .disabled(!sessionTarget.canSelectVisibleRange)
             Button("Open Saved Sessions…") { model.presentSessionPicker() }
         }
     }

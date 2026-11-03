@@ -3,9 +3,12 @@ import PipePlotCore
 
 struct PlotCanvas: View {
     let chart: ChartSnapshot
+    var accessibilityChart: ChartSnapshot? = nil
     let session: SessionSnapshot
     let samples: [StreamID: [StoredSample]]
     let currentDisplays: Set<StreamID>
+    var readyDisplays: Set<StreamID> = []
+    var failedDisplays: Set<StreamID> = []
     let domain: ClosedRange<Date>
     let now: Date
     @Binding var hoverDate: Date?
@@ -28,11 +31,23 @@ struct PlotCanvas: View {
 
     private var timeSpan: TimeInterval { max(0.001, domain.upperBound.timeIntervalSince(domain.lowerBound)) }
 
+    var chartAccessibility: PlotAccessibility {
+        PlotAccessibility(
+            chart: accessibilityChart ?? chart, session: session, samples: samples,
+            readyDisplays: readyDisplays, failedDisplays: failedDisplays, domain: domain, now: now,
+            valueRange: yRange, selection: selection, forecasts: forecasts)
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let plot = plotRect(for: geometry.size)
             ZStack(alignment: .topLeading) {
                 drawingCanvas
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(chart.title)
+                    .accessibilityAddTraits(.isImage)
+                    .accessibilityValue(chartAccessibility.summary)
+                    .accessibilityChartDescriptor(chartAccessibility)
                 PlotInteractionOverlay(
                     guides: chart.guides + session.timeGuides,
                     selectionRange: currentSelectionRange,
@@ -92,6 +107,7 @@ struct PlotCanvas: View {
                     onGuideSelected: onGuideSelected,
                     onSelectionModeToggle: onSelectionModeToggle
                 )
+                .accessibilityHidden(true)
                 if selection?.mode == .endFollowsNow, let onFollowSelectionDuration {
                     Button(action: onFollowSelectionDuration) {
                         Image(systemName: "arrow.left.to.line.compact")
@@ -102,6 +118,7 @@ struct PlotCanvas: View {
                     }
                     .buttonStyle(.plain)
                     .help("Make the start follow now at this fixed duration")
+                    .accessibilityLabel("Make selection start follow now at a fixed duration")
                     .position(x: x(selection!.start, in: plot), y: plot.maxY - 8)
                 }
             }

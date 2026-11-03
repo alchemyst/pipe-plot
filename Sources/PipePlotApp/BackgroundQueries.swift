@@ -186,6 +186,9 @@ final class BackgroundQueries {
         if let value = displays[id]?.exact(key) { return value }
         return displays[id]?.cached?.1 ?? []  // Keep actual coordinates during a range change.
     }
+    func isReadyDisplay(_ id: StreamID, key: QueryKey) -> Bool {
+        displays[id]?.exact(key) != nil
+    }
     func isCurrentDisplay(_ id: StreamID, key: QueryKey) -> Bool {
         guard let cached = displays[id]?.cached?.0, let last = key.last else { return false }
         return cached.count == key.count && cached.last == last && cached.start <= last && last <= cached.end

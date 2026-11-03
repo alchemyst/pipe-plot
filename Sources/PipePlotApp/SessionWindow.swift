@@ -28,6 +28,11 @@ struct SessionWindow: View {
             Date(timeIntervalSince1970: $0.value)
         }
     }
+    private func zoomTimeline(_ factor: Double, session: SessionSnapshot) {
+        let range = model.domain(for: session)
+        let anchor = range.lowerBound.addingTimeInterval(range.upperBound.timeIntervalSince(range.lowerBound) / 2)
+        model.zoom(factor, anchor: anchor, session: session)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -222,7 +227,7 @@ struct SessionWindow: View {
                 of: [StreamDragState.contentType],
                 delegate: StreamDropDelegate(target: newChartDropTarget, model: model)
             )
-            .accessibilityLabel("Drop a stream to add a chart below the selected chart")
+            .accessibilityHidden(true)
     }
 
     private var errorPresented: Binding<Bool> {
@@ -254,12 +259,14 @@ struct SessionWindow: View {
                 Image(systemName: "chevron.left")
             }
             .disabled(!model.canNavigateBack(session.id)).help("Back in time navigation")
+            .accessibilityLabel("Back in time navigation")
             Button {
                 model.navigateForward(session)
             } label: {
                 Image(systemName: "chevron.right")
             }
             .disabled(!model.canNavigateForward(session.id)).help("Forward in time navigation")
+            .accessibilityLabel("Forward in time navigation")
             Text(
                 "Now  \(TimeText.format(model.sessionNow(session), zone: session.timeline.timeZone, reference: timeReference(session)))"
             )
@@ -278,7 +285,42 @@ struct SessionWindow: View {
                 Button("Show all history") { model.showAllHistory(session) }
             } label: {
                 Image(systemName: "clock.arrow.circlepath")
-            }.help("Time range")
+            }.help("Time range").accessibilityLabel("Time range")
+            SnapshotMenu(title: "Plot navigation", symbol: "arrow.up.left.and.arrow.down.right", compact: true) {
+                let chart =
+                    visibleCharts.first(where: { $0.id == sessionModel.selectedChartID })
+                    ?? visibleCharts.last
+                return [
+                    .command("Pan earlier") { model.pan(80, width: 800, session: session) },
+                    .command("Pan later") { model.pan(-80, width: 800, session: session) },
+                    .command("Zoom in") { zoomTimeline(1.25, session: session) },
+                    .command("Zoom out") { zoomTimeline(0.8, session: session) },
+                    .command("Frame selection", enabled: session.timeline.selection != nil) {
+                        guard let selection = session.timeline.selection else { return }
+                        let bounds = model.resolvedSelectionBounds(selection, session: session)
+                        var timeline = session.timeline
+                        timeline.followNow = false
+                        timeline.visibleStart = bounds.lowerBound
+                        timeline.visibleEnd = bounds.upperBound
+                        model.navigate(timeline, session: session)
+                    },
+                    .command(
+                        "Select visible time range",
+                        enabled: chart?.streams.contains(where: { $0.isLayoutHidden != true }) == true
+                    ) {
+                        guard let chart else { return }
+                        model.setSelection(
+                            TimeSelection.visibleRange(
+                                gestures.domain ?? model.domain(for: session), streams: chart.streams),
+                            session: session)
+                    },
+                    .command("Clear selection", enabled: session.timeline.selection != nil) {
+                        model.setSelection(nil, session: session)
+                    },
+                ]
+            }
+            .frame(width: 30)
+            .help("Pan, zoom, frame and select the visible time range")
             Menu {
                 Button("Local time") { model.setTimeZone(.local, session: session) }
                 Button("UTC") { model.setTimeZone(.utc, session: session) }
@@ -384,7 +426,7 @@ private struct StreamInsertionTarget: View {
                     .background(.regularMaterial, in: Capsule())
             }
         }.frame(height: 20).contentShape(Rectangle())
-            .accessibilityLabel("Drop stream here to insert a new chart")
+            .accessibilityHidden(true)
             .onDrop(of: [StreamDragState.contentType], delegate: StreamDropDelegate(target: target, model: model))
     }
 }
@@ -413,7 +455,8 @@ private struct ChartRowHost: View {
     var body: some View {
         let display = model.visibleSamples(for: chart, session: session, range: gestures.domain)
         ChartRow(
-            chart: chart, session: session, samples: display.samples, currentDisplays: display.current,
+            chart: chart, session: session, samples: display.samples,
+            currentDisplays: display.current, readyDisplays: display.ready,
             now: model.sessionNow(session), hoverDate: $hoverDate,
             sharedGestureDomain: Binding(get: { gestures.domain }, set: { gestures.domain = $0 }),
             sharedSelectionStart: Binding(get: { gestures.selectionStart }, set: { gestures.selectionStart = $0 }),
@@ -508,6 +551,7 @@ private struct ChartRow: View {
     let session: SessionSnapshot
     let samples: [StreamID: [StoredSample]]
     let currentDisplays: Set<StreamID>
+    let readyDisplays: Set<StreamID>
     let now: Date
     @Binding var hoverDate: Date?
     @Binding var sharedGestureDomain: ClosedRange<Date>?
@@ -568,13 +612,21 @@ private struct ChartRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ChartHeader(chart: chart, session: session, model: model, sessionModel: sessionModel) {
-                guideSheet = GuideSheetRequest(route: .manage)
-            }
+            ChartHeader(
+                chart: chart, session: session, model: model, sessionModel: sessionModel,
+                onManageGuides: { guideSheet = GuideSheetRequest(route: .manage) },
+                onSelectVisibleRange: {
+                    guard chart.streams.contains(where: { $0.isLayoutHidden != true }) else { return }
+                    onSelection(TimeSelection.visibleRange(plotDomain, streams: chart.streams))
+                },
+                onClearSelection: { onSelection(nil) })
             ZStack(alignment: .topLeading) {
                 if sessionModel.displayActive {
                     PlotCanvas(
-                        chart: plotChart, session: plotSession, samples: samples, currentDisplays: currentDisplays,
+                        chart: plotChart, accessibilityChart: chart, session: plotSession,
+                        samples: samples, currentDisplays: currentDisplays,
+                        readyDisplays: readyDisplays,
+                        failedDisplays: Set(layoutStreams.filter { model.displayFailed($0.id) }.map(\.id)),
                         domain: plotDomain, now: now, hoverDate: $hoverDate, selectionStart: $sharedSelectionStart,
                         selectionPreview: $sharedSelectionEnd, selectionLinkedPreview: $sharedSelectionLinked,
                         onFollowSelectionDuration: {
@@ -783,5 +835,13 @@ private struct ChartRow: View {
     }
     private func toggleSelectionBoundary(_ edge: PlotSelectionEdge) {
         model.toggleSelectionBoundary(edge, session: session)
+    }
+}
+
+extension TimeSelection {
+    static func visibleRange(_ range: ClosedRange<Date>, streams: [StreamDescriptor]) -> TimeSelection {
+        TimeSelection(
+            start: range.lowerBound, end: range.upperBound,
+            selectedStreamIDs: Set(streams.filter { $0.isLayoutHidden != true }.map(\.id)))
     }
 }

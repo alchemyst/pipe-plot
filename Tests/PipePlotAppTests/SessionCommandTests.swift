@@ -7,6 +7,30 @@ import SwiftUI
 
 @MainActor
 final class SessionCommandTests: XCTestCase {
+    func testVisibleRangeCommandUsesFocusedSessionAndSemanticUndo() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = PipePlotAppModel(databaseURL: directory.appendingPathComponent("selection-command.sqlite"))
+        let ready = try model.store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1))
+        model.refreshAll()
+        let presentation = model.sessionModel(for: ready.sessionID)
+        let target = SessionCommandTarget(focused: presentation, editingText: false)
+        XCTAssertTrue(target.canSelectVisibleRange)
+        let range = model.domain(for: try XCTUnwrap(target.snapshot))
+        target.selectVisibleRange(using: model)
+        let selection = try XCTUnwrap(model.store.snapshot(sessionID: ready.sessionID)?.timeline.selection)
+        XCTAssertEqual(selection.start.timeIntervalSince(range.lowerBound), 0, accuracy: 1)
+        XCTAssertEqual(selection.end.timeIntervalSince(range.upperBound), 0, accuracy: 1)
+        XCTAssertEqual(selection.selectedStreamIDs, [ready.streams[0].id])
+
+        let textTarget = SessionCommandTarget(focused: presentation, editingText: true)
+        XCTAssertFalse(textTarget.canSelectVisibleRange)
+        textTarget.selectVisibleRange(using: model)
+        XCTAssertEqual(try model.store.snapshot(sessionID: ready.sessionID)?.timeline.selection, selection)
+        model.undoManager(for: ready.sessionID).undo()
+        XCTAssertNil(try model.store.snapshot(sessionID: ready.sessionID)?.timeline.selection)
+    }
+
     func testFocusedTargetsRouteOnceAcrossSessionsAndSelectedCharts() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -75,9 +99,11 @@ final class SessionCommandTests: XCTestCase {
             XCTAssertNil(target.snapshot)
             XCTAssertFalse(target.canCreateChart)
             XCTAssertFalse(target.canAddGuide)
+            XCTAssertFalse(target.canSelectVisibleRange)
             target.createChart(using: model)
             target.addTimeGuide(using: model)
             target.requestValueGuide()
+            target.selectVisibleRange(using: model)
         }
         XCTAssertEqual(session.snapshot?.charts.count, 1)
         XCTAssertTrue(session.snapshot?.timeGuides.isEmpty == true)
@@ -87,11 +113,13 @@ final class SessionCommandTests: XCTestCase {
         let closed = SessionCommandTarget(focused: session, editingText: false)
         XCTAssertFalse(closed.canCreateChart)
         XCTAssertFalse(closed.canAddGuide)
+        XCTAssertFalse(closed.canSelectVisibleRange)
         model.openSession(created.id)
         model.deleteSession(created.id)
         let trashed = SessionCommandTarget(focused: session, editingText: false)
         XCTAssertFalse(trashed.canCreateChart)
         XCTAssertFalse(trashed.canAddGuide)
+        XCTAssertFalse(trashed.canSelectVisibleRange)
         trashed.createChart(using: model)
         trashed.addTimeGuide(using: model)
         XCTAssertEqual(session.snapshot?.charts.count, 1)

@@ -28,6 +28,7 @@ struct PlotInteractionOverlay: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PlotInteractionView {
         let view = PlotInteractionView()
+        view.setAccessibilityElement(false)
         view.guideHitRects = guideHitRects
         view.update(
             guides: guides, selectionRange: selectionRange, selectionMode: selectionMode, now: now,

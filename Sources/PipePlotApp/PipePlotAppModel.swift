@@ -553,10 +553,11 @@ final class PipePlotAppModel {
 
     func visibleSamples(
         for chart: ChartSnapshot, session: SessionSnapshot, range requestedRange: ClosedRange<Date>? = nil
-    ) -> (samples: [StreamID: [StoredSample]], current: Set<StreamID>) {
-        guard isDisplayActive(session.id) else { return ([:], []) }
+    ) -> (samples: [StreamID: [StoredSample]], current: Set<StreamID>, ready: Set<StreamID>) {
+        guard isDisplayActive(session.id) else { return ([:], [], []) }
         let range = requestedRange ?? domain(for: session)
         var current: Set<StreamID> = []
+        var ready: Set<StreamID> = []
         let samples = Dictionary(
             uniqueKeysWithValues: chart.streams.filter { $0.isLayoutHidden != true }.map { stream in
                 let key = BackgroundQueries.QueryKey(
@@ -565,9 +566,10 @@ final class PipePlotAppModel {
                 _ = queries.observeDisplay(stream.id)
                 let rows = queries.display(stream.id, key: key)
                 if queries.isCurrentDisplay(stream.id, key: key) { current.insert(stream.id) }
+                if queries.isReadyDisplay(stream.id, key: key) { ready.insert(stream.id) }
                 return (stream.id, rows)
             })
-        return (samples, current)
+        return (samples, current, ready)
     }
     func requestVisibleSamples(
         for chart: ChartSnapshot, session: SessionSnapshot, range requestedRange: ClosedRange<Date>? = nil

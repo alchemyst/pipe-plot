@@ -115,7 +115,7 @@ struct DerivedSeriesPanel: View {
         }.padding(.horizontal, 12).padding(.vertical, 10)
     }
     private func trace(derivative: Bool) -> some View {
-        let points = result?.points ?? []
+        let points = (result?.points ?? []).filter { domain.contains($0.timestamp) }
         let quantity = derivative ? "Rate (\(unit.map { $0 + "/s" } ?? "value/s"))" : "Smoothed (\(unit ?? "value"))"
         let values = points.map { derivative ? $0.derivative : $0.smoothed }
         let range = PlotValueRange.automatic(values)
@@ -154,7 +154,17 @@ struct DerivedSeriesPanel: View {
                         Text(value.formatted(.number.precision(.significantDigits(3)))).font(.system(size: 9))
                             .foregroundStyle(.secondary), at: CGPoint(x: 50, y: y), anchor: .trailing)
                 }
-            }.frame(height: 82)
+            }
+            .frame(height: 82)
+            .accessibilityElement()
+            .accessibilityLabel("\(quantity) derived estimate plot for \(stream.name)")
+            .accessibilityValue(
+                failed
+                    ? "Derived estimates unavailable."
+                    : (result == nil
+                        ? "Calculating derived estimates."
+                        : "\(points.count) estimates in the visible range. Calculated from raw observations with \(stream.derivedSeries?.kernel.title ?? "smoothing"); not raw measurements.")
+            )
         }
     }
 }
