@@ -23,6 +23,7 @@ final class DerivedSeriesAppTests: XCTestCase {
         func stream() throws -> StreamDescriptor {
             try XCTUnwrap(model.sessions[ready.sessionID]?.charts[0].streams[0])
         }
+        model.requestDerivedSeries(try stream(), range: range, sessionID: ready.sessionID)
         var result: DerivedSeriesResult?
         for _ in 0..<100 {
             result = model.derivedSeries(try stream(), range: range, sessionID: ready.sessionID)
@@ -31,6 +32,17 @@ final class DerivedSeriesAppTests: XCTestCase {
         }
         XCTAssertEqual(result?.points.count, 89)
         XCTAssertEqual(result?.points.first?.derivative ?? 0, 10, accuracy: 1e-8)
+        let changed = DerivedSeriesConfiguration(interval: 1, window: 8, maximumGap: 3, referenceCadence: 1)
+        XCTAssertTrue(model.setDerivedSeries(changed, streamID: id))
+        let updated = try stream()
+        model.requestDerivedSeries(updated, range: range, sessionID: ready.sessionID)
+        XCTAssertNil(model.derivedSeries(updated, range: range, sessionID: ready.sessionID))
+        for _ in 0..<100 {
+            result = model.derivedSeries(updated, range: range, sessionID: ready.sessionID)
+            if result != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(result)
         XCTAssertEqual(try model.store.samples.count(streamID: id), 100)
         XCTAssertEqual(
             try model.store.samples.nearestSample(streamID: id, at: start.addingTimeInterval(10))?.value, 100)
@@ -39,9 +51,12 @@ final class DerivedSeriesAppTests: XCTestCase {
         XCTAssertNil(model.derivedSeries(try stream(), range: range, sessionID: ready.sessionID))
         XCTAssertEqual(model.queries.submittedQueryCount, queries)
         model.undo(ready.sessionID)
+        XCTAssertEqual(try stream().derivedSeries, c)
+        model.undo(ready.sessionID)
         XCTAssertNil(try stream().derivedSeries)
         model.redo(ready.sessionID)
-        XCTAssertEqual(try stream().derivedSeries, c)
+        model.redo(ready.sessionID)
+        XCTAssertEqual(try stream().derivedSeries, changed)
         XCTAssertEqual(try model.store.samples.count(streamID: id), 100)
     }
 

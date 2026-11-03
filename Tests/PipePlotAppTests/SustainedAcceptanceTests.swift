@@ -159,6 +159,7 @@ import PipePlotCore
             nav.visibleEnd = start.addingTimeInterval(offset + 900)
             model.navigate(nav, session: current)
             current = try XCTUnwrap(model.sessions[ready.sessionID])
+            model.requestVisibleSamples(for: current.charts[0], session: current)
             var loaded = false
             for _ in 0..<300 {
                 let display = model.visibleSamples(for: current.charts[0], session: current)

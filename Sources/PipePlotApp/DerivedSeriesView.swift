@@ -95,6 +95,8 @@ struct DerivedSeriesPanel: View {
     let hoverDate: Date?
     let edit: () -> Void
     let disable: () -> Void
+    var failed = false
+    var retry: (() -> Void)? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -104,7 +106,10 @@ struct DerivedSeriesPanel: View {
                 Button("Edit…", action: edit)
                 Button("Remove", action: disable)
             }.buttonStyle(.borderless).font(.caption)
-            Text(result?.message ?? "Calculating derived estimates…").font(.caption2).foregroundStyle(.secondary)
+            HStack {
+                Text(result?.message ?? (failed ? "Derived estimates unavailable" : "Calculating derived estimates…"))
+                if failed, let retry { Button("Retry", action: retry) }
+            }.font(.caption2).foregroundStyle(.secondary)
             trace(derivative: false)
             trace(derivative: true)
         }.padding(.horizontal, 12).padding(.vertical, 10)

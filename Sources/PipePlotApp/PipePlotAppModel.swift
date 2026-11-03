@@ -458,6 +458,7 @@ final class PipePlotAppModel {
                     editRevision &+= 1
                 }
                 updateCatalogEntry(value)
+                updateQueryRetention()
                 refreshForecast(value)
             }
         } catch { errorMessage = error.localizedDescription }
@@ -470,13 +471,22 @@ final class PipePlotAppModel {
             // One current snapshot, never replay samples or alter navigation modes.
             tick(id)
         } else {
-            _ = sessionModel(for: id).setDisplayActive(false)
+            guard sessionModel(for: id).setDisplayActive(false) else { return }
+            if let snapshot = sessionModel(for: id).snapshot {
+                queries.suspend(
+                    streamIDs: Set(snapshot.charts.flatMap(\.streams).map(\.id)),
+                    forecastIDs: Set(snapshot.timeline.forecasts.map(\.id)))
+            }
         }
     }
 
     private func isDisplayActive(for stream: StreamID) -> Bool {
         guard let id = streamSessions[stream] else { return true }
         return isDisplayActive(id)
+    }
+    private func canRequestAnalysis(for stream: StreamID) -> Bool {
+        guard let id = streamSessions[stream], let snapshot = sessionModel(for: id).snapshot else { return false }
+        return snapshot.isOpen && !snapshot.isDeleted && sessionModel(for: id).displayActive
     }
 
     func tick(_ id: SessionID, now: Date = Date()) {
@@ -504,10 +514,16 @@ final class PipePlotAppModel {
                     editRevision &+= 1
                 }
             }
+            updateQueryRetention()
             for session in all { refreshForecast(session) }
-            queries.retain(
-                Set(all.filter { $0.isOpen && !$0.isDeleted }.flatMap(\.charts).flatMap(\.streams).map(\.id)))
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func updateQueryRetention() {
+        let active = sessionModels.values.compactMap(\.snapshot).filter { $0.isOpen && !$0.isDeleted }
+        queries.retain(
+            Set(active.flatMap(\.charts).flatMap(\.streams).map(\.id)),
+            forecastIDs: Set(active.flatMap { $0.timeline.forecasts.map(\.id) }))
     }
 
     private func updateCatalog(_ snapshots: [SessionSnapshot]) {
@@ -534,13 +550,49 @@ final class PipePlotAppModel {
                 let key = BackgroundQueries.QueryKey(
                     start: range.lowerBound, end: range.upperBound, count: stream.sampleCount, last: stream.lastSampleAt
                 )
-                let rows = queries.display(stream.id, key: key, store: queryStore) { [weak self] in
-                    self?.errorMessage = $0.localizedDescription
-                }
+                _ = queries.observeDisplay(stream.id)
+                let rows = queries.display(stream.id, key: key)
                 if queries.isCurrentDisplay(stream.id, key: key) { current.insert(stream.id) }
                 return (stream.id, rows)
             })
         return (samples, current)
+    }
+    func requestVisibleSamples(
+        for chart: ChartSnapshot, session: SessionSnapshot, range requestedRange: ClosedRange<Date>? = nil
+    ) {
+        guard let current = sessionModel(for: session.id).snapshot,
+            current.isOpen, !current.isDeleted, isDisplayActive(session.id),
+            current.charts.contains(where: { $0 == chart && $0.isVisible })
+        else { return }
+        let range = requestedRange ?? domain(for: session)
+        for stream in chart.streams {
+            if stream.isLayoutHidden == true {
+                queries.cancelDisplay(stream.id)
+                continue
+            }
+            let key = BackgroundQueries.QueryKey(
+                start: range.lowerBound, end: range.upperBound, count: stream.sampleCount, last: stream.lastSampleAt)
+            queries.requestDisplay(stream.id, key: key, store: queryStore) { [weak self] in
+                self?.errorMessage = $0.localizedDescription
+            }
+        }
+    }
+    func displayFailed(_ stream: StreamID) -> Bool {
+        if case .failed = queries.observeDisplay(stream) { return true }
+        return false
+    }
+    func retryDisplay(_ stream: StreamID) {
+        guard canRequestAnalysis(for: stream) else { return }
+        queries.retryDisplay(stream)
+    }
+    func cancelChartQueries(for chart: ChartSnapshot, sessionID: SessionID) {
+        let current = sessionModel(for: sessionID).snapshot?.charts.first { $0.id == chart.id }
+        guard current == chart else { return }
+        for stream in chart.streams {
+            queries.cancelDisplay(stream.id)
+            queries.cancelDerived(stream.id)
+            queries.cancelNearest(stream.id)
+        }
     }
     func suggestedDerivedInterval(_ id: StreamID) async -> Double? {
         await queries.suggestedInterval(id, store: queryStore)
@@ -559,10 +611,34 @@ final class PipePlotAppModel {
         -> DerivedSeriesResult?
     {
         guard isDisplayActive(sessionID), let configuration = stream.derivedSeries else { return nil }
+        _ = queries.observeDerived(stream.id)
         return queries.derivedSeries(
-            stream.id, key: queryKey(stream.id, range: range), configuration: configuration,
-            live: stream.state == .live || stream.state == .quiet, store: queryStore)
+            stream.id,
+            key: .init(
+                query: queryKey(stream.id, range: range), configuration: configuration,
+                live: stream.state == .live || stream.state == .quiet))
     }
+    func requestDerivedSeries(_ stream: StreamDescriptor, range: ClosedRange<Date>, sessionID: SessionID) {
+        guard streamSessions[stream.id] == sessionID, canRequestAnalysis(for: stream.id),
+            let currentStream = sessionModel(for: sessionID).snapshot?.charts.flatMap(\.streams).first(where: {
+                $0.id == stream.id
+            }), currentStream == stream, let configuration = stream.derivedSeries
+        else { return }
+        queries.requestDerived(
+            stream.id,
+            key: .init(
+                query: queryKey(stream.id, range: range), configuration: configuration,
+                live: stream.state == .live || stream.state == .quiet), store: queryStore)
+    }
+    func derivedFailed(_ stream: StreamID) -> Bool {
+        if case .failed = queries.observeDerived(stream) { return true }
+        return false
+    }
+    func retryDerived(_ stream: StreamID) {
+        guard canRequestAnalysis(for: stream) else { return }
+        queries.retryDerived(stream)
+    }
+    func cancelDerived(_ stream: StreamID) { queries.cancelDerived(stream) }
     private func queryKey(_ stream: StreamID, range: ClosedRange<Date>) -> BackgroundQueries.QueryKey {
         let descriptor = streamSessions[stream].flatMap { sessionModel(for: $0).snapshot }?
             .charts.flatMap(\.streams).first { $0.id == stream }
@@ -609,10 +685,25 @@ final class PipePlotAppModel {
     func stats(for stream: StreamID, in selection: TimeSelection) -> SelectionStatistics? {
         guard isDisplayActive(for: stream) else { return nil }
         let range = selection.resolvedBounds(at: sessionNow(for: stream))
-        return queries.stats(stream, key: queryKey(stream, range: range), store: queryStore) { [weak self] in
+        _ = queries.observeStatistics(stream)
+        return queries.stats(stream, key: queryKey(stream, range: range))
+    }
+    func requestStats(for stream: StreamID, in selection: TimeSelection) {
+        guard canRequestAnalysis(for: stream) else { return }
+        let range = selection.resolvedBounds(at: sessionNow(for: stream))
+        queries.requestStats(stream, key: queryKey(stream, range: range), store: queryStore) { [weak self] in
             self?.errorMessage = $0.localizedDescription
         }
     }
+    func statisticsFailed(_ stream: StreamID) -> Bool {
+        if case .failed = queries.observeStatistics(stream) { return true }
+        return false
+    }
+    func retryStats(_ stream: StreamID) {
+        guard canRequestAnalysis(for: stream) else { return }
+        queries.retryStatistics(stream)
+    }
+    func cancelStats(_ stream: StreamID) { queries.cancelStatistics(stream) }
     func setTimeZone(_ zone: PlotTimeZone, session: SessionSnapshot) {
         do {
             try store.setTimeZone(zone, sessionID: session.id)
@@ -630,12 +721,31 @@ final class PipePlotAppModel {
     }
     func nearestSample(_ stream: StreamID, at date: Date) -> StoredSample? {
         guard isDisplayActive(for: stream) else { return nil }
-        return queries.nearestSample(stream, key: queryKey(stream, range: date...date), store: queryStore)
+        _ = queries.observeNearest(stream)
+        return queries.nearestSample(stream, key: queryKey(stream, range: date...date))
     }
+    func requestNearestSample(_ stream: StreamID, at date: Date) {
+        guard canRequestAnalysis(for: stream) else { return }
+        queries.requestNearest(stream, key: queryKey(stream, range: date...date), store: queryStore)
+    }
+    func nearestFailed(_ stream: StreamID) -> Bool {
+        if case .failed = queries.observeNearest(stream) { return true }
+        return false
+    }
+    func retryNearest(_ stream: StreamID) {
+        guard canRequestAnalysis(for: stream) else { return }
+        queries.retryNearest(stream)
+    }
+    func cancelNearest(_ stream: StreamID) { queries.cancelNearest(stream) }
     func fit(for stream: StreamID, selection: TimeSelection, cacheID: UUID? = nil) -> LinearFit? {
         guard isDisplayActive(for: stream) else { return nil }
         let range = selection.resolvedBounds(at: sessionNow(for: stream))
-        return queries.fit(
+        return queries.fit(cacheID ?? stream, stream: stream, key: queryKey(stream, range: range), settings: selection)
+    }
+    func requestFit(for stream: StreamID, selection: TimeSelection, cacheID: UUID? = nil) {
+        guard canRequestAnalysis(for: stream) else { return }
+        let range = selection.resolvedBounds(at: sessionNow(for: stream))
+        queries.requestFit(
             stream, cacheID: cacheID ?? stream, key: queryKey(stream, range: range), settings: selection,
             store: queryStore,
             completed: { [weak self] in
@@ -646,6 +756,14 @@ final class PipePlotAppModel {
                     self.refreshForecast(session)
                 }
             }, failed: { [weak self] in self?.errorMessage = $0.localizedDescription })
+    }
+    func fitFailed(_ id: UUID) -> Bool {
+        if case .failed = queries.fitState(id) { return true }
+        return false
+    }
+    func retryFit(_ configuration: ForecastConfiguration) {
+        guard canRequestAnalysis(for: configuration.streamID) else { return }
+        queries.retryFit(configuration.id)
     }
     func followNow(_ session: SessionSnapshot) {
         var timeline = session.timeline
@@ -756,6 +874,7 @@ final class PipePlotAppModel {
             }
             let count = chart.streams.first(where: { $0.id == configuration.streamID })?.sampleCount ?? 0
             let range = configuration.selection.resolvedBounds(at: sessionNow(session))
+            requestFit(for: configuration.streamID, selection: configuration.selection, cacheID: configuration.id)
             let fitted = fit(for: configuration.streamID, selection: configuration.selection, cacheID: configuration.id)
             let crossing = fitted?.crossing(value: guide.value)
             let now = sessionNow(session)
@@ -780,7 +899,9 @@ final class PipePlotAppModel {
             } else {
                 message =
                     fitted == nil
-                    ? (queries.isFitting(configuration.id) ? "Calculating…" : "Not enough distinct sample times")
+                    ? (fitFailed(configuration.id)
+                        ? "Could not calculate forecast"
+                        : (queries.isFitting(configuration.id) ? "Calculating…" : "Not enough distinct sample times"))
                     : "No finite crossing predicted"
             }
             return ForecastStatus(
@@ -870,7 +991,7 @@ final class PipePlotAppModel {
         do {
             try store.setSessionOpen(true, sessionID: id)
             openedSessionIDs.insert(id)
-            refresh(id)
+            refreshAll()
         } catch { errorMessage = error.localizedDescription }
     }
     func windowClosed(_ id: SessionID) {

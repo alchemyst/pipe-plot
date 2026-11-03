@@ -393,6 +393,11 @@ private struct SelectionInspector: View {
     private var includedIDs: Set<StreamID> {
         selection.selectedStreamIDs.isEmpty ? streamIDs : selection.selectedStreamIDs.intersection(streamIDs)
     }
+    private struct RequestID: Equatable {
+        let bounds: ClosedRange<Date>
+        let selection: TimeSelection
+        let streams: [StreamDescriptor]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -428,6 +433,21 @@ private struct SelectionInspector: View {
         .overlay(alignment: .top) { Rectangle().fill(.separator).frame(height: 0.5) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Selection inspector")
+        .task(id: RequestID(bounds: bounds, selection: selection, streams: streams)) {
+            for stream in streams {
+                if includedIDs.contains(stream.id) {
+                    model.requestStats(for: stream.id, in: selection)
+                } else {
+                    model.cancelStats(stream.id)
+                }
+            }
+        }
+        .onDisappear {
+            let current = model.sessionModel(for: session.id).snapshot?.timeline.selection
+            if current == nil || current == selection {
+                for stream in streams { model.cancelStats(stream.id) }
+            }
+        }
         .sheet(item: $forecastTarget) { stream in
             let unit = charts.first { $0.streams.contains { $0.id == stream.id } }?.settings.unit
             VStack(alignment: .leading, spacing: 14) {
@@ -569,8 +589,15 @@ private struct SelectionInspector: View {
                     "min \(format(stats.minimum)) · max \(format(stats.maximum)) · sample-weighted mean \(format(stats.mean)) · Δ \(format(stats.change))"
                 )
             } else {
-                Text(model.isCalculatingStats(stream.id) ? "Calculating…" : "No samples in range").foregroundStyle(
-                    .secondary)
+                if model.statisticsFailed(stream.id) {
+                    HStack {
+                        Text("Statistics unavailable")
+                        Button("Retry") { model.retryStats(stream.id) }
+                    }.foregroundStyle(.secondary)
+                } else {
+                    Text(model.isCalculatingStats(stream.id) ? "Calculating…" : "No samples in range")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .font(.caption2.monospacedDigit())
@@ -618,6 +645,16 @@ private struct ChartRowHost: View {
     @Binding var selectedChartID: ChartID?
     private var target: StreamDropTarget { StreamDropTarget(sessionID: session.id, destination: .onto(chart.id)) }
     private var mergeTargeted: Bool { target.isTargeted(model) }
+    private struct DisplayRequestID: Equatable {
+        let chart: ChartSnapshot
+        let range: ClosedRange<Date>
+        let active: Bool
+    }
+    private struct HoverRequestID: Equatable {
+        let streams: [StreamDescriptor]
+        let date: Date?
+        let active: Bool
+    }
 
     var body: some View {
         let display = model.visibleSamples(for: chart, session: session, range: gestures.domain)
@@ -642,6 +679,55 @@ private struct ChartRowHost: View {
         )
         .onTapGesture {
             selectedChartID = chart.id
+        }
+        .task(
+            id: DisplayRequestID(
+                chart: chart, range: gestures.domain ?? model.domain(for: session), active: sessionModel.displayActive
+            )
+        ) {
+            guard sessionModel.displayActive else { return }
+            let range = gestures.domain ?? model.domain(for: session)
+            model.requestVisibleSamples(for: chart, session: session, range: range)
+            for stream in chart.streams {
+                if stream.isLayoutHidden != true && stream.derivedSeries != nil {
+                    model.requestDerivedSeries(stream, range: range, sessionID: session.id)
+                } else {
+                    model.cancelDerived(stream.id)
+                }
+            }
+        }
+        .task(
+            id: HoverRequestID(
+                streams: chart.streams, date: hoverDate, active: sessionModel.displayActive
+            )
+        ) {
+            guard sessionModel.displayActive, let hoverDate else { return }
+            for stream in chart.streams {
+                if stream.isLayoutHidden == true {
+                    model.cancelNearest(stream.id)
+                } else {
+                    model.requestNearestSample(stream.id, at: hoverDate)
+                }
+            }
+        }
+        .onChange(of: hoverDate) { _, date in
+            if date == nil {
+                for stream in chart.streams { model.cancelNearest(stream.id) }
+            }
+        }
+        .onDisappear { model.cancelChartQueries(for: chart, sessionID: session.id) }
+        .overlay(alignment: .bottomLeading) {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(chart.streams.filter { $0.isLayoutHidden != true && model.displayFailed($0.id) }) { stream in
+                    HStack {
+                        Text("Chart samples unavailable for \(stream.name)")
+                        Button("Retry") { model.retryDisplay(stream.id) }
+                    }
+                    .font(.caption)
+                    .padding(6)
+                    .background(.regularMaterial)
+                }
+            }
         }
         .overlay(
             RoundedRectangle(cornerRadius: 13).stroke(
@@ -896,6 +982,10 @@ private struct ChartRow: View {
                                     let offset = sample.timestamp.timeIntervalSince(hoverDate)
                                     Text(hoverReadout(stream: stream, sample: sample, offset: offset))
                                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                } else if model.nearestFailed(stream.id) {
+                                    Text("\(stream.name): readout unavailable").font(.caption).foregroundStyle(
+                                        .secondary)
+                                    Button("Retry") { model.retryNearest(stream.id) }.font(.caption)
                                 }
                             }
                         }.padding(.horizontal, 15)
@@ -912,7 +1002,9 @@ private struct ChartRow: View {
                         result: model.derivedSeries(stream, range: plotDomain, sessionID: session.id),
                         hoverDate: hoverDate,
                         edit: { derivedStream = stream },
-                        disable: { model.setDerivedSeries(nil, streamID: stream.id) })
+                        disable: { model.setDerivedSeries(nil, streamID: stream.id) },
+                        failed: model.derivedFailed(stream.id),
+                        retry: { model.retryDerived(stream.id) })
                 }
             }
             ForEach(
@@ -932,6 +1024,9 @@ private struct ChartRow: View {
                     Button("Disable") { model.removeForecast(status.configuration.id, session: session) }.buttonStyle(
                         .borderless
                     ).font(.caption)
+                    if model.fitFailed(status.configuration.id) {
+                        Button("Retry") { model.retryFit(status.configuration) }.buttonStyle(.borderless).font(.caption)
+                    }
                 }.padding(.horizontal, 15).padding(.bottom, 10)
             }
         }

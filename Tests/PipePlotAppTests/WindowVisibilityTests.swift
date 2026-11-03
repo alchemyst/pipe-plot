@@ -60,6 +60,7 @@ final class WindowVisibilityTests: XCTestCase {
         XCTAssertEqual(model.queries.submittedQueryCount, queries)
         model.setDisplayActive(true, for: ready.sessionID)
         let revealed = try XCTUnwrap(model.sessions[ready.sessionID])
+        model.requestVisibleSamples(for: revealed.charts[0], session: revealed)
         XCTAssertEqual(revealed.charts[0].streams[0].sampleCount, 11)
         XCTAssertEqual(revealed.timeline, before.timeline)
         XCTAssertEqual(model.sessionModel(for: ready.sessionID).selectedChartID, ready.chartID)

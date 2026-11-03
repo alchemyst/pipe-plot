@@ -1,4 +1,5 @@
 import XCTest
+import Synchronization
 @testable import PipePlotApp
 import PipePlotCore
 
@@ -102,20 +103,160 @@ final class BackgroundAnalysisTests: XCTestCase {
         let first = BackgroundQueries.QueryKey(start: start, end: start.addingTimeInterval(1), count: 4, last: nil)
         let second = BackgroundQueries.QueryKey(
             start: start.addingTimeInterval(2), end: start.addingTimeInterval(3), count: 4, last: nil)
-        XCTAssertNil(queries.stats(id, key: first, store: store.samples) { XCTFail("\($0)") })
+        queries.requestStats(id, key: first, store: store.samples) { XCTFail("\($0)") }
+        XCTAssertNil(queries.stats(id, key: first))
         var result: SelectionStatistics?
         for _ in 0..<50 {
-            result = queries.stats(id, key: first, store: store.samples) { XCTFail("\($0)") }
+            result = queries.stats(id, key: first)
             if result != nil { break }
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(try XCTUnwrap(result).mean, 0.5)
-        XCTAssertNil(queries.stats(id, key: second, store: store.samples) { XCTFail("\($0)") })
+        queries.requestStats(id, key: second, store: store.samples) { XCTFail("\($0)") }
+        XCTAssertNil(queries.stats(id, key: second))
         for _ in 0..<50 {
-            result = queries.stats(id, key: second, store: store.samples) { XCTFail("\($0)") }
+            result = queries.stats(id, key: second)
             if result != nil { break }
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(try XCTUnwrap(result).mean, 2.5)
+    }
+
+    func testRapidRequestsAndRepeatedEvictionKeepOneRunningAndLatestDesired() async throws {
+        let queue = DispatchQueue(label: "issue29-blocked-worker")
+        let gate = DispatchSemaphore(value: 0)
+        let started = DispatchSemaphore(value: 0)
+        let slot = BackgroundQueries.Slot<Int, Int>()
+        var submissions = 0
+        let operation: @Sendable (Int) -> Result<Int, Error> = { key in
+            if key == 1 {
+                started.signal()
+                _ = gate.wait(timeout: .now() + 3)
+            }
+            return .success(key)
+        }
+        slot.request(1, on: queue, operation: operation, submitted: { submissions += 1 })
+        XCTAssertEqual(started.wait(timeout: .now() + 1), .success)
+        for key in 2...50 {
+            slot.request(key, on: queue, operation: operation, submitted: { submissions += 1 })
+        }
+        XCTAssertEqual(submissions, 1)
+        for _ in 0..<10 { slot.cancel() }
+        slot.request(51, on: queue, operation: operation, submitted: { submissions += 1 })
+        XCTAssertEqual(submissions, 1, "Eviction/re-request must reuse the in-flight scheduler slot")
+        gate.signal()
+        for _ in 0..<100 {
+            if slot.exact(51) == 51 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(slot.exact(51), 51)
+        XCTAssertEqual(submissions, 2)
+        XCTAssertNil(slot.exact(1))
+    }
+
+    func testFailureNeedsExplicitRetry() async throws {
+        enum ProbeError: Error { case failed }
+        let queue = DispatchQueue(label: "issue29-retry-worker")
+        let slot = BackgroundQueries.Slot<Int, Int>()
+        let attempts = Mutex(0)
+        var submissions = 0
+        let operation: @Sendable (Int) -> Result<Int, Error> = { key in
+            let attempt = attempts.withLock { value in
+                value += 1
+                return value
+            }
+            return attempt == 1 ? .failure(ProbeError.failed) : .success(key)
+        }
+        slot.request(7, on: queue, operation: operation, submitted: { submissions += 1 })
+        for _ in 0..<100 {
+            if case .failed = slot.state { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        if case .failed = slot.state {} else { XCTFail("Expected a typed failure") }
+        slot.request(7, on: queue, operation: operation, submitted: { submissions += 1 })
+        XCTAssertEqual(submissions, 1)
+        slot.retry(on: queue) { submissions += 1 }
+        for _ in 0..<100 {
+            if slot.exact(7) == 7 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(slot.exact(7), 7)
+        XCTAssertEqual(submissions, 2)
+    }
+
+    func testCancelAndRequestSameKeyWaitsForOldScanThenRunsAgain() async throws {
+        let queue = DispatchQueue(label: "issue29-same-key-worker")
+        let gate = DispatchSemaphore(value: 0)
+        let started = DispatchSemaphore(value: 0)
+        let attempts = Mutex(0)
+        let slot = BackgroundQueries.Slot<Int, Int>()
+        var submissions = 0
+        let operation: @Sendable (Int) -> Result<Int, Error> = { key in
+            let attempt = attempts.withLock { value in
+                value += 1
+                return value
+            }
+            if attempt == 1 {
+                started.signal()
+                _ = gate.wait(timeout: .now() + 3)
+            }
+            return .success(key)
+        }
+        slot.request(7, on: queue, operation: operation, submitted: { submissions += 1 })
+        XCTAssertEqual(started.wait(timeout: .now() + 1), .success)
+        slot.cancel()
+        slot.request(7, on: queue, operation: operation, submitted: { submissions += 1 })
+        XCTAssertEqual(submissions, 1)
+        gate.signal()
+        for _ in 0..<100 {
+            if slot.exact(7) == 7 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(slot.exact(7), 7)
+        XCTAssertEqual(submissions, 2)
+    }
+
+    func testClosedSessionRejectsDelayedRequestsAndReopenRetainsResults() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = PipePlotAppModel(databaseURL: directory.appendingPathComponent("test.sqlite"))
+        let ready = try model.store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1))
+        let start = Date(timeIntervalSince1970: 1000)
+        for i in 0..<4 {
+            _ = try model.store.append(
+                SampleRow(timestamp: start.addingTimeInterval(Double(i)), values: [Double(i)]), to: ready.attachmentID)
+        }
+        model.refreshAll()
+        let selection = TimeSelection(start: start, end: start.addingTimeInterval(3))
+        let old = try XCTUnwrap(model.sessions[ready.sessionID])
+        model.windowClosed(ready.sessionID)
+        let baseline = model.queries.submittedQueryCount
+        model.requestVisibleSamples(for: old.charts[0], session: old, range: start...start.addingTimeInterval(3))
+        model.requestStats(for: ready.streams[0].id, in: selection)
+        model.requestNearestSample(ready.streams[0].id, at: start)
+        model.requestFit(for: ready.streams[0].id, selection: selection)
+        model.requestDerivedSeries(
+            StreamDescriptor(
+                id: ready.streams[0].id, name: "test",
+                derivedSeries: DerivedSeriesConfiguration(interval: 1, window: 3, maximumGap: 2, referenceCadence: 1)),
+            range: start...start.addingTimeInterval(3), sessionID: ready.sessionID)
+        XCTAssertEqual(model.queries.submittedQueryCount, baseline)
+        model.openSession(ready.sessionID)
+        let reopened = try XCTUnwrap(model.sessions[ready.sessionID])
+        model.requestVisibleSamples(
+            for: reopened.charts[0], session: reopened, range: start...start.addingTimeInterval(3))
+        for _ in 0..<100 {
+            if model.visibleSamples(
+                for: reopened.charts[0], session: reopened, range: start...start.addingTimeInterval(3)
+            ).samples[ready.streams[0].id]?.count == 4 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(
+            model.visibleSamples(
+                for: reopened.charts[0], session: reopened, range: start...start.addingTimeInterval(3)
+            ).samples[ready.streams[0].id]?.count, 4)
+        XCTAssertEqual(model.queries.submittedQueryCount, baseline + 1)
     }
 }

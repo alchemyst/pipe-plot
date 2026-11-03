@@ -34,6 +34,7 @@ final class SessionModelTests: XCTestCase {
         let bSnapshot = try XCTUnwrap(bModel.snapshot)
         let bClock = bModel.clockPulse
         let selection = TimeSelection(start: start, end: start.addingTimeInterval(2))
+        model.requestStats(for: b.streams[0].id, in: selection)
         for _ in 0..<50 {
             if model.stats(for: b.streams[0].id, in: selection) != nil { break }
             try await Task.sleep(for: .milliseconds(20))
