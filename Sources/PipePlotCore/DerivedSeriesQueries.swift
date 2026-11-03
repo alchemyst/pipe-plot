@@ -41,24 +41,24 @@ extension SampleStore {
         defer { lock.unlock() }
         // Receipt jitter needs interpolation; a sustained material cadence speedup
         // instead requires a finer grid. Do not silently decimate that new regime.
-        var recentStatement: OpaquePointer?
-        try prepare(
-            "SELECT timestamp,sequence,value,segment_id FROM samples WHERE stream_id=? ORDER BY timestamp DESC,sequence DESC LIMIT 129",
-            &recentStatement)
-        defer { sqlite3_finalize(recentStatement) }
-        bindText(recentStatement, 1, streamID.uuidString.lowercased())
+        let recentStatement = try self.statement(
+            "SELECT timestamp,sequence,value,segment_id FROM samples WHERE stream_id=? ORDER BY timestamp DESC,sequence DESC LIMIT 129"
+        )
+        defer { recentStatement.close() }
+
+        try recentStatement.text(streamID.uuidString.lowercased(), at: 1)
         var recent: [StoredSample] = []
-        var recentRC = sqlite3_step(recentStatement)
-        while recentRC == SQLITE_ROW {
+        var recentRC = try recentStatement.step()
+        while recentRC == .row {
             recent.append(
                 StoredSample(
-                    timestamp: Date(timeIntervalSince1970: sqlite3_column_double(recentStatement, 0)),
-                    sequence: UInt64(sqlite3_column_int64(recentStatement, 1)),
-                    value: sqlite3_column_double(recentStatement, 2),
-                    segmentID: sqlite3_column_text(recentStatement, 3).map { String(cString: $0) }))
-            recentRC = sqlite3_step(recentStatement)
+                    timestamp: Date(timeIntervalSince1970: sqlite3_column_double(recentStatement.raw, 0)),
+                    sequence: UInt64(sqlite3_column_int64(recentStatement.raw, 1)),
+                    value: sqlite3_column_double(recentStatement.raw, 2),
+                    segmentID: sqlite3_column_text(recentStatement.raw, 3).map { String(cString: $0) }))
+            recentRC = try recentStatement.step()
         }
-        guard recentRC == SQLITE_DONE else { throw SampleStoreError.sql(String(cString: sqlite3_errmsg(db))) }
+        guard recentRC == .done else { throw SampleStoreError.sql(String(cString: sqlite3_errmsg(db))) }
         if let cadence = Self.cadence(Array(recent.reversed())), cadence < c.interval * 0.8 {
             throw DerivedSeriesError.downsampling
         }
@@ -66,14 +66,14 @@ extension SampleStore {
             return DerivedSeriesResult(points: [], message: "Waiting for observations", processedSamples: 0)
         }
         let padding = c.delay + c.maximumGap + c.interval
-        var stmt: OpaquePointer?
-        try prepare(
-            "SELECT timestamp,sequence,value,segment_id FROM samples WHERE stream_id=? AND timestamp>=? AND timestamp<=? ORDER BY timestamp,sequence",
-            &stmt)
-        defer { sqlite3_finalize(stmt) }
-        bindText(stmt, 1, streamID.uuidString.lowercased())
-        sqlite3_bind_double(stmt, 2, start.addingTimeInterval(-padding).timeIntervalSince1970)
-        sqlite3_bind_double(stmt, 3, end.addingTimeInterval(padding).timeIntervalSince1970)
+        let stmt = try self.statement(
+            "SELECT timestamp,sequence,value,segment_id FROM samples WHERE stream_id=? AND timestamp>=? AND timestamp<=? ORDER BY timestamp,sequence"
+        )
+        defer { stmt.close() }
+
+        try stmt.text(streamID.uuidString.lowercased(), at: 1)
+        try stmt.double(start.addingTimeInterval(-padding).timeIntervalSince1970, at: 2)
+        try stmt.double(end.addingTimeInterval(padding).timeIntervalSince1970, at: 3)
         var processor = try DerivedSeriesProcessor(configuration: c, origin: origin)
         var buckets = [[DerivedPoint]](repeating: [], count: bucketCount), processed = 0
         let span = max(c.interval, end.timeIntervalSince(start))
@@ -98,17 +98,17 @@ extension SampleStore {
                 if result.last?.timestamp != item.timestamp { result.append(item) }
             }
         }
-        var rc = sqlite3_step(stmt)
-        while rc == SQLITE_ROW {
+        var rc = try stmt.step()
+        while rc == .row {
             let sample = StoredSample(
-                timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 0)),
-                sequence: UInt64(sqlite3_column_int64(stmt, 1)), value: sqlite3_column_double(stmt, 2),
-                segmentID: sqlite3_column_text(stmt, 3).map { String(cString: $0) })
+                timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt.raw, 0)),
+                sequence: UInt64(sqlite3_column_int64(stmt.raw, 1)), value: sqlite3_column_double(stmt.raw, 2),
+                segmentID: sqlite3_column_text(stmt.raw, 3).map { String(cString: $0) })
             try processor.append(sample, emit: collect)
             processed += 1
-            rc = sqlite3_step(stmt)
+            rc = try stmt.step()
         }
-        guard rc == SQLITE_DONE else { throw SampleStoreError.sql(String(cString: sqlite3_errmsg(db))) }
+        guard rc == .done else { throw SampleStoreError.sql(String(cString: sqlite3_errmsg(db))) }
         if !live { processor.finish(emit: collect) }
         let points = buckets.flatMap { $0 }
         let message =

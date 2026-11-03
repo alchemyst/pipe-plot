@@ -27,35 +27,51 @@ public final class SampleStore: @unchecked Sendable {
         else {
             let msg = db.map { String(cString: sqlite3_errmsg($0)) } ?? "could not open database"
             if let db { sqlite3_close(db) }
+            db = nil
             throw SampleStoreError.open(msg)
         }
-        try execute(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS samples(stream_id TEXT NOT NULL, timestamp REAL NOT NULL, sequence INTEGER NOT NULL, value REAL NOT NULL, PRIMARY KEY(stream_id, sequence)); CREATE INDEX IF NOT EXISTS samples_by_time ON samples(stream_id,timestamp,sequence);"
-        )
-        try? execute("ALTER TABLE samples ADD COLUMN segment_id TEXT")
-        try execute(
-            "CREATE TABLE IF NOT EXISTS stream_meta(stream_id TEXT PRIMARY KEY, sample_count INTEGER NOT NULL DEFAULT 0, first_time REAL, last_time REAL, next_sequence INTEGER NOT NULL DEFAULT 0);"
-        )
-        // Separate append and mutation revisions let a reader reuse unchanged
-        // membership after out-of-range arrivals, while remaps always invalidate.
-        try execute(
-            """
-            CREATE TABLE IF NOT EXISTS fit_versions(stream_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0, mutation INTEGER NOT NULL DEFAULT 0);
-            CREATE TRIGGER IF NOT EXISTS fit_insert AFTER INSERT ON samples BEGIN
-                INSERT INTO fit_versions(stream_id,revision) VALUES(NEW.stream_id,1)
-                ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1;
-            END;
-            CREATE TRIGGER IF NOT EXISTS fit_delete AFTER DELETE ON samples BEGIN
-                INSERT INTO fit_versions(stream_id,revision,mutation) VALUES(OLD.stream_id,1,1)
-                ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1,mutation=mutation+1;
-            END;
-            CREATE TRIGGER IF NOT EXISTS fit_update AFTER UPDATE ON samples BEGIN
-                INSERT INTO fit_versions(stream_id,revision,mutation) VALUES(OLD.stream_id,1,1)
-                ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1,mutation=mutation+1;
-                INSERT INTO fit_versions(stream_id,revision,mutation) VALUES(NEW.stream_id,1,1)
-                ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1,mutation=mutation+1;
-            END;
-            """)
+        do {
+            try execute(
+                "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS samples(stream_id TEXT NOT NULL, timestamp REAL NOT NULL, sequence INTEGER NOT NULL, value REAL NOT NULL, PRIMARY KEY(stream_id, sequence)); CREATE INDEX IF NOT EXISTS samples_by_time ON samples(stream_id,timestamp,sequence);"
+            )
+            let columns = try self.statement("PRAGMA table_info(samples)")
+            defer { columns.close() }
+            var hasSegmentID = false
+            while try columns.step() == .row {
+                if let name = sqlite3_column_text(columns.raw, 1), String(cString: name) == "segment_id" {
+                    hasSegmentID = true
+                }
+            }
+            columns.close()
+            if !hasSegmentID { try execute("ALTER TABLE samples ADD COLUMN segment_id TEXT") }
+            try execute(
+                "CREATE TABLE IF NOT EXISTS stream_meta(stream_id TEXT PRIMARY KEY, sample_count INTEGER NOT NULL DEFAULT 0, first_time REAL, last_time REAL, next_sequence INTEGER NOT NULL DEFAULT 0);"
+            )
+            // Separate append and mutation revisions let a reader reuse unchanged
+            // membership after out-of-range arrivals, while remaps always invalidate.
+            try execute(
+                """
+                CREATE TABLE IF NOT EXISTS fit_versions(stream_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0, mutation INTEGER NOT NULL DEFAULT 0);
+                CREATE TRIGGER IF NOT EXISTS fit_insert AFTER INSERT ON samples BEGIN
+                    INSERT INTO fit_versions(stream_id,revision) VALUES(NEW.stream_id,1)
+                    ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS fit_delete AFTER DELETE ON samples BEGIN
+                    INSERT INTO fit_versions(stream_id,revision,mutation) VALUES(OLD.stream_id,1,1)
+                    ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1,mutation=mutation+1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS fit_update AFTER UPDATE ON samples BEGIN
+                    INSERT INTO fit_versions(stream_id,revision,mutation) VALUES(OLD.stream_id,1,1)
+                    ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1,mutation=mutation+1;
+                    INSERT INTO fit_versions(stream_id,revision,mutation) VALUES(NEW.stream_id,1,1)
+                    ON CONFLICT(stream_id) DO UPDATE SET revision=revision+1,mutation=mutation+1;
+                END;
+                """)
+        } catch {
+            if let db { sqlite3_close(db) }
+            db = nil
+            throw error
+        }
     }
     /// Independent WAL reader for UI analysis. It cannot write and does not hold
     /// the ingestion connection's lock while scanning a long historical range.
@@ -69,7 +85,13 @@ public final class SampleStore: @unchecked Sendable {
             db = nil
             throw SampleStoreError.open(message)
         }
-        try execute("PRAGMA query_only=ON;")
+        do {
+            try execute("PRAGMA query_only=ON;")
+        } catch {
+            if let db { sqlite3_close(db) }
+            db = nil
+            throw error
+        }
     }
     deinit { if let db { sqlite3_close(db) } }
 
@@ -115,56 +137,53 @@ public final class SampleStore: @unchecked Sendable {
         defer { lock.unlock() }
         let sql =
             "SELECT timestamp,sequence,value,segment_id FROM samples WHERE stream_id=? AND (? IS NULL OR timestamp>=?) AND (? IS NULL OR timestamp<=?) ORDER BY timestamp,sequence LIMIT ?"
-        var stmt: OpaquePointer?
-        try prepare(sql, &stmt)
-        defer { sqlite3_finalize(stmt) }
-        bindText(stmt, 1, streamID.uuidString.lowercased())
-        bindOptionalDouble(stmt, 2, start?.timeIntervalSince1970)
-        bindOptionalDouble(stmt, 3, start?.timeIntervalSince1970)
-        bindOptionalDouble(stmt, 4, end?.timeIntervalSince1970)
-        bindOptionalDouble(stmt, 5, end?.timeIntervalSince1970)
-        sqlite3_bind_int64(stmt, 6, sqlite3_int64(limit))
+        let stmt = try self.statement(sql)
+        defer { stmt.close() }
+        try stmt.text(streamID.uuidString.lowercased(), at: 1)
+        try stmt.optionalDouble(start?.timeIntervalSince1970, at: 2)
+        try stmt.optionalDouble(start?.timeIntervalSince1970, at: 3)
+        try stmt.optionalDouble(end?.timeIntervalSince1970, at: 4)
+        try stmt.optionalDouble(end?.timeIntervalSince1970, at: 5)
+        try stmt.int64(Int64(limit), at: 6)
         var result: [StoredSample] = []
         result.reserveCapacity(min(limit, 4096))
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        while try stmt.step() == .row {
             result.append(
                 StoredSample(
-                    timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 0)),
-                    sequence: UInt64(sqlite3_column_int64(stmt, 1)), value: sqlite3_column_double(stmt, 2),
-                    segmentID: sqlite3_column_text(stmt, 3).map { String(cString: $0) }))
+                    timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt.raw, 0)),
+                    sequence: UInt64(sqlite3_column_int64(stmt.raw, 1)), value: sqlite3_column_double(stmt.raw, 2),
+                    segmentID: sqlite3_column_text(stmt.raw, 3).map { String(cString: $0) }))
         }
         return result
     }
     public func count(streamID: StreamID, from start: Date? = nil, to end: Date? = nil) throws -> Int64 {
         lock.lock()
         defer { lock.unlock() }
-        var stmt: OpaquePointer?
-        try prepare(
+        let stmt = try self.statement(
             "SELECT COUNT(*) FROM samples WHERE stream_id=? AND (? IS NULL OR timestamp>=?) AND (? IS NULL OR timestamp<=?)",
-            &stmt)
-        defer { sqlite3_finalize(stmt) }
-        bindText(stmt, 1, streamID.uuidString.lowercased())
-        bindOptionalDouble(stmt, 2, start?.timeIntervalSince1970)
-        bindOptionalDouble(stmt, 3, start?.timeIntervalSince1970)
-        bindOptionalDouble(stmt, 4, end?.timeIntervalSince1970)
-        bindOptionalDouble(stmt, 5, end?.timeIntervalSince1970)
-        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
-        return sqlite3_column_int64(stmt, 0)
+        )
+        defer { stmt.close() }
+        try stmt.text(streamID.uuidString.lowercased(), at: 1)
+        try stmt.optionalDouble(start?.timeIntervalSince1970, at: 2)
+        try stmt.optionalDouble(start?.timeIntervalSince1970, at: 3)
+        try stmt.optionalDouble(end?.timeIntervalSince1970, at: 4)
+        try stmt.optionalDouble(end?.timeIntervalSince1970, at: 5)
+        guard try stmt.step() == .row else { throw SampleStoreError.sql("Count query returned no row") }
+        return sqlite3_column_int64(stmt.raw, 0)
     }
     public func bounds(streamID: StreamID) throws -> SampleBounds {
         lock.lock()
         defer { lock.unlock() }
-        var stmt: OpaquePointer?
-        try prepare("SELECT MIN(timestamp),MAX(timestamp) FROM samples WHERE stream_id=?", &stmt)
-        defer { sqlite3_finalize(stmt) }
-        bindText(stmt, 1, streamID.uuidString.lowercased())
-        guard sqlite3_step(stmt) == SQLITE_ROW else { return SampleBounds(first: nil, last: nil) }
+        let stmt = try self.statement("SELECT MIN(timestamp),MAX(timestamp) FROM samples WHERE stream_id=?")
+        defer { stmt.close() }
+        try stmt.text(streamID.uuidString.lowercased(), at: 1)
+        guard try stmt.step() == .row else { throw SampleStoreError.sql("Bounds query returned no row") }
         let first =
-            sqlite3_column_type(stmt, 0) == SQLITE_NULL
-            ? nil : Date(timeIntervalSince1970: sqlite3_column_double(stmt, 0))
+            sqlite3_column_type(stmt.raw, 0) == SQLITE_NULL
+            ? nil : Date(timeIntervalSince1970: sqlite3_column_double(stmt.raw, 0))
         let last =
-            sqlite3_column_type(stmt, 1) == SQLITE_NULL
-            ? nil : Date(timeIntervalSince1970: sqlite3_column_double(stmt, 1))
+            sqlite3_column_type(stmt.raw, 1) == SQLITE_NULL
+            ? nil : Date(timeIntervalSince1970: sqlite3_column_double(stmt.raw, 1))
         return SampleBounds(first: first, last: last)
     }
     public func delete(streamID: StreamID) throws {
@@ -176,47 +195,40 @@ public final class SampleStore: @unchecked Sendable {
     }
 
     private func nextSequence(for id: String) throws -> UInt64 {
-        var stmt: OpaquePointer?
-        try prepare("INSERT OR IGNORE INTO stream_meta(stream_id) VALUES(?)", &stmt)
-        bindText(stmt, 1, id)
-        let r = sqlite3_step(stmt)
-        sqlite3_finalize(stmt)
-        try check(r)
-        try prepare(
-            "UPDATE stream_meta SET next_sequence=next_sequence+1 WHERE stream_id=? RETURNING next_sequence-1", &stmt)
-        bindText(stmt, 1, id)
-        guard sqlite3_step(stmt) == SQLITE_ROW else {
-            sqlite3_finalize(stmt)
-            throw error("could not allocate sequence")
-        }
-        let seq = UInt64(sqlite3_column_int64(stmt, 0))
-        sqlite3_finalize(stmt)
+        let insert = try self.statement("INSERT OR IGNORE INTO stream_meta(stream_id) VALUES(?)")
+        defer { insert.close() }
+        try insert.text(id, at: 1)
+        guard try insert.step() == .done else { throw SampleStoreError.sql("Could not insert stream metadata") }
+        insert.close()
+        let stmt = try self.statement(
+            "UPDATE stream_meta SET next_sequence=next_sequence+1 WHERE stream_id=? RETURNING next_sequence-1")
+        defer { stmt.close() }
+        try stmt.text(id, at: 1)
+        guard try stmt.step() == .row else { throw SampleStoreError.sql("Could not allocate sequence") }
+        let seq = UInt64(sqlite3_column_int64(stmt.raw, 0))
         return seq
     }
     private func insert(value: Double, time: Double, sequence: UInt64, streamID: String, segmentID: String? = nil)
         throws
     {
-        var stmt: OpaquePointer?
-        try prepare("INSERT INTO samples(stream_id,timestamp,sequence,value,segment_id) VALUES(?,?,?,?,?)", &stmt)
-        defer { sqlite3_finalize(stmt) }
-        bindText(stmt, 1, streamID)
-        sqlite3_bind_double(stmt, 2, time)
-        sqlite3_bind_int64(stmt, 3, sqlite3_int64(sequence))
-        sqlite3_bind_double(stmt, 4, value)
-        if let segmentID { bindText(stmt, 5, segmentID) }
-        let rc = sqlite3_step(stmt)
-        try check(rc)
-        var meta: OpaquePointer?
-        try prepare(
+        let stmt = try self.statement(
+            "INSERT INTO samples(stream_id,timestamp,sequence,value,segment_id) VALUES(?,?,?,?,?)")
+        defer { stmt.close() }
+        try stmt.text(streamID, at: 1)
+        try stmt.double(time, at: 2)
+        try stmt.int64(Int64(sequence), at: 3)
+        try stmt.double(value, at: 4)
+        if let segmentID { try stmt.text(segmentID, at: 5) }
+        guard try stmt.step() == .done else { throw SampleStoreError.sql("Sample insert returned a row") }
+        let meta = try self.statement(
             "INSERT INTO stream_meta(stream_id,sample_count,first_time,last_time,next_sequence) VALUES(?,1,?,?,?) ON CONFLICT(stream_id) DO UPDATE SET sample_count=sample_count+1, first_time=MIN(COALESCE(first_time,excluded.first_time),excluded.first_time),last_time=MAX(COALESCE(last_time,excluded.last_time),excluded.last_time),next_sequence=MAX(next_sequence,excluded.next_sequence)",
-            &meta)
-        bindText(meta, 1, streamID)
-        sqlite3_bind_double(meta, 2, time)
-        sqlite3_bind_double(meta, 3, time)
-        sqlite3_bind_int64(meta, 4, sqlite3_int64(sequence + 1))
-        let mr = sqlite3_step(meta)
-        sqlite3_finalize(meta)
-        try check(mr)
+        )
+        defer { meta.close() }
+        try meta.text(streamID, at: 1)
+        try meta.double(time, at: 2)
+        try meta.double(time, at: 3)
+        try meta.int64(Int64(sequence + 1), at: 4)
+        guard try meta.step() == .done else { throw SampleStoreError.sql("Stream metadata update returned a row") }
     }
     private func execute(_ sql: String) throws {
         var errorText: UnsafeMutablePointer<CChar>?
@@ -227,19 +239,11 @@ public final class SampleStore: @unchecked Sendable {
             throw SampleStoreError.sql(msg)
         }
     }
-    func prepare(_ sql: String, _ stmt: inout OpaquePointer?) throws {
-        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-        try check(rc)
+    func statement(_ sql: String) throws -> SQLiteStatement {
+        guard let db else { throw SampleStoreError.sql("Database connection is closed") }
+        return try SQLiteStatement(db, sql)
     }
-    private func check(_ rc: Int32) throws { if rc != SQLITE_OK && rc != SQLITE_DONE { throw error(errorMessage) } }
-    private func error(_ msg: String) -> SampleStoreError { .sql(msg) }
     private var errorMessage: String { db.map { String(cString: sqlite3_errmsg($0)) } ?? "sqlite error" }
-    func bindText(_ stmt: OpaquePointer?, _ n: Int32, _ s: String) {
-        sqlite3_bind_text(stmt, n, s, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-    }
-    func bindOptionalDouble(_ stmt: OpaquePointer?, _ n: Int32, _ v: Double?) {
-        if let v { sqlite3_bind_double(stmt, n, v) } else { sqlite3_bind_null(stmt, n) }
-    }
 }
 
 public struct StoredSample: Codable, Equatable, Sendable {

@@ -22,23 +22,24 @@ public struct LinearFit: Equatable, Sendable {
 extension SampleStore {
     /// Enumerates raw rows with constant client memory and checks SQLite read failures.
     private func scan(streamID: StreamID, from: Date, to: Date, visit: (StoredSample) -> Void) throws {
-        var statement: OpaquePointer?
-        try prepare(
-            "SELECT timestamp,sequence,value,segment_id FROM samples WHERE stream_id=? AND timestamp>=? AND timestamp<=? ORDER BY timestamp,sequence",
-            &statement)
-        defer { sqlite3_finalize(statement) }
-        bindText(statement, 1, streamID.uuidString.lowercased())
-        sqlite3_bind_double(statement, 2, from.timeIntervalSince1970)
-        sqlite3_bind_double(statement, 3, to.timeIntervalSince1970)
+        let statement = try self.statement(
+            "SELECT timestamp,sequence,value,segment_id FROM samples WHERE stream_id=? AND timestamp>=? AND timestamp<=? ORDER BY timestamp,sequence"
+        )
+        defer { statement.close() }
+
+        try statement.text(streamID.uuidString.lowercased(), at: 1)
+        try statement.double(from.timeIntervalSince1970, at: 2)
+        try statement.double(to.timeIntervalSince1970, at: 3)
         while true {
-            let result = sqlite3_step(statement)
-            if result == SQLITE_DONE { break }
-            guard result == SQLITE_ROW else { throw SampleStoreError.sql(String(cString: sqlite3_errmsg(db))) }
+            let result = try statement.step()
+            if result == .done { break }
+            guard result == .row else { throw SampleStoreError.sql(String(cString: sqlite3_errmsg(db))) }
             visit(
                 StoredSample(
-                    timestamp: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0)),
-                    sequence: UInt64(sqlite3_column_int64(statement, 1)), value: sqlite3_column_double(statement, 2),
-                    segmentID: sqlite3_column_text(statement, 3).map { String(cString: $0) }))
+                    timestamp: Date(timeIntervalSince1970: sqlite3_column_double(statement.raw, 0)),
+                    sequence: UInt64(sqlite3_column_int64(statement.raw, 1)),
+                    value: sqlite3_column_double(statement.raw, 2),
+                    segmentID: sqlite3_column_text(statement.raw, 3).map { String(cString: $0) }))
         }
     }
 
@@ -48,22 +49,22 @@ extension SampleStore {
         defer { lock.unlock() }
         var choices: [StoredSample] = []
         for (comparison, order) in [("<=", "DESC"), (">=", "ASC")] {
-            var statement: OpaquePointer?
-            try prepare(
-                "SELECT timestamp,sequence,value,segment_id FROM samples WHERE stream_id=? AND timestamp \(comparison) ? ORDER BY timestamp \(order),sequence \(order) LIMIT 1",
-                &statement)
-            defer { sqlite3_finalize(statement) }
-            bindText(statement, 1, streamID.uuidString.lowercased())
-            sqlite3_bind_double(statement, 2, time.timeIntervalSince1970)
-            let code = sqlite3_step(statement)
-            if code == SQLITE_ROW {
+            let statement = try self.statement(
+                "SELECT timestamp,sequence,value,segment_id FROM samples WHERE stream_id=? AND timestamp \(comparison) ? ORDER BY timestamp \(order),sequence \(order) LIMIT 1"
+            )
+            defer { statement.close() }
+
+            try statement.text(streamID.uuidString.lowercased(), at: 1)
+            try statement.double(time.timeIntervalSince1970, at: 2)
+            let code = try statement.step()
+            if code == .row {
                 choices.append(
                     StoredSample(
-                        timestamp: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0)),
-                        sequence: UInt64(sqlite3_column_int64(statement, 1)),
-                        value: sqlite3_column_double(statement, 2),
-                        segmentID: sqlite3_column_text(statement, 3).map { String(cString: $0) }))
-            } else if code != SQLITE_DONE {
+                        timestamp: Date(timeIntervalSince1970: sqlite3_column_double(statement.raw, 0)),
+                        sequence: UInt64(sqlite3_column_int64(statement.raw, 1)),
+                        value: sqlite3_column_double(statement.raw, 2),
+                        segmentID: sqlite3_column_text(statement.raw, 3).map { String(cString: $0) }))
+            } else if code != .done {
                 throw SampleStoreError.sql(String(cString: sqlite3_errmsg(db)))
             }
         }
@@ -84,21 +85,21 @@ extension SampleStore {
         guard let first, let last else { return nil }
         let n = moments.count
         // SQLite performs the sort; no unbounded Swift array is materialized.
-        var statement: OpaquePointer?
-        try prepare(
-            "SELECT AVG(value) FROM (SELECT value FROM samples WHERE stream_id=? AND timestamp>=? AND timestamp<=? ORDER BY value LIMIT ? OFFSET ?)",
-            &statement)
-        defer { sqlite3_finalize(statement) }
-        bindText(statement, 1, streamID.uuidString.lowercased())
-        sqlite3_bind_double(statement, 2, from.timeIntervalSince1970)
-        sqlite3_bind_double(statement, 3, to.timeIntervalSince1970)
-        sqlite3_bind_int(statement, 4, n.isMultiple(of: 2) ? 2 : 1)
-        sqlite3_bind_int64(statement, 5, Int64((n - 1) / 2))
-        guard sqlite3_step(statement) == SQLITE_ROW else { throw SampleStoreError.sql("Could not calculate median") }
+        let statement = try self.statement(
+            "SELECT AVG(value) FROM (SELECT value FROM samples WHERE stream_id=? AND timestamp>=? AND timestamp<=? ORDER BY value LIMIT ? OFFSET ?)"
+        )
+        defer { statement.close() }
+
+        try statement.text(streamID.uuidString.lowercased(), at: 1)
+        try statement.double(from.timeIntervalSince1970, at: 2)
+        try statement.double(to.timeIntervalSince1970, at: 3)
+        try statement.int(n.isMultiple(of: 2) ? 2 : 1, at: 4)
+        try statement.int64(Int64((n - 1) / 2), at: 5)
+        guard try statement.step() == .row else { throw SampleStoreError.sql("Could not calculate median") }
         return SelectionStatistics(
             count: n, minimum: moments.minimum, maximum: moments.maximum, mean: moments.meanValue,
             populationStandardDeviation: sqrt(max(0, moments.valueSquares / Double(n))),
-            median: sqlite3_column_double(statement, 0),
+            median: sqlite3_column_double(statement.raw, 0),
             firstSampleAt: first.timestamp, lastSampleAt: last.timestamp, firstValue: first.value, lastValue: last.value
         )
     }
