@@ -33,7 +33,6 @@ final class PipePlotAppModel {
     private(set) var editRevision = 0
     private(set) var commandRevision = 0
     @ObservationIgnored private var commandNotifications: [NSObjectProtocol] = []
-    private(set) var activeSessionID: SessionID?
     let streamDrag = StreamDragState()
     var forecastStatuses: [SessionID: ForecastStatus] {
         sessionModels.compactMapValues { $0.forecastStatuses.first }
@@ -108,7 +107,6 @@ final class PipePlotAppModel {
     func installOpenSessionPicker(_ action: @escaping () -> Void) { openSessionPickerAction = action }
     func presentSessionPicker() { openSessionPickerAction?() }
     func becameActive(_ id: SessionID) {
-        activeSessionID = id
         openedSessionIDs.insert(id)
         refresh(id)
     }
@@ -894,7 +892,6 @@ final class PipePlotAppModel {
                 try store.setSessionOpen(false, sessionID: id)
             }
             refreshAll()
-            if activeSessionID == id { activeSessionID = nil }
         } catch { errorMessage = error.localizedDescription }
     }
     func applicationWillTerminate() {

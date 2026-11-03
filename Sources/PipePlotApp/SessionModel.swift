@@ -12,6 +12,7 @@ final class SessionModel {
     private(set) var displayActive = true
     private(set) var clockPulse = Date()
     private(set) var forecastStatuses: [ForecastStatus] = []
+    private(set) var valueGuideRequest: ValueGuideRequest?
     private var navigationBack: [TimelineState] = []
     private var navigationForward: [TimelineState] = []
 
@@ -19,6 +20,12 @@ final class SessionModel {
 
     func update(_ value: SessionSnapshot) -> Bool {
         guard snapshot != value else { return false }
+        if let request = valueGuideRequest,
+            (!value.isOpen || value.isDeleted
+                || !value.charts.contains(where: { $0.id == request.chartID && $0.isVisible }))
+        {
+            valueGuideRequest = nil
+        }
         snapshot = value
         return true
     }
@@ -30,6 +37,17 @@ final class SessionModel {
     }
 
     func advanceClock(to now: Date) { clockPulse = now }
+    func requestValueGuide(for chartID: ChartID) {
+        guard let snapshot, snapshot.isOpen, !snapshot.isDeleted,
+            snapshot.charts.contains(where: { $0.id == chartID && $0.isVisible })
+        else { return }
+        valueGuideRequest = ValueGuideRequest(chartID: chartID)
+    }
+    func takeValueGuideRequest(for chartID: ChartID) -> Bool {
+        guard valueGuideRequest?.chartID == chartID else { return false }
+        valueGuideRequest = nil
+        return true
+    }
     func setForecastStatuses(_ statuses: [ForecastStatus]) {
         if forecastStatuses != statuses { forecastStatuses = statuses }
     }
@@ -51,6 +69,11 @@ final class SessionModel {
     }
     var canNavigateBack: Bool { !navigationBack.isEmpty }
     var canNavigateForward: Bool { !navigationForward.isEmpty }
+}
+
+struct ValueGuideRequest: Identifiable {
+    let id = UUID()
+    let chartID: ChartID
 }
 
 /// Picker data changes only when listing metadata changes, not on sample ticks.

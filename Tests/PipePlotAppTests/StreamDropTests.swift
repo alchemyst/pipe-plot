@@ -9,12 +9,7 @@ final class StreamDropTests: XCTestCase {
         XCTAssertTrue(StreamDragState.contentType.conforms(to: .data))
         XCTAssertEqual(StreamDragState.pasteboardType, StreamDragState.contentType.identifier)
         XCTAssertEqual(UTType(StreamDragState.pasteboardType), StreamDragState.contentType)
-        let root = URL(fileURLWithPath: #filePath).resolvingSymlinksInPath()
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let plist =
-            try PropertyListSerialization.propertyList(
-                from: Data(contentsOf: root.appendingPathComponent("Config/Info.plist")), format: nil) as? [String: Any]
-        let declarations = try XCTUnwrap(plist?["UTExportedTypeDeclarations"] as? [[String: Any]])
+        let declarations = try XCTUnwrap(Bundle.main.infoDictionary?["UTExportedTypeDeclarations"] as? [[String: Any]])
         let declaration = try XCTUnwrap(
             declarations.first { $0["UTTypeIdentifier"] as? String == StreamDragState.pasteboardType })
         XCTAssertTrue((declaration["UTTypeConformsTo"] as? [String] ?? []).contains(UTType.data.identifier))

@@ -70,7 +70,7 @@ struct SessionPicker: View {
                     model.createSessionWindow()
                 } label: {
                     Label("New Session", systemImage: "plus")
-                }.buttonStyle(.borderedProminent).keyboardShortcut("n", modifiers: [.command])
+                }.buttonStyle(.borderedProminent)
             }
         }.padding(24).background(Color(nsColor: .windowBackgroundColor))
             .sheet(item: $renaming) { session in
@@ -307,10 +307,61 @@ struct GuideAlertSettingsRow: View {
     }
 }
 
+/// Only the focused, open session may receive contextual menu actions.
+@MainActor
+struct SessionCommandTarget {
+    let focused: SessionModel?
+    let editingText: Bool
+
+    static func isTextResponder(_ responder: NSResponder?) -> Bool {
+        responder is NSTextView || responder is NSTextField
+    }
+
+    var snapshot: SessionSnapshot? {
+        guard !editingText, let snapshot = focused?.snapshot, snapshot.isOpen, !snapshot.isDeleted else { return nil }
+        return snapshot
+    }
+    var chart: ChartSnapshot? {
+        guard let snapshot else { return nil }
+        let visible = snapshot.charts.filter(\.isVisible)
+        return visible.first(where: { $0.id == focused?.selectedChartID }) ?? visible.last
+    }
+    var canCreateChart: Bool { snapshot != nil }
+    var canAddGuide: Bool { chart != nil }
+
+    func createChart(using model: PipePlotAppModel) {
+        guard let snapshot else { return }
+        model.createChart(in: snapshot.id, after: chart?.id)
+    }
+    func requestValueGuide() {
+        guard let chart else { return }
+        focused?.requestValueGuide(for: chart.id)
+    }
+    func addTimeGuide(using model: PipePlotAppModel) {
+        guard chart != nil, let snapshot else { return }
+        model.addTimeGuide(at: model.sessionNow(snapshot), sessionID: snapshot.id)
+    }
+    func undo(using model: PipePlotAppModel) {
+        guard let snapshot else { return }
+        model.undo(snapshot.id)
+    }
+    func redo(using model: PipePlotAppModel) {
+        guard let snapshot else { return }
+        model.redo(snapshot.id)
+    }
+}
+
 struct PipePlotCommands: Commands {
     @Bindable var model: PipePlotAppModel
     var installInitialWindowOpener: ((OpenWindowAction) -> Void)? = nil
     @Environment(\.openWindow) private var openWindow
+    @FocusedValue(SessionModel.self) private var focusedSession: SessionModel?
+    private var isEditingText: Bool {
+        SessionCommandTarget.isTextResponder(NSApp.keyWindow?.firstResponder)
+    }
+    private var sessionTarget: SessionCommandTarget {
+        SessionCommandTarget(focused: focusedSession, editingText: isEditingText)
+    }
     private var textUndo: UndoManager? {
         _ = model.commandRevision
         let responder = NSApp.keyWindow?.firstResponder
@@ -320,11 +371,11 @@ struct PipePlotCommands: Commands {
     }
     private var undoName: String? {
         _ = model.editRevision
-        return model.activeSessionID.flatMap { model.store.undoActionName(sessionID: $0) }
+        return sessionTarget.snapshot.flatMap { model.store.undoActionName(sessionID: $0.id) }
     }
     private var redoName: String? {
         _ = model.editRevision
-        return model.activeSessionID.flatMap { model.store.redoActionName(sessionID: $0) }
+        return sessionTarget.snapshot.flatMap { model.store.redoActionName(sessionID: $0.id) }
     }
     private var canUndo: Bool { textUndo?.canUndo ?? (undoName != nil) }
     private var canRedo: Bool { textUndo?.canRedo ?? (redoName != nil) }
@@ -333,8 +384,8 @@ struct PipePlotCommands: Commands {
     private func performUndo(redo: Bool) {
         if let manager = textUndo {
             if redo { manager.redo() } else { manager.undo() }
-        } else if let session = model.activeSessionID {
-            if redo { model.redo(session) } else { model.undo(session) }
+        } else {
+            if redo { sessionTarget.redo(using: model) } else { sessionTarget.undo(using: model) }
         }
     }
     var body: some Commands {
@@ -349,15 +400,12 @@ struct PipePlotCommands: Commands {
                 .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!canRedo)
         }
         CommandMenu("Session") {
-            Button("New Chart Below") {
-                if let id = model.activeSessionID {
-                    model.createChart(
-                        in: id,
-                        after: model.sessionModel(for: id).selectedChartID
-                            ?? model.sessionModel(for: id).snapshot?.charts.last(where: { $0.isVisible })?.id)
-                }
-            }
-            .keyboardShortcut("d", modifiers: [.command, .shift]).disabled(model.activeSessionID == nil)
+            Button("New Chart Below") { sessionTarget.createChart(using: model) }
+                .keyboardShortcut("d", modifiers: [.command, .shift]).disabled(!sessionTarget.canCreateChart)
+            Button("Add Value Guide…") { sessionTarget.requestValueGuide() }
+                .keyboardShortcut("g", modifiers: [.command, .option]).disabled(!sessionTarget.canAddGuide)
+            Button("Add Time Guide at Now") { sessionTarget.addTimeGuide(using: model) }
+                .keyboardShortcut("t", modifiers: [.command, .option]).disabled(!sessionTarget.canAddGuide)
             Button("Open Saved Sessions…") { model.presentSessionPicker() }
         }
     }

@@ -1,3 +1,5 @@
+xcode_derived_data := env_var_or_default("PIPEPLOT_XCODE_DERIVED_DATA", ".build/xcode")
+
 # Show the available project commands.
 default:
     @just --list
@@ -17,7 +19,7 @@ build:
 # Run shared-code/CLI package tests and the Xcode app tests.
 test:
     swift test
-    xcodebuild -project PipePlot.xcodeproj -scheme PipePlot -configuration Debug -destination "platform=macOS,arch=arm64" -derivedDataPath .build/xcode test
+    xcodebuild -project PipePlot.xcodeproj -scheme PipePlot -configuration Debug -destination "platform=macOS,arch=arm64" -derivedDataPath "{{xcode_derived_data}}" test
 
 # Build and sign the app bundle without installing it.
 bundle:
@@ -38,4 +40,4 @@ check: test
 # Compile all Swift package and hosted app/test targets in Swift 6 with diagnostics fatal.
 strict-build:
     swift test -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
-    xcodebuild -project PipePlot.xcodeproj -scheme PipePlot -configuration Debug -destination "platform=macOS,arch=arm64" -derivedDataPath .build/xcode SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build-for-testing
+    xcodebuild -project PipePlot.xcodeproj -scheme PipePlot -configuration Debug -destination "platform=macOS,arch=arm64" -derivedDataPath "{{xcode_derived_data}}" SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build-for-testing

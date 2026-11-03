@@ -20,6 +20,8 @@ Open `PipePlot.xcodeproj` and select the shared **PipePlot** scheme to build, ru
 
 `just test` runs both the package tests and the Xcode app tests. `just check` additionally runs the independent transport regression tests. The smoke and cold-pipeline scripts in `scripts/` exercise an installed app and create sessions, so they are not part of `just check`. Hosted app tests run without opening the user's database, starting IPC, or restoring application windows.
 
+`just test` and `just strict-build` use `.build/xcode` for Xcode derived data by default. Set `PIPEPLOT_XCODE_DERIVED_DATA` to an absolute directory to use a separate build location, for example `PIPEPLOT_XCODE_DERIVED_DATA=/tmp/pipeplot-xcode just test`.
+
 `just install` builds and installs an ad-hoc signed `~/Applications/PipePlot.app` and `~/.local/bin/pp` together. Add `~/.local/bin` to your shell's `PATH` if it is not already present. Building alone does not update either installed copy; run `just install` again after changes.
 
 `just icon` regenerates standalone icon artwork in `.build/icon/`; see [the icon build notes](design/icon/README.md). App builds render their own copy in Xcode's derived files directory. Generated assets and local Xcode state are ignored by Git. The `justfile` remains the command runner; the build uses Xcode and SwiftPM directly, without Make.

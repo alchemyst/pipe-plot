@@ -77,13 +77,19 @@ struct SessionWindow: View {
                 }
             ).frame(width: 1, height: 1)
         )
+        .focusedSceneValue(
+            sessionModel.snapshot?.isOpen == true && sessionModel.snapshot?.isDeleted == false
+                ? sessionModel : nil
+        )
         .alert("PipePlot", isPresented: errorPresented) {
             errorButtons
         } message: {
             errorMessage
         }
         .onKeyPress(keys: [.escape, "a", "d", "f", "w", "s"]) { press in
-            guard !isEditingText, let session else { return .ignored }
+            guard Self.acceptsNavigationModifiers(press.modifiers), !isEditingText, let session else {
+                return .ignored
+            }
             switch press.key {
             case .escape:
                 if session.timeline.selection != nil {
@@ -190,20 +196,30 @@ struct SessionWindow: View {
     }
 
     private func chartRows(_ session: SessionSnapshot) -> some View {
-        ScrollView {
-            LazyVStack(spacing: 4) {
-                ForEach(visibleCharts) { chart in
-                    StreamInsertionTarget(sessionID: session.id, destination: .before(chart.id), model: model)
-                    ChartRowHost(
-                        chart: chart, session: session, model: model, hoverDate: $hoverDate,
-                        gestures: gestures, sessionModel: sessionModel, selectedChartID: $sessionModel.selectedChartID)
+        ScrollViewReader { scroll in
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(visibleCharts) { chart in
+                        StreamInsertionTarget(sessionID: session.id, destination: .before(chart.id), model: model)
+                        ChartRowHost(
+                            chart: chart, session: session, model: model, hoverDate: $hoverDate,
+                            gestures: gestures, sessionModel: sessionModel,
+                            selectedChartID: $sessionModel.selectedChartID
+                        )
+                        .id(chart.id)
+                    }
+                    StreamInsertionTarget(
+                        sessionID: session.id,
+                        destination: visibleCharts.last.map { .after($0.id) } ?? .unanchored,
+                        model: model)
                 }
-                StreamInsertionTarget(
-                    sessionID: session.id,
-                    destination: visibleCharts.last.map { .after($0.id) } ?? .unanchored,
-                    model: model)
-            }.padding(16)
-        }.background(Color(nsColor: .underPageBackgroundColor))
+                .padding(16)
+            }
+            .onChange(of: sessionModel.valueGuideRequest?.id, initial: true) { _, _ in
+                if let request = sessionModel.valueGuideRequest { scroll.scrollTo(request.chartID) }
+            }
+        }
+        .background(Color(nsColor: .underPageBackgroundColor))
     }
 
     private var newChartDropTarget: StreamDropTarget {
@@ -350,6 +366,10 @@ struct SessionWindow: View {
     private var isEditingText: Bool {
         guard let responder = NSApp.keyWindow?.firstResponder else { return false }
         return responder is NSTextView || responder is NSTextField
+    }
+
+    static func acceptsNavigationModifiers(_ modifiers: EventModifiers) -> Bool {
+        !modifiers.contains(.command) && !modifiers.contains(.option) && !modifiers.contains(.control)
     }
 
 }
@@ -921,6 +941,10 @@ private struct ChartRow: View {
             if start != nil, sharedGestureDomain == nil { sharedGestureDomain = domain }
             if start == nil, gestureBaseDomain == nil { sharedGestureDomain = nil }
         }
+        .onChange(of: sessionModel.valueGuideRequest?.id, initial: true) { _, _ in
+            guard sessionModel.takeValueGuideRequest(for: chart.id) else { return }
+            onAddGuideFromCurrentScale()
+        }
         .sheet(isPresented: $showGuideManager) { guideManagerSheet }
         .sheet(item: $derivedStream) { stream in
             DerivedSeriesSheet(stream: stream, model: model) { derivedStream = nil }
@@ -969,7 +993,7 @@ private struct ChartRow: View {
             Spacer()
             SnapshotMenu(title: "Guides", symbol: "line.3.horizontal") {
                 [
-                    .command("Add horizontal value guide…", action: onAddGuideFromCurrentScale),
+                    .command("Add horizontal value guide…") { sessionModel.requestValueGuide(for: chart.id) },
                     .command("Add time guide at Now") {
                         model.addTimeGuide(at: model.sessionNow(session), sessionID: session.id)
                     },
@@ -979,17 +1003,6 @@ private struct ChartRow: View {
                     },
                 ]
             }.help("Create and edit chart guides")
-                .background {
-                    // Keep the existing shortcuts without coupling the tracked native menu to SwiftUI.
-                    Button("Add value guide", action: onAddGuideFromCurrentScale)
-                        .keyboardShortcut(isCurrentChart ? KeyboardShortcut("g", modifiers: [.command, .option]) : nil)
-                        .hidden().frame(width: 0, height: 0)
-                    Button("Add time guide") {
-                        model.addTimeGuide(at: model.sessionNow(session), sessionID: session.id)
-                    }
-                    .keyboardShortcut(isCurrentChart ? KeyboardShortcut("t", modifiers: [.command, .option]) : nil)
-                    .hidden().frame(width: 0, height: 0)
-                }
             SnapshotMenu(title: "Chart actions", symbol: "ellipsis.circle", compact: true) {
                 var items: [SnapshotMenuItem] = [
                     .command("Rename Chart…") {
@@ -1136,10 +1149,6 @@ private struct ChartRow: View {
             .command("Continue / Reassociate Group…") { reassociationSource = stream },
             .command("Hide from Layout") { model.setStreamLayoutHidden(true, streamID: stream.id) },
         ]
-    }
-
-    private var isCurrentChart: Bool {
-        (sessionModel.selectedChartID ?? session.charts.last(where: \.isVisible)?.id) == chart.id
     }
 
     @ViewBuilder private var guideManagerSheet: some View {
