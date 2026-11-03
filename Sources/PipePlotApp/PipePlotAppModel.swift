@@ -257,27 +257,34 @@ final class PipePlotAppModel {
         value.linesVisible.toggle()
         update(value, chart.id)
     }
-    func update(_ settings: AxisSettings, _ chartID: ChartID) {
+    @discardableResult
+    func update(_ settings: AxisSettings, _ chartID: ChartID) -> Bool {
         do {
             try store.updateSettings(settings, chartID: chartID)
             refreshAll()
-        } catch { errorMessage = error.localizedDescription }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
-    func updateUnit(_ unit: String, chart: ChartID) {
+    @discardableResult
+    func updateUnit(_ unit: String, chart: ChartID) -> Bool {
         guard let snapshot = sessions.values.first(where: { $0.charts.contains(where: { $0.id == chart }) }),
             let item = snapshot.charts.first(where: { $0.id == chart })
-        else { return }
+        else { return false }
         var settings = item.settings
         settings.unit = unit.isEmpty ? nil : unit
-        update(settings, chart)
+        return update(settings, chart)
     }
-    func updateScale(_ scale: YScale, chart: ChartID) {
+    @discardableResult
+    func updateScale(_ scale: YScale, chart: ChartID) -> Bool {
         guard let snapshot = sessions.values.first(where: { $0.charts.contains(where: { $0.id == chart }) }),
             let item = snapshot.charts.first(where: { $0.id == chart })
-        else { return }
+        else { return false }
         var settings = item.settings
         settings.yScale = scale
-        update(settings, chart)
+        return update(settings, chart)
     }
     func addGuide(value: Double, chart: ChartSnapshot, session: SessionSnapshot, label: String? = nil) {
         do {
@@ -285,7 +292,8 @@ final class PipePlotAppModel {
             refresh(session.id)
         } catch { errorMessage = error.localizedDescription }
     }
-    func updateGuide(_ guide: Guide, chartID: ChartID, sessionID: SessionID) {
+    @discardableResult
+    func updateGuide(_ guide: Guide, chartID: ChartID, sessionID: SessionID) -> Bool {
         do {
             try store.upsertGuide(guide, chartID: chartID)
             refresh(sessionID)
@@ -294,7 +302,11 @@ final class PipePlotAppModel {
                     DispatchQueue.main.async { if let message { self?.errorMessage = message } }
                 }
             }
-        } catch { errorMessage = error.localizedDescription }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
     /// A sheet edits coordinates/text while alert controls save independently.
     /// Merge those fields into the current guide, never its captured sheet value.

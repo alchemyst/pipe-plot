@@ -238,6 +238,68 @@ import PipePlotCore
         }
     }
 
+    func testMenuResolvesSessionManagerWhenWindowCachedItsOwnManager() throws {
+        _ = NSApplication.shared
+        let (model, directory) = makeModel()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = try model.store.createSession()
+        try model.store.renameSession(session.id, to: "Saved")
+        let manager = model.undoManager(for: session.id)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let cached = window.undoManager
+        let state = WindowStateView(frame: .zero)
+        state.sessionUndoManager = manager
+        window.contentView?.addSubview(state)
+        state.installUndoManager()
+        XCTAssertTrue(window.undoManager === cached)
+        XCTAssertFalse(cached === manager)
+        XCTAssertTrue(SessionUndoMenuTarget.manager(for: window) === manager)
+        XCTAssertEqual(SessionUndoMenuTarget.manager(for: window)?.undoMenuItemTitle, "Undo Rename Session")
+        SessionUndoMenuTarget.manager(for: window)?.undo()
+        XCTAssertEqual(try model.store.snapshot(sessionID: session.id)?.title, "Session 1")
+    }
+
+    func testTextEditInvalidatesOnlyItsSessionMenu() throws {
+        _ = NSApplication.shared
+        let (model, directory) = makeModel()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = try model.store.createSession(), second = try model.store.createSession()
+        let a = model.undoManager(for: first.id), b = model.undoManager(for: second.id)
+        let windows = [a, b].map { manager -> (NSWindow, WindowStateView, NSTextField) in
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+                styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let state = WindowStateView(frame: .zero)
+            state.sessionUndoManager = manager
+            window.contentView?.addSubview(state)
+            let field = NSTextField(frame: NSRect(x: 5, y: 5, width: 100, height: 20))
+            window.contentView?.addSubview(field)
+            return (window, state, field)
+        }
+        defer { windows.forEach { $0.0.close() } }
+        let aBefore = a.menuState.revision, bBefore = b.menuState.revision
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: windows[0].2)
+        XCTAssertEqual(a.menuState.revision, aBefore + 1)
+        XCTAssertEqual(b.menuState.revision, bBefore)
+        XCTAssertTrue(windows[0].0.makeFirstResponder(windows[0].2))
+        NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: windows[0].0)
+        let deadline = Date().addingTimeInterval(1)
+        while a.menuState.revision == aBefore + 1 && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        let afterFocus = a.menuState.revision
+        XCTAssertGreaterThan(afterFocus, aBefore + 1)
+        XCTAssertEqual(b.menuState.revision, bBefore)
+        NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: windows[0].0)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(a.menuState.revision, afterFocus)
+    }
+
     private func keyEvent(_ characters: String, modifiers: NSEvent.ModifierFlags, window: NSWindow) throws -> NSEvent {
         try XCTUnwrap(
             NSEvent.keyEvent(
@@ -271,6 +333,7 @@ import PipePlotCore
         let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
         editor.allowsUndo = true
         XCTAssertFalse(editor.undoManager === manager)
+        XCTAssertTrue(SessionUndoMenuTarget.manager(for: window) === editor.undoManager)
         editor.insertText("typed", replacementRange: NSRange(location: 0, length: 0))
         XCTAssertEqual(field.stringValue, "typed")
         XCTAssertTrue(try XCTUnwrap(editor.undoManager).canUndo)
@@ -312,6 +375,7 @@ import PipePlotCore
         XCTAssertTrue(observed === manager)
         let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
         XCTAssertFalse(editor.undoManager === manager)
+        XCTAssertTrue(SessionUndoMenuTarget.manager(for: window) === editor.undoManager)
         editor.insertText("typed", replacementRange: NSRange(location: 0, length: 0))
         XCTAssertEqual(editor.string, "typed")
         let undoItem = NSMenuItem(title: "Undo", action: NSSelectorFromString("undo:"), keyEquivalent: "z")

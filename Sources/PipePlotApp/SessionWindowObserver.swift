@@ -29,6 +29,7 @@ final class WindowStateView: NSView {
     var sessionUndoManager: SessionUndoManager?
     private weak var undoWindow: NSWindow?
     private var undoDelegate: SessionUndoWindowDelegate?
+    private weak var lastFirstResponder: NSResponder?
     private var tokens: [NSObjectProtocol] = []
     private var lastActive: Bool?
 
@@ -41,18 +42,42 @@ final class WindowStateView: NSView {
         stopObserving()
         guard let window else { return }
         installUndoManager()
+        lastFirstResponder = window.firstResponder
         let center = NotificationCenter.default
         for name in [
-            NSWindow.didBecomeKeyNotification, NSWindow.didChangeOcclusionStateNotification,
+            NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+            NSWindow.didChangeOcclusionStateNotification, NSWindow.didUpdateNotification,
             NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
         ] {
             tokens.append(
                 center.addObserver(forName: name, object: window, queue: .main) { [weak self] notification in
                     let becameKey = notification.name == NSWindow.didBecomeKeyNotification
+                    let keyChanged = becameKey || notification.name == NSWindow.didResignKeyNotification
+                    let updated = notification.name == NSWindow.didUpdateNotification
                     // NotificationCenter executes this observer on the supplied main queue.
                     MainActor.assumeIsolated {
+                        if updated {
+                            self?.scheduleUndoFocusReport()
+                            return
+                        }
                         if becameKey { self?.onFocus?() }
+                        if keyChanged { self?.sessionUndoManager?.menuState.invalidate() }
                         self?.scheduleReport()
+                    }
+                })
+        }
+        for name in [
+            NSText.didBeginEditingNotification, NSText.didChangeNotification, NSText.didEndEditingNotification,
+            NSControl.textDidBeginEditingNotification, NSControl.textDidChangeNotification,
+            NSControl.textDidEndEditingNotification,
+        ] {
+            tokens.append(
+                center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                    let source = notification.object as? NSView
+                    MainActor.assumeIsolated {
+                        guard let self, source?.window === self.window
+                        else { return }
+                        self.sessionUndoManager?.menuState.invalidate()
                     }
                 })
         }
@@ -90,6 +115,7 @@ final class WindowStateView: NSView {
         }
         undoWindow = nil
         undoDelegate = nil
+        lastFirstResponder = nil
         tokens.forEach(NotificationCenter.default.removeObserver)
         tokens.removeAll()
         lastActive = nil
@@ -110,6 +136,19 @@ final class WindowStateView: NSView {
         window.delegate = delegate
         undoWindow = window
         undoDelegate = delegate
+    }
+
+    private func scheduleUndoFocusReport() {
+        // Focus changes may be reported while SwiftUI is updating the window.
+        // Publish after that pass, and only when the first responder changed.
+        guard let window, lastFirstResponder !== window.firstResponder else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            let current = window.firstResponder
+            guard self.lastFirstResponder !== current else { return }
+            self.lastFirstResponder = current
+            self.sessionUndoManager?.menuState.invalidate()
+        }
     }
 }
 

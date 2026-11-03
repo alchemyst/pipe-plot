@@ -13,6 +13,7 @@ struct SessionWindow: View {
     @State private var showRenameSession = false
     @State private var sessionTitle = ""
     @State private var editingLocator: Guide?
+    @State private var inspectorVisible = false
 
     init(sessionID: SessionID, model: PipePlotAppModel) {
         self.sessionID = sessionID
@@ -30,11 +31,30 @@ struct SessionWindow: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            toolbar
             sessionContent
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle(session.map { "\($0.number) · \($0.title)" } ?? "PipePlot")
+        .toolbar {
+            SessionWindowToolbar(
+                model: model, sessionModel: sessionModel, inspectorVisible: inspectorVisible,
+                toggleInspector: {
+                    if !inspectorVisible, sessionModel.selectedChartID == nil {
+                        sessionModel.selectedChartID =
+                            SessionCommandTarget(
+                                focused: sessionModel, editingText: false
+                            ).chart?.id
+                    }
+                    inspectorVisible.toggle()
+                },
+                renameSession: {
+                    sessionTitle = session?.title ?? ""
+                    showRenameSession = true
+                })
+        }
+        .inspector(isPresented: $inspectorVisible) {
+            ChartInspector(model: model, sessionModel: sessionModel)
+        }
         .onAppear { model.refresh(sessionID) }
         .onAppear { model.becameActive(sessionID) }
         .onReceive(model.refreshTimer) { _ in model.tick(sessionID) }
@@ -155,51 +175,11 @@ struct SessionWindow: View {
         }
     }
 
-    private var toolbar: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "waveform.path.ecg").font(.title2.weight(.semibold)).foregroundStyle(Color.accentColor)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("PipePlot").font(.headline)
-                Text("Live measurements · local capture").font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button {
-                model.createSessionWindow()
-            } label: {
-                Label("New Session", systemImage: "plus.rectangle.on.folder")
-            }
-            .help("Create a session in a new window (⌘N)")
-            Button {
-                createChart()
-            } label: {
-                Label("Add Chart", systemImage: "chart.bar.xaxis")
-            }
-            .help("Create a chart below and make it the Target (⌘⇧D)")
-            .overlay(
-                RoundedRectangle(cornerRadius: 6).stroke(
-                    newChartDropTarget.isTargeted(model) ? Color.accentColor : .clear, lineWidth: 3)
-            )
-            .onDrop(
-                of: [StreamDragState.contentType],
-                delegate: StreamDropDelegate(target: newChartDropTarget, model: model))
-            Menu {
-                Button("Rename Session…") {
-                    sessionTitle = session?.title ?? ""
-                    showRenameSession = true
-                }
-                Button("Move Session to Trash", role: .destructive) { model.deleteSession(sessionID) }
-            } label: {
-                Label("Session", systemImage: "ellipsis.circle")
-            }
-        }
-        .padding(.horizontal, 18).padding(.vertical, 12)
-        .background(.bar)
-    }
-
     private func chartRows(_ session: SessionSnapshot) -> some View {
         ScrollViewReader { scroll in
             ScrollView {
                 LazyVStack(spacing: 4) {
+                    newChartDropZone
                     ForEach(visibleCharts) { chart in
                         StreamInsertionTarget(sessionID: session.id, destination: .before(chart.id), model: model)
                         ChartRowHost(
@@ -226,6 +206,23 @@ struct SessionWindow: View {
     private var newChartDropTarget: StreamDropTarget {
         let anchor = visibleCharts.first(where: { $0.id == sessionModel.selectedChartID })?.id ?? visibleCharts.last?.id
         return StreamDropTarget(sessionID: sessionID, destination: anchor.map { .after($0) } ?? .unanchored)
+    }
+    private var newChartDropZone: some View {
+        Label("Drop a stream here to add a chart", systemImage: "plus.rectangle.on.rectangle")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .contentShape(Rectangle())
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8).stroke(
+                    newChartDropTarget.isTargeted(model) ? Color.accentColor : .clear, lineWidth: 3)
+            )
+            .onDrop(
+                of: [StreamDragState.contentType],
+                delegate: StreamDropDelegate(target: newChartDropTarget, model: model)
+            )
+            .accessibilityLabel("Drop a stream to add a chart below the selected chart")
     }
 
     private var errorPresented: Binding<Bool> {
@@ -358,10 +355,6 @@ struct SessionWindow: View {
             }, onToggle: { model.toggleSelectionBoundary($0, session: session) },
             onClear: { model.setSelection(nil, session: session) },
             onAddGuide: { model.addTimeGuide(at: $0, sessionID: sessionID) })
-    }
-
-    private func createChart() {
-        model.createChart(in: sessionID, after: sessionModel.selectedChartID)
     }
 
     private var isEditingText: Bool {

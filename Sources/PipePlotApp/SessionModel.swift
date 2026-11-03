@@ -9,6 +9,8 @@ final class SessionModel {
     let id: SessionID
     private(set) var snapshot: SessionSnapshot?
     var selectedChartID: ChartID?
+    var chartAxisDrafts: [ChartID: ChartAxisDraft] = [:]
+    var guideAlertDrafts: [UUID: GuideAlertDraft] = [:]
     private(set) var displayActive = true
     private(set) var clockPulse = Date()
     private(set) var forecastStatuses: [ForecastStatus] = []
@@ -27,6 +29,13 @@ final class SessionModel {
             valueGuideRequest = nil
         }
         snapshot = value
+        var normalized = chartAxisDrafts
+        for chart in value.charts {
+            guard var draft = normalized[chart.id] else { continue }
+            draft.clearValuesMatching(chart)
+            normalized[chart.id] = draft.hasChanges ? draft : nil
+        }
+        if normalized != chartAxisDrafts { chartAxisDrafts = normalized }
         return true
     }
 

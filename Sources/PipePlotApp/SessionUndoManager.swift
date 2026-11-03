@@ -1,11 +1,19 @@
 import AppKit
+import Observation
 import PipePlotCore
+
+@MainActor @Observable
+final class SessionUndoMenuState {
+    private(set) var revision = 0
+    func invalidate() { revision &+= 1 }
+}
 
 /// AppKit's view of the store's semantic history. There is deliberately no
 /// second stack: failed edits and failed replay cannot advance native history.
 @MainActor
 final class SessionUndoManager: UndoManager {
     let sessionID: SessionID
+    let menuState = SessionUndoMenuState()
     private let store: PipePlotStore
     private let replay: (Bool) -> Void
 
@@ -33,5 +41,18 @@ final class SessionUndoManager: UndoManager {
     override func redo() {
         guard canRedo else { return }
         replay(true)
+    }
+}
+
+/// SwiftUI's WindowGroup may cache an NSWindow UndoManager before the session
+/// delegate is installed. Commands resolve the active session bridge directly.
+@MainActor
+enum SessionUndoMenuTarget {
+    static func manager(for window: NSWindow?) -> UndoManager? {
+        guard let window else { return nil }
+        if let editor = window.firstResponder as? NSTextView, editor.isEditable {
+            return editor.undoManager
+        }
+        return (window.delegate as? SessionUndoWindowDelegate)?.manager
     }
 }

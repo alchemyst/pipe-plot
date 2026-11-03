@@ -92,143 +92,22 @@ struct SessionPicker: View {
 }
 
 struct SettingsView: View {
-    let model: PipePlotAppModel
-    @State private var selectedSession: SessionID?
-    @State private var selectedChart: ChartID?
-    @State private var unit = ""
-    @State private var minValue = ""
-    @State private var maxValue = ""
-
-    private var selectedSnapshot: SessionSnapshot? { selectedSession.flatMap { model.sessionModel(for: $0).snapshot } }
-    private var charts: [ChartSnapshot] { selectedSnapshot?.charts ?? [] }
-    private var chart: ChartSnapshot? { charts.first { $0.id == selectedChart } }
-
     var body: some View {
         Form {
-            Section("Axis presentation") {
-                Picker("Session", selection: $selectedSession) {
-                    Text("Choose session").tag(SessionID?.none)
-                    ForEach(model.sessionCatalog.values.filter { !$0.isDeleted }.sorted { $0.number < $1.number }) {
-                        Text("\($0.number) · \($0.title)").tag(Optional($0.id))
-                    }
-                }
-                Picker("Chart", selection: $selectedChart) {
-                    Text("Choose chart").tag(ChartID?.none)
-                    ForEach(charts) { Text($0.title).tag(Optional($0.id)) }
-                }
-                TextField("Unit label", text: $unit, prompt: Text("e.g. MiB"))
-                    .onSubmit { if let chart { model.updateUnit(unit, chart: chart.id) } }
-                Picker(
-                    "Number scale",
-                    selection: Binding(
-                        get: { chart?.settings.numericScale ?? .decimal },
-                        set: { value in updateSettings { $0.numericScale = value } })
-                ) {
-                    Text("SI (k, M, G)").tag(NumericScale.decimal)
-                    Text("Binary (Ki, Mi, Gi)").tag(NumericScale.binary)
-                }
-                Toggle(
-                    "Include zero",
-                    isOn: Binding(
-                        get: { chart?.settings.includeZero ?? false },
-                        set: { value in updateSettings { $0.includeZero = value } }))
-                Picker(
-                    "Relative value origin",
-                    selection: Binding(
-                        get: { chart?.settings.referenceGuideID },
-                        set: { value in updateSettings { $0.referenceGuideID = value } })
-                ) {
-                    Text("Absolute values").tag(UUID?.none)
-                    ForEach(chart?.guides.filter { $0.orientation == .horizontalValue } ?? []) { guide in
-                        Text(
-                            guide.label?.isEmpty == false
-                                ? guide.label! : guide.value.formatted(.number.precision(.significantDigits(4)))
-                        ).tag(Optional(guide.id))
-                    }
-                }
-                HStack {
-                    TextField("Minimum", text: $minValue).frame(width: 110)
-                    TextField("Maximum", text: $maxValue).frame(width: 110)
-                    Button("Set Y range") {
-                        if let chart, let min = NumericText.parse(minValue, unit: chart.settings.unit),
-                            let max = NumericText.parse(maxValue, unit: chart.settings.unit)
-                        {
-                            model.updateScale(.fixed(min: min, max: max), chart: chart.id)
-                        }
-                    }
-                    Button("Auto") { if let chart { model.updateScale(.automatic, chart: chart.id) } }
-                }
-                Text("Scale and unit belong to the chart. Moving a stream leaves these settings in place.").font(
-                    .caption
-                ).foregroundStyle(.secondary)
-            }
-            Section("Relative time origin") {
-                Picker(
-                    "Relative time origin",
-                    selection: Binding(
-                        get: { selectedSnapshot?.timeline.referenceTimeGuideID },
-                        set: { value in
-                            if let session = selectedSnapshot {
-                                model.setTimeReference(value, session: session)
-                            }
-                        })
-                ) {
-                    Text("Absolute time").tag(UUID?.none)
-                    ForEach(selectedSnapshot?.timeGuides ?? []) { guide in
-                        let session = selectedSnapshot
-                        let zone = session?.timeline.timeZone ?? .local
-                        Text(
-                            guide.label?.isEmpty == false
-                                ? guide.label!
-                                : TimeText.format(
-                                    Date(timeIntervalSince1970: guide.value), zone: zone, includeDate: true)
-                        ).tag(Optional(guide.id))
-                    }
-                }
-            }
-            Section("Guide notifications") {
-                if let chart, let sessionID = selectedSession {
-                    ForEach(chart.guides.filter { $0.orientation == .horizontalValue }) { guide in
-                        GuideAlertSettingsRow(
-                            guide: guide, unit: chart.settings.unit, sessionID: sessionID, chartID: chart.id,
-                            model: model)
-                    }
-                    if chart.guides.allSatisfy({ $0.orientation != .horizontalValue }) {
-                        Text("Add a horizontal value guide to configure notifications.").font(.caption).foregroundStyle(
-                            .secondary)
-                    }
-                }
-            }
             Section("Storage") {
                 Text("Sessions and samples are stored locally in Application Support/PipePlot.")
-                Text("Closing a session window disconnects its samplers and keeps its captured data.").font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("Closing a session window disconnects its samplers and keeps its captured data.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(22).frame(width: 560, height: 650)
-        .onChange(of: selectedChart) { _, _ in loadChartSettings() }
-        .onChange(of: selectedSession) { _, _ in
-            selectedChart = charts.first?.id
-            loadChartSettings()
-        }
+        .padding(22).frame(width: 460, height: 220)
     }
-    private func loadChartSettings() {
-        guard let chart else { return }
-        unit = chart.settings.unit ?? ""
-        if case let .fixed(minimum, maximum) = chart.settings.yScale {
-            minValue = "\(minimum)"
-            maxValue = "\(maximum)"
-        } else {
-            minValue = ""
-            maxValue = ""
-        }
-    }
-    private func updateSettings(_ edit: (inout AxisSettings) -> Void) {
-        guard let chart else { return }
-        var value = chart.settings
-        edit(&value)
-        model.update(value, chart.id)
-    }
+}
+
+struct GuideAlertDraft: Equatable {
+    var direction: CrossingDirection?
+    var hysteresis: String?
+    var cooldown: String?
 }
 
 struct GuideAlertSettingsRow: View {
@@ -237,16 +116,17 @@ struct GuideAlertSettingsRow: View {
     let sessionID: SessionID
     let chartID: ChartID
     let model: PipePlotAppModel
-    @State private var direction: CrossingDirection = .both
-    @State private var hysteresis = "0"
-    @State private var cooldown = "10"
+
+    private var presentation: SessionModel { model.sessionModel(for: sessionID) }
+    private var draft: GuideAlertDraft { presentation.guideAlertDrafts[guide.id] ?? GuideAlertDraft() }
     private var currentGuide: Guide {
-        model.sessionModel(for: sessionID).snapshot?.charts.first(where: { $0.id == chartID })?.guides.first(where: {
-            $0.id == guide.id
-        })
+        presentation.snapshot?.charts.first(where: { $0.id == chartID })?.guides.first(where: { $0.id == guide.id })
             ?? guide
     }
     private var enabled: Bool { currentGuide.alert != nil }
+    private var direction: CrossingDirection { draft.direction ?? currentGuide.alert?.direction ?? .both }
+    private var hysteresis: String { draft.hysteresis ?? "\(currentGuide.alert?.hysteresis ?? 0)" }
+    private var cooldown: String { draft.cooldown ?? "\(currentGuide.alert?.cooldown ?? 10)" }
     private var parsedHysteresis: Double? { NumericText.parse(hysteresis, unit: unit) }
     private var parsedCooldown: Double? { NumericText.parse(cooldown, unit: "s") }
     private var validationMessage: String? {
@@ -261,49 +141,66 @@ struct GuideAlertSettingsRow: View {
             Toggle(
                 currentGuide.label?.isEmpty == false
                     ? currentGuide.label!
-                    : "Guide at \(NumericText.format(currentGuide.value, scale: model.sessionModel(for: sessionID).snapshot?.charts.first(where: { $0.id == chartID })?.settings.numericScale ?? .decimal, unit: unit))",
+                    : "Guide at \(NumericText.format(currentGuide.value, scale: presentation.snapshot?.charts.first(where: { $0.id == chartID })?.settings.numericScale ?? .decimal, unit: unit))",
                 isOn: Binding(
                     get: { enabled },
                     set: { value in
-                        if !value {
-                            var next = currentGuide
-                            next.alert = nil
-                            model.updateGuide(next, chartID: chartID, sessionID: sessionID)
-                        } else if let parsedHysteresis, parsedHysteresis >= 0, let parsedCooldown, parsedCooldown >= 0 {
-                            var next = currentGuide
+                        var next = currentGuide
+                        if value {
+                            guard let parsedHysteresis, parsedHysteresis >= 0,
+                                let parsedCooldown, parsedCooldown >= 0
+                            else { return }
                             next.alert = GuideAlert(
                                 direction: direction, hysteresis: parsedHysteresis, cooldown: parsedCooldown)
-                            model.updateGuide(next, chartID: chartID, sessionID: sessionID)
+                        } else {
+                            next.alert = nil
                         }
+                        if model.updateGuide(next, chartID: chartID, sessionID: sessionID) { clearDraft() }
                     }))
             if enabled {
-                Picker("Crossing", selection: $direction) {
+                Picker(
+                    "Crossing",
+                    selection: Binding(
+                        get: { direction },
+                        set: { value in
+                            updateDraft { $0.direction = value }
+                            save(direction: value)
+                        })
+                ) {
                     Text("Rising").tag(CrossingDirection.rising)
                     Text("Falling").tag(CrossingDirection.falling)
                     Text("Both").tag(CrossingDirection.both)
                 }
-                .onChange(of: direction) { _, value in save(direction: value) }
                 HStack {
-                    TextField("Hysteresis", text: $hysteresis).onSubmit { save() }.accessibilityLabel("Hysteresis")
-                    TextField("Cooldown (s)", text: $cooldown).onSubmit { save() }.accessibilityLabel(
-                        "Cooldown in seconds")
+                    TextField(
+                        "Hysteresis",
+                        text: Binding(
+                            get: { hysteresis }, set: { value in updateDraft { $0.hysteresis = value } })
+                    )
+                    .onSubmit { save() }.accessibilityLabel("Hysteresis")
+                    TextField(
+                        "Cooldown (s)",
+                        text: Binding(
+                            get: { cooldown }, set: { value in updateDraft { $0.cooldown = value } })
+                    )
+                    .onSubmit { save() }.accessibilityLabel("Cooldown in seconds")
                 }
                 if let validationMessage { Text(validationMessage).font(.caption).foregroundStyle(.red) }
             }
-        }.onAppear(perform: loadAlert).onChange(of: currentGuide.alert) { _, _ in loadAlert() }
-    }
-    private func loadAlert() {
-        direction = currentGuide.alert?.direction ?? .both
-        hysteresis = "\(currentGuide.alert?.hysteresis ?? 0)"
-        cooldown = "\(currentGuide.alert?.cooldown ?? 10)"
-    }
-    private func save(direction: CrossingDirection? = nil) {
-        guard let hysteresis = parsedHysteresis, hysteresis >= 0, let cooldown = parsedCooldown, cooldown >= 0 else {
-            return
         }
+    }
+    private func updateDraft(_ edit: (inout GuideAlertDraft) -> Void) {
+        var next = draft
+        edit(&next)
+        presentation.guideAlertDrafts[guide.id] = next
+    }
+    private func clearDraft() { presentation.guideAlertDrafts[guide.id] = nil }
+    func save(direction: CrossingDirection? = nil) {
+        guard let parsedHysteresis, parsedHysteresis >= 0, let parsedCooldown, parsedCooldown >= 0 else { return }
         var next = currentGuide
-        next.alert = GuideAlert(direction: direction ?? self.direction, hysteresis: hysteresis, cooldown: cooldown)
-        model.updateGuide(next, chartID: chartID, sessionID: sessionID)
+        next.alert = GuideAlert(
+            direction: direction ?? self.direction, hysteresis: parsedHysteresis, cooldown: parsedCooldown)
+        if model.updateGuide(next, chartID: chartID, sessionID: sessionID) { clearDraft() }
     }
 }
 
@@ -354,10 +251,25 @@ struct PipePlotCommands: Commands {
     private var sessionTarget: SessionCommandTarget {
         SessionCommandTarget(focused: focusedSession, editingText: isEditingText)
     }
+    private var activeUndoManager: UndoManager? {
+        _ = model.editRevision
+        if let sessionManager = (NSApp.keyWindow?.delegate as? SessionUndoWindowDelegate)?.manager {
+            _ = sessionManager.menuState.revision
+        }
+        return SessionUndoMenuTarget.manager(for: NSApp.keyWindow)
+    }
     var body: some Commands {
         let _ = installInitialWindowOpener?(openWindow)
         CommandGroup(replacing: .newItem) {
             Button("New Session") { model.createSessionWindow() }.keyboardShortcut("n", modifiers: [.command])
+        }
+        CommandGroup(replacing: .undoRedo) {
+            Button(activeUndoManager?.undoMenuItemTitle ?? "Undo") { activeUndoManager?.undo() }
+                .keyboardShortcut("z", modifiers: [.command])
+                .disabled(activeUndoManager?.canUndo != true)
+            Button(activeUndoManager?.redoMenuItemTitle ?? "Redo") { activeUndoManager?.redo() }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(activeUndoManager?.canRedo != true)
         }
         CommandMenu("Session") {
             Button("New Chart Below") { sessionTarget.createChart(using: model) }

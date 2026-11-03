@@ -18,7 +18,7 @@ enum PipePlotAppEntry {
 
 struct PipePlotApplication: App {
     @NSApplicationDelegateAdaptor(PipePlotAppDelegate.self) private var appDelegate
-    @State private var model = PipePlotAppModel()
+    @State private var model = Issue33AcceptanceFixture.makeModel()
 
     var body: some Scene {
         // A data-driven WindowGroup has no initial value on cold launch. Use an
@@ -43,7 +43,7 @@ struct PipePlotApplication: App {
         }
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(.suppressed)
-        Settings { SettingsView(model: model) }
+        Settings { SettingsView() }
     }
 }
 
