@@ -10,13 +10,8 @@ import PipePlotTransport
 final class PipePlotAppModel {
     let store: PipePlotStore
     private let queryStore: SampleStore
-    private let crossings = GuideCrossingDetector()
     private let notifications: GuideNotifications
-    // Assigned during initialization, then only read. UnixSocketServer serializes
-    // its own lifecycle; nonisolated storage lets model teardown close its listener.
-    @ObservationIgnored nonisolated(unsafe) private var server: UnixSocketServer?
-    private let connectionRegistry = ConnectionRegistry()
-    private let appInstanceID = UUID()
+    @ObservationIgnored private var ingestion: IngestionService?
     private var openWindowAction: ((SessionID) -> Void)?
     private var pendingWindowIDs: Set<SessionID> = []
     private var openSessionPickerAction: (() -> Void)?
@@ -58,10 +53,11 @@ final class PipePlotAppModel {
             alert.runModal()
             exit(EXIT_FAILURE)
         }
-        let listener = UnixSocketServer(socketURL: socketURL ?? PipePlotLocations.socketURL) { [weak self] connection in
-            self?.handle(connection)
+        let mailbox = IngestionEventMailbox { [weak self] batch in
+            self?.applyIngestionEvents(batch)
         }
-        server = listener
+        ingestion = IngestionService(
+            store: store, socketURL: socketURL ?? PipePlotLocations.socketURL, emit: { mailbox.post($0) })
         let commandEvents: [Notification.Name] = [
             NSText.didBeginEditingNotification, NSText.didChangeNotification, NSText.didEndEditingNotification,
             NSControl.textDidBeginEditingNotification, NSControl.textDidChangeNotification,
@@ -83,7 +79,7 @@ final class PipePlotAppModel {
     }
 
     deinit {
-        server?.stop()
+        ingestion?.stop()
         commandNotifications.forEach(NotificationCenter.default.removeObserver)
     }
 
@@ -156,9 +152,45 @@ final class PipePlotAppModel {
     private func startServer() {
         guard !serverStarted else { return }
         do {
-            try server?.start()
+            try ingestion?.start()
             serverStarted = true
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func applyIngestionEvents(_ batch: IngestionEventBatch) {
+        if batch.refreshAll { clockPulse = Date() }
+        if !batch.registered.isEmpty || !batch.lifecycleChanges.isEmpty || batch.metadataChanged
+            || batch.reconcileRegistrations || batch.refreshAll
+        {
+            refreshAll()
+        }
+        let registrationIDs: [SessionID]
+        if batch.reconcileRegistrations {
+            registrationIDs = sessions.values.filter { $0.isOpen && !$0.isDeleted }.map(\.id)
+        } else {
+            registrationIDs = batch.registered
+        }
+        for id in registrationIDs where sessions[id]?.isOpen == true && sessions[id]?.isDeleted == false {
+            requestSessionWindow(id)
+        }
+        if !batch.refreshAll {
+            for id in batch.firstSamples { tick(id) }
+        }
+        for crossing in batch.crossings {
+            notifications.deliver(crossing) { [weak self] message in
+                guard let message else { return }
+                DispatchQueue.main.async { self?.errorMessage = message }
+            }
+        }
+        if batch.omittedCrossings > 0 {
+            errorMessage = "\(batch.omittedCrossings) guide crossing alerts were omitted while the app was busy."
+        }
+        if batch.omittedErrors > 0 {
+            errorMessage =
+                "\(batch.omittedErrors) ingestion errors were omitted; latest: \(batch.errors.last ?? "unknown")"
+        } else if let message = batch.errors.last {
+            errorMessage = message
+        }
     }
 
     func createSessionWindow() {
@@ -346,10 +378,15 @@ final class PipePlotAppModel {
     func restoreChart(_ id: ChartID) { perform { try store.restoreChart(id) } }
     func deleteSession(_ id: SessionID) {
         do {
-            try store.deleteSession(sessionID: id)
-            connectionRegistry.closeConnections(for: id)
+            if let ingestion {
+                try ingestion.closeSession(id, delete: true)
+            } else {
+                try store.deleteSession(sessionID: id)
+            }
             refreshAll()
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
     func restoreSession(_ id: SessionID) {
         do {
@@ -817,148 +854,28 @@ final class PipePlotAppModel {
         suspendedDisplays.remove(id)
         openedSessionIDs.remove(id)
         pendingWindowIDs.remove(id)
-        defer { connectionRegistry.closeConnections(for: id) }
         do {
-            try store.setSessionOpen(false, sessionID: id)
+            if let ingestion {
+                try ingestion.closeSession(id)
+            } else {
+                try store.setSessionOpen(false, sessionID: id)
+            }
             refreshAll()
             if activeSessionID == id { activeSessionID = nil }
         } catch { errorMessage = error.localizedDescription }
     }
-    func applicationWillTerminate() { terminating = true }
+    func applicationWillTerminate() {
+        terminating = true
+        ingestion?.stop()
+    }
     func prepareForTermination() {
         do { try store.recordTerminationOpenSessions(openedSessionIDs) } catch {
             errorMessage = error.localizedDescription
         }
         terminating = true
+        ingestion?.stop()
     }
 
-    private func handle(_ connection: SocketConnection) {
-        let owner = UUID()
-        let connectionKey = UUID()
-        var attachment: AttachmentID?
-        var eventMode = false
-        var registered: ReadyReply?
-        var acceptedFirstRow = false
-        defer {
-            if let id = registered?.attachmentID { crossings.finish(attachment: id) }
-            connectionRegistry.remove(connectionKey)
-            connection.close()
-        }
-        do {
-            guard let first = try connection.receive(ClientMessage.self, timeout: 5) else { return }
-            guard case let .hello(request) = first else { throw protocolFailure("handshake", "Expected hello") }
-            try connection.send(ServerMessage.hello(HelloReply(appInstanceID: appInstanceID)))
-            guard request.protocolVersion == 1 else {
-                throw protocolFailure("protocol_version", "Unsupported PipePlot protocol version")
-            }
-            if request.eventMode == true || request.sampler != nil {
-                eventMode = request.eventMode == true
-                guard !(eventMode && request.sampler != nil) else {
-                    throw protocolFailure("handshake", "Choose events or numeric samples")
-                }
-                let ready: ReadyReply
-                if eventMode {
-                    ready = try store.registerEventConnection(intent: request.sink, owner: owner)
-                } else {
-                    ready = try store.registerSampler(intent: request.sink, sampler: request.sampler!, owner: owner)
-                }
-                attachment = ready.attachmentID
-                registered = ready
-                connectionRegistry.add(connectionKey, sessionID: ready.sessionID, connection: connection)
-                try connection.send(ServerMessage.ready(ready))
-                DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
-                    self.refreshAll()
-                    self.requestSessionWindow(ready.sessionID)
-                }
-            }
-            if case .command(let command) = first { try serve(command, over: connection) }
-            while let message = try connection.receive(ClientMessage.self) {
-                switch message {
-                case .hello: throw protocolFailure("protocol", "hello can only be sent once")
-                case .rejected(let rejection):
-                    guard let attachmentID = attachment else {
-                        throw protocolFailure("not_ready", "No sampler was registered")
-                    }
-                    try store.recordRejectedInput(rejection, to: attachmentID)
-                case .event(let event):
-                    guard eventMode, let attachmentID = attachment else {
-                        throw protocolFailure("not_ready", "No event connection was registered")
-                    }
-                    try store.appendEvent(event.text, at: event.timestamp, to: attachmentID)
-                    try connection.send(ServerMessage.eventAccepted)
-                case .row(let row):
-                    guard !eventMode, let attachmentID = attachment else {
-                        throw protocolFailure("not_ready", "No sampler was registered")
-                    }
-                    let seq = try store.append(row, to: attachmentID).first ?? row.sequence
-                    if !acceptedFirstRow, let ready = registered {
-                        acceptedFirstRow = true
-                        // First-point latency must not wait for the periodic display
-                        // timer. Subsequent samples retain the coalesced refresh cadence.
-                        DispatchQueue.main.async { [weak self] in self?.tick(ready.sessionID) }
-                    }
-                    if let ready = registered, let session = try store.snapshot(sessionID: ready.sessionID) {
-                        let events = crossings.evaluate(
-                            row, streams: store.currentAttachmentStreamIDs(attachmentID), attachment: attachmentID,
-                            session: session)
-                        if !events.isEmpty {
-                            DispatchQueue.main.async { [weak self] in
-                                for event in events {
-                                    self?.notifications.deliver(event) { [weak self] message in
-                                        guard let message else { return }
-                                        DispatchQueue.main.async { self?.errorMessage = message }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    try connection.send(ServerMessage.accepted(AcceptedRow(sequence: seq)))
-                case .finish(let reason):
-                    if let attachmentID = attachment {
-                        try store.finishAttachment(attachmentID, reason: reason)
-                        attachment = nil
-                    }
-                    try connection.send(ServerMessage.closed)
-                    return
-                case .command(let command):
-                    try serve(command, over: connection)
-                    return
-                }
-            }
-            if let attachment { try store.finishAttachment(attachment, reason: .clientDisconnected) }
-        } catch {
-            let protocolError = ProtocolError(code: "app_error", message: error.localizedDescription)
-            try? connection.send(ServerMessage.error(protocolError))
-            if let attachment { try? store.finishAttachment(attachment, reason: .error) }
-        }
-        Task { @MainActor in self.refreshAll() }
-    }
-
-    private func serve(_ command: AppCommand, over connection: SocketConnection) throws {
-        switch command {
-        case .list:
-            try connection.send(
-                ServerMessage.listing(Listing(sessions: store.listSessions(), targetChartID: store.currentTarget())),
-                timeout: 5)
-        case .snapshot(let sessionID):
-            if let snapshot = try store.snapshot(sessionID: sessionID) {
-                try connection.send(ServerMessage.snapshot(snapshot), timeout: 5)
-            } else {
-                throw protocolFailure("unknown_session", "Unknown session")
-            }
-        case .setTarget(let chartID):
-            _ = try store.setTarget(chartID)
-            try connection.send(
-                ServerMessage.listing(Listing(sessions: store.listSessions(), targetChartID: store.currentTarget())),
-                timeout: 5)
-        case .createChartAndTarget: throw protocolFailure("unsupported", "Use the atomic --new-chart sampler request")
-        }
-    }
-
-    private func protocolFailure(_ code: String, _ message: String) -> NSError {
-        NSError(domain: "PipePlotIPC.\(code)", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
-    }
 }
 
 struct ForecastStatus {
@@ -997,32 +914,6 @@ struct ForecastDrawing {
     let range: ClosedRange<Date>
     let crossing: Date
     let value: Double
-}
-
-private final class ConnectionRegistry: @unchecked Sendable {
-    private let lock = NSLock()
-    private var items: [UUID: (SessionID, SocketConnection)] = [:]
-    func add(_ key: UUID, sessionID: SessionID, connection: SocketConnection) {
-        lock.lock()
-        defer { lock.unlock() }
-        items[key] = (sessionID, connection)
-    }
-    func remove(_ key: UUID) {
-        lock.lock()
-        defer { lock.unlock() }
-        items.removeValue(forKey: key)
-    }
-    func closeConnections(for sessionID: SessionID) {
-        lock.lock()
-        let selected = items.filter { $0.value.0 == sessionID }.map(\.value.1)
-        lock.unlock()
-        for connection in selected {
-            try? connection.send(
-                ServerMessage.error(
-                    ProtocolError(code: "session_closed", message: "The PipePlot session window was closed.")))
-            connection.close()
-        }
-    }
 }
 
 extension Notification.Name {

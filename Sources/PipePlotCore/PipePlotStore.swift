@@ -21,10 +21,18 @@ public enum DomainError: Error, LocalizedError {
 }
 
 /// Serialized, thread-safe domain boundary. Metadata is atomically saved beside the SQLite sample database.
-public final class PipePlotStore {
+/// `lock` guards every mutable metadata field, including the saved-open-session
+/// set. Initial restoration happens before publication. `samples` owns a separate
+/// SQLite handle with its own lock; store mutations call it while holding `lock`.
+public final class PipePlotStore: @unchecked Sendable {
     public let samples: SampleStore
-    public private(set) var previouslyOpenSessionIDs: Set<SessionID> = []
+    private var savedOpenSessionIDs: Set<SessionID> = []
     private let lock = NSRecursiveLock()
+    public var previouslyOpenSessionIDs: Set<SessionID> {
+        lock.lock()
+        defer { lock.unlock() }
+        return savedOpenSessionIDs
+    }
     private let metadataURL: URL
     private var sessions: [SessionRecord] = []
     private var targetChartID: ChartID?
@@ -47,9 +55,9 @@ public final class PipePlotStore {
         metadataURL = databaseURL.appendingPathExtension("metadata.json")
         if FileManager.default.fileExists(atPath: metadataURL.path) {
             let state = try JSONDecoder().decode(PersistedState.self, from: Data(contentsOf: metadataURL))
-            previouslyOpenSessionIDs = (state.restoreOpenSessionIDs ?? Set(state.sessions.filter(\.isOpen).map(\.id)))
+            savedOpenSessionIDs = (state.restoreOpenSessionIDs ?? Set(state.sessions.filter(\.isOpen).map(\.id)))
                 .subtracting(state.sessions.filter(\.isDeleted).map(\.id))
-            restoreOpenSessionIDs = previouslyOpenSessionIDs
+            restoreOpenSessionIDs = savedOpenSessionIDs
             sessions = state.sessions
             targetChartID = state.targetChartID
             nextNumber = state.nextNumber
@@ -263,7 +271,7 @@ public final class PipePlotStore {
         sessions[i].isOpen = false
         sessions[i].isDeleted = true
         restoreOpenSessionIDs.remove(sessionID)
-        previouslyOpenSessionIDs.remove(sessionID)
+        savedOpenSessionIDs.remove(sessionID)
         if sessions[i].timeline.clockStoppedAt == nil { sessions[i].timeline.clockStoppedAt = Date() }
         if let targetChartID, findSessionIndex(forChart: targetChartID) == i { fallbackTarget() }
         if let continuation = lastContinuation, findSessionIndex(forChart: continuation.chartID) == i {
@@ -1612,14 +1620,14 @@ public final class PipePlotStore {
     }
     private func memoryState() -> MemoryState {
         MemoryState(
-            previouslyOpenSessionIDs: previouslyOpenSessionIDs, sessions: sessions, targetChartID: targetChartID,
+            previouslyOpenSessionIDs: savedOpenSessionIDs, sessions: sessions, targetChartID: targetChartID,
             nextNumber: nextNumber, epoch: epoch, lastContinuation: lastContinuation, attachments: attachments,
             owners: owners, attachmentOrder: attachmentOrder, undoStacks: undoStacks, redoStacks: redoStacks,
             recency: recency, restoreOpenSessionIDs: restoreOpenSessionIDs,
             terminationSnapshotTaken: terminationSnapshotTaken)
     }
     private func restoreMemoryState(_ s: MemoryState) {
-        previouslyOpenSessionIDs = s.previouslyOpenSessionIDs
+        savedOpenSessionIDs = s.previouslyOpenSessionIDs
         sessions = s.sessions
         targetChartID = s.targetChartID
         nextNumber = s.nextNumber

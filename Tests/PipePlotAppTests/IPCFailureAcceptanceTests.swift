@@ -4,7 +4,147 @@ import PipePlotCore
 import PipePlotTransport
 @testable import PipePlotApp
 
+@MainActor private final class IngestionBatchRecorder {
+    var batches: [IngestionEventBatch] = []
+}
+
 @MainActor final class IPCFailureAcceptanceTests: XCTestCase {
+    func testMailboxBoundsRegistrationsAndCoalescesFirstSampleEvents() async throws {
+        let recorder = IngestionBatchRecorder()
+        let delivered = expectation(description: "one bounded batch")
+        let mailbox = IngestionEventMailbox { batch in
+            recorder.batches.append(batch)
+            delivered.fulfill()
+        }
+        let first = UUID()
+        for _ in 0..<50 { mailbox.post(.firstSample(first)) }
+        for _ in 0..<200 { mailbox.post(.registered(UUID())) }
+        for n in 0..<20 { mailbox.post(.error("error \(n)")) }
+        await fulfillment(of: [delivered], timeout: 2)
+        XCTAssertEqual(recorder.batches.count, 1)
+        let batch = try XCTUnwrap(recorder.batches.first)
+        XCTAssertEqual(batch.firstSamples, [first])
+        XCTAssertEqual(batch.registered.count, 128)
+        XCTAssertTrue(batch.reconcileRegistrations)
+        XCTAssertEqual(batch.errors.count, 16)
+        XCTAssertEqual(batch.errors.last, "error 19")
+        XCTAssertEqual(batch.omittedErrors, 4)
+    }
+
+    func testQuietClientLeavesMainActorResponsiveAndCommandFinalizesAttachment() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let socket = URL(fileURLWithPath: "/tmp/pp-\(UUID().uuidString.prefix(8)).sock")
+        let model = PipePlotAppModel(databaseURL: directory.appendingPathComponent("quiet.sqlite"), socketURL: socket)
+        let connection = try PipePlotLocations.connect(socketURL: socket, timeout: 2)
+        defer { connection.close() }
+        try connection.send(
+            ClientMessage.hello(HelloRequest(sink: .newSession, sampler: SamplerIntent(columnCount: 1))))
+        guard case .hello? = try connection.receive(ServerMessage.self, timeout: 2),
+            case .ready(let ready)? = try connection.receive(ServerMessage.self, timeout: 2)
+        else { return XCTFail("Sampler registration failed") }
+        // The worker is waiting for this client; the actor can still process UI work.
+        let progress = expectation(description: "main actor progress while client is quiet")
+        Task { @MainActor in
+            model.createSessionWindow()
+            progress.fulfill()
+        }
+        await fulfillment(of: [progress], timeout: 2)
+        XCTAssertGreaterThanOrEqual(model.sessions.count, 2)
+        try connection.send(ClientMessage.command(.snapshot(sessionID: ready.sessionID)))
+        guard case .snapshot(let snapshot)? = try connection.receive(ServerMessage.self, timeout: 2) else {
+            return XCTFail("Missing snapshot")
+        }
+        XCTAssertEqual(snapshot.charts[0].streams[0].state, .disconnected)
+        for _ in 0..<100 {
+            if model.sessions[ready.sessionID]?.charts[0].streams[0].state == .disconnected { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(model.sessions[ready.sessionID]?.charts[0].streams[0].state, .disconnected)
+    }
+
+    func testClosedSessionCanBeExplicitlyRegisteredAgain() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let socket = URL(fileURLWithPath: "/tmp/pp-\(UUID().uuidString.prefix(8)).sock")
+        let model = PipePlotAppModel(databaseURL: directory.appendingPathComponent("reopen.sqlite"), socketURL: socket)
+        let first = try PipePlotLocations.connect(socketURL: socket, timeout: 2)
+        defer { first.close() }
+        try first.send(ClientMessage.hello(HelloRequest(sink: .newSession, sampler: SamplerIntent(columnCount: 1))))
+        guard case .hello? = try first.receive(ServerMessage.self, timeout: 2),
+            case .ready(let ready)? = try first.receive(ServerMessage.self, timeout: 2)
+        else { return XCTFail("First registration failed") }
+        model.windowClosed(ready.sessionID)
+        let reopened = try PipePlotLocations.connect(socketURL: socket, timeout: 2)
+        defer { reopened.close() }
+        try reopened.send(
+            ClientMessage.hello(
+                HelloRequest(
+                    sink: .session(sessionID: ready.sessionID, lineNames: ["next"]),
+                    sampler: SamplerIntent(columnCount: 1))))
+        guard case .hello? = try reopened.receive(ServerMessage.self, timeout: 2),
+            case .ready(let second)? = try reopened.receive(ServerMessage.self, timeout: 2)
+        else { return XCTFail("Explicit registration after close failed") }
+        XCTAssertEqual(second.sessionID, ready.sessionID)
+        XCTAssertTrue(try XCTUnwrap(model.store.snapshot(sessionID: ready.sessionID)).isOpen)
+        try reopened.send(ClientMessage.row(SampleRow(values: [42])))
+        guard case .accepted? = try reopened.receive(ServerMessage.self, timeout: 2) else {
+            return XCTFail("Missing resumed capture acknowledgement")
+        }
+    }
+
+    func testAcceptedRowsCrossTypedEventBoundaryInOrder() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try PipePlotStore(databaseURL: directory.appendingPathComponent("crossing.sqlite"))
+        let socket = URL(fileURLWithPath: "/tmp/pp-\(UUID().uuidString.prefix(8)).sock")
+        let recorder = IngestionBatchRecorder()
+        let crossed = expectation(description: "crossing delivered to actor")
+        let mailbox = IngestionEventMailbox { batch in
+            recorder.batches.append(batch)
+            if recorder.batches.flatMap(\.crossings).count == 2 { crossed.fulfill() }
+        }
+        let service = IngestionService(store: store, socketURL: socket) { mailbox.post($0) }
+        try service.start()
+        defer { service.stop() }
+        let connection = try PipePlotLocations.connect(socketURL: socket, timeout: 2)
+        defer { connection.close() }
+        try connection.send(
+            ClientMessage.hello(HelloRequest(sink: .newSession, sampler: SamplerIntent(columnCount: 1))))
+        guard case .hello? = try connection.receive(ServerMessage.self, timeout: 2),
+            case .ready(let ready)? = try connection.receive(ServerMessage.self, timeout: 2)
+        else { return XCTFail("Registration failed") }
+        let chartID = try XCTUnwrap(store.snapshot(sessionID: ready.sessionID)?.charts.first?.id)
+        try store.upsertGuide(
+            Guide(orientation: .horizontalValue, value: 1, alert: GuideAlert(direction: .rising, cooldown: 0)),
+            chartID: chartID)
+        for value in [0.0, 2.0, 0.0, 3.0] {
+            try connection.send(ClientMessage.row(SampleRow(values: [value])))
+            guard case .accepted? = try connection.receive(ServerMessage.self, timeout: 2) else {
+                return XCTFail("Missing row acknowledgement")
+            }
+        }
+        await fulfillment(of: [crossed], timeout: 2)
+        let events = recorder.batches.flatMap(\.crossings)
+        XCTAssertEqual(events.map(\.value), [2, 3])
+        let crossing = try XCTUnwrap(events.first)
+        XCTAssertEqual(crossing.sessionID, ready.sessionID)
+        XCTAssertEqual(crossing.streamID, ready.streams[0].id)
+        XCTAssertEqual(crossing.value, 2)
+
+        let overflowRecorder = IngestionBatchRecorder()
+        let overflow = expectation(description: "bounded crossing batch")
+        let overflowMailbox = IngestionEventMailbox { batch in
+            overflowRecorder.batches.append(batch)
+            overflow.fulfill()
+        }
+        for _ in 0..<130 { overflowMailbox.post(.crossing(crossing)) }
+        await fulfillment(of: [overflow], timeout: 2)
+        XCTAssertEqual(overflowRecorder.batches.count, 1)
+        XCTAssertEqual(overflowRecorder.batches[0].crossings.count, 128)
+        XCTAssertEqual(overflowRecorder.batches[0].omittedCrossings, 2)
+    }
+
     func testClientLossAndSessionCloseRetainAcknowledgedRowsAndOtherSessionCapture() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("pp-ipc-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
