@@ -37,9 +37,8 @@ struct TimelineLocators: View {
                                 .font(.system(size: 10).monospacedDigit()).foregroundColor(.secondary),
                             at: CGPoint(x: x(t), y: 3), anchor: anchor)
                     }
-                    if let selection {
-                        let left = max(plot.minX, x(selection.lowerBound)),
-                            right = min(plot.maxX, x(selection.upperBound))
+                    if let selection, let visibleSelection = TimeSelection.clippedForDisplay(selection, to: range) {
+                        let left = x(visibleSelection.lowerBound), right = x(visibleSelection.upperBound)
                         if right >= left {
                             let rect = CGRect(x: left, y: 59, width: max(1, right - left), height: 13)
                             context.fill(Path(rect), with: .color(.accentColor.opacity(0.15)))

@@ -995,7 +995,6 @@ public final class PipePlotStore {
         guard let i = sessionIndex(sessionID) else { throw DomainError.unknownSession }
         var value = timeline
         value.selection = sessions[i].timeline.selection
-        value.forecast = sessions[i].timeline.forecast
         value.forecasts = sessions[i].timeline.forecasts
         value.clockStoppedAt = sessions[i].timeline.clockStoppedAt
         sessions[i].timeline = value
@@ -1020,22 +1019,7 @@ public final class PipePlotStore {
         try persist()
     }
     public func setForecast(_ forecast: ForecastConfiguration?, sessionID: SessionID) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let i = sessionIndex(sessionID) else { throw DomainError.unknownSession }
-        if let f = forecast {
-            guard f.selection.start <= f.selection.end,
-                sessions[i].charts.flatMap(\.streams).contains(where: { $0.id == f.streamID }),
-                sessions[i].charts.contains(where: {
-                    $0.guides.contains(where: { $0.id == f.guideID && $0.orientation == .horizontalValue })
-                })
-            else { throw DomainError.invalidSelection }
-        }
-        let old = sessions[i].timeline.forecast
-        guard old != forecast else { return }
-        sessions[i].timeline.forecast = forecast
-        record(.forecast(sessionID, old: old, new: forecast), in: sessionID)
-        try persist()
+        try setForecasts(forecast.map { [$0] } ?? [], sessionID: sessionID)
     }
     public func setForecasts(_ forecasts: [ForecastConfiguration], sessionID: SessionID) throws {
         lock.lock()
@@ -1049,10 +1033,9 @@ public final class PipePlotStore {
                 })
             else { throw DomainError.invalidSelection }
         }
-        let old = sessions[i].timeline.forecasts ?? sessions[i].timeline.forecast.map { [$0] } ?? []
+        let old = sessions[i].timeline.forecasts
         guard old != forecasts else { return }
         sessions[i].timeline.forecasts = forecasts
-        sessions[i].timeline.forecast = forecasts.first
         record(.forecasts(sessionID, old: old, new: forecasts), in: sessionID)
         try persist()
     }
@@ -1071,11 +1054,10 @@ public final class PipePlotStore {
         default: break
         }
         let guide = Guide(orientation: .horizontalValue, value: value, label: label)
-        let old = sessions[si].timeline.forecasts ?? sessions[si].timeline.forecast.map { [$0] } ?? []
+        let old = sessions[si].timeline.forecasts
         let new = old + [ForecastConfiguration(streamID: streamID, guideID: guide.id, selection: selection)]
         sessions[si].charts[ci].guides.append(guide)
         sessions[si].timeline.forecasts = new
-        sessions[si].timeline.forecast = new.first
         record(.forecastTarget(sessions[si].charts[ci].id, guide: guide, old: old, new: new), in: sessions[si].id)
         try persist()
         return guide
@@ -1291,7 +1273,6 @@ public final class PipePlotStore {
             if let i = sessionIndex(sid) {
                 let value = undo ? old : new
                 sessions[i].timeline.forecasts = value
-                sessions[i].timeline.forecast = value.first
             }
         case .forecastTarget(let chartID, let guide, let old, let new):
             if let (a, b) = findChartIndices(chartID) {
@@ -1299,7 +1280,6 @@ public final class PipePlotStore {
                 if !undo { sessions[a].charts[b].guides.append(guide) }
                 let value = undo ? old : new
                 sessions[a].timeline.forecasts = value
-                sessions[a].timeline.forecast = value.first
             }
         case .streamStyle(let id, let oldColor, let newColor, let oldDots, let newDots, let oldLines, let newLines):
             if let (a, b) = streamIndices(id), let ix = sessions[a].charts[b].streams.firstIndex(where: { $0.id == id })

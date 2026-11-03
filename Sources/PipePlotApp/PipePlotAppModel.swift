@@ -542,7 +542,7 @@ final class PipePlotAppModel {
     func isCalculatingStats(_ stream: StreamID) -> Bool { queries.isCalculatingStatistics(stream) }
     func stats(for stream: StreamID, in selection: TimeSelection) -> SelectionStatistics? {
         guard isDisplayActive(for: stream) else { return nil }
-        let range = resolvedRange(selection, now: sessionNow(for: stream))
+        let range = selection.resolvedBounds(at: sessionNow(for: stream))
         return queries.stats(stream, key: queryKey(stream, range: range), store: queryStore) { [weak self] in
             self?.errorMessage = $0.localizedDescription
         }
@@ -560,18 +560,7 @@ final class PipePlotAppModel {
         } catch { errorMessage = error.localizedDescription }
     }
     func resolvedSelectionBounds(_ selection: TimeSelection, session: SessionSnapshot) -> ClosedRange<Date> {
-        switch selection.mode {
-        case .fixed:
-            return min(selection.start, selection.end)...max(selection.start, selection.end)
-        case .startFollowsEnd(let duration):
-            return selection.end.addingTimeInterval(-duration)...selection.end
-        case .endFollowsNow:
-            let now = sessionNow(session)
-            return min(selection.start, now)...max(selection.start, now)
-        case .bothFollowNow(let duration):
-            let now = sessionNow(session)
-            return now.addingTimeInterval(-duration)...now
-        }
+        selection.resolvedBounds(at: sessionNow(session))
     }
     func nearestSample(_ stream: StreamID, at date: Date) -> StoredSample? {
         guard isDisplayActive(for: stream) else { return nil }
@@ -579,7 +568,7 @@ final class PipePlotAppModel {
     }
     func fit(for stream: StreamID, selection: TimeSelection, cacheID: UUID? = nil) -> LinearFit? {
         guard isDisplayActive(for: stream) else { return nil }
-        let range = resolvedRange(selection, now: sessionNow(for: stream))
+        let range = selection.resolvedBounds(at: sessionNow(for: stream))
         return queries.fit(
             stream, cacheID: cacheID ?? stream, key: queryKey(stream, range: range), settings: selection,
             store: queryStore,
@@ -590,16 +579,6 @@ final class PipePlotAppModel {
                 for session in self.sessions.values { self.refreshForecast(session) }
             }, failed: { [weak self] in self?.errorMessage = $0.localizedDescription })
     }
-    private func resolvedRange(_ selection: TimeSelection, now: Date? = nil) -> ClosedRange<Date> {
-        let now = now ?? clockPulse
-        switch selection.mode {
-        case .fixed: return min(selection.start, selection.end)...max(selection.start, selection.end)
-        case .startFollowsEnd(let duration): return selection.end.addingTimeInterval(-duration)...selection.end
-        case .endFollowsNow: return min(selection.start, now)...max(selection.start, now)
-        case .bothFollowNow(let duration): return now.addingTimeInterval(-duration)...now
-        }
-    }
-
     func followNow(_ session: SessionSnapshot) {
         var timeline = session.timeline
         timeline.followNow = true
@@ -656,7 +635,7 @@ final class PipePlotAppModel {
 
     func setForecast(_ forecast: ForecastConfiguration?, session: SessionSnapshot) {
         do {
-            var configurations = session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? []
+            var configurations = session.timeline.forecasts
             if let forecast {
                 configurations.removeAll { $0.streamID == forecast.streamID && $0.guideID == forecast.guideID }
                 configurations.append(forecast)
@@ -680,7 +659,7 @@ final class PipePlotAppModel {
     }
 
     func removeForecast(_ id: UUID, session: SessionSnapshot) {
-        let configurations = (session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? []).filter {
+        let configurations = session.timeline.forecasts.filter {
             $0.id != id
         }
         perform { try store.setForecasts(configurations, sessionID: session.id) }
@@ -693,7 +672,7 @@ final class PipePlotAppModel {
         }
         guard isDisplayActive(session.id) else { return }
         let configurations =
-            session.isDeleted ? [] : (session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? [])
+            session.isDeleted ? [] : session.timeline.forecasts
         let statuses = configurations.map { configuration -> ForecastStatus in
             guard
                 let chart = session.charts.first(where: {
@@ -708,7 +687,7 @@ final class PipePlotAppModel {
                     message: "Target guide is missing")
             }
             let count = chart.streams.first(where: { $0.id == configuration.streamID })?.sampleCount ?? 0
-            let range = resolvedRange(configuration.selection, now: sessionNow(session))
+            let range = configuration.selection.resolvedBounds(at: sessionNow(session))
             let fitted = fit(for: configuration.streamID, selection: configuration.selection, cacheID: configuration.id)
             let crossing = fitted?.crossing(value: guide.value)
             let now = sessionNow(session)
@@ -728,7 +707,7 @@ final class PipePlotAppModel {
                             : String(format: "%.1f days", remaining / 86400)))
                 message =
                     crossing > now
-                    ? "Crossing \(TimeText.format(crossing, zone: session.timeline.timeZone ?? .local, includeDate: true)) · in \(countdown) · \(detail)"
+                    ? "Crossing \(TimeText.format(crossing, zone: session.timeline.timeZone, includeDate: true)) · in \(countdown) · \(detail)"
                     : "No future crossing · \(detail)"
             } else {
                 message =
@@ -744,7 +723,7 @@ final class PipePlotAppModel {
         forecastStatuses[session.id] = statuses.first
     }
     func forecastTrainingRanges(for chart: ChartSnapshot, session: SessionSnapshot) -> [ForecastTrainingRange] {
-        let configurations = session.timeline.forecasts ?? session.timeline.forecast.map { [$0] } ?? []
+        let configurations = session.timeline.forecasts
         return configurations.compactMap { configuration in
             guard let stream = chart.streams.first(where: { $0.id == configuration.streamID }) else { return nil }
             let guide = chart.guides.first { $0.id == configuration.guideID }
@@ -752,13 +731,13 @@ final class PipePlotAppModel {
                 guide?.label.flatMap { $0.isEmpty ? nil : $0 }
                 ?? guide.map {
                     NumericText.format(
-                        $0.value, scale: chart.settings.numericScale ?? .decimal, unit: chart.settings.unit)
+                        $0.value, scale: chart.settings.numericScale, unit: chart.settings.unit)
                 }
                 ?? "missing target"
             return ForecastTrainingRange(
                 id: configuration.id, streamID: stream.id,
                 label: "\(stream.name) → \(target) · training",
-                range: resolvedRange(configuration.selection, now: sessionNow(session)),
+                range: configuration.selection.resolvedBounds(at: sessionNow(session)),
                 linked: configuration.selection.mode != .fixed)
         }
     }
@@ -770,7 +749,7 @@ final class PipePlotAppModel {
             else { return nil }
             return ForecastDrawing(
                 streamID: status.configuration.streamID, fit: fit,
-                range: resolvedRange(status.configuration.selection, now: sessionNow(session)), crossing: crossing,
+                range: status.configuration.selection.resolvedBounds(at: sessionNow(session)), crossing: crossing,
                 value: guide.value)
         }
     }

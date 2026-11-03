@@ -31,8 +31,25 @@ final class NumericTextTests: XCTestCase {
 final class TimeTextTests: XCTestCase {
     func testUTCAbsoluteAndRelativeTimeFormatting() {
         let origin = Date(timeIntervalSince1970: 0)
-        XCTAssertTrue(TimeText.format(origin, zone: .utc).hasSuffix("UTC"))
+        XCTAssertEqual(TimeText.format(origin, zone: .utc), "00:00:00 UTC")
+        XCTAssertEqual(TimeText.format(origin, zone: .utc, includeDate: true), "1970-01-01 00:00:00 UTC")
         XCTAssertEqual(TimeText.format(origin.addingTimeInterval(65), zone: .local, reference: origin), "+1:05")
         XCTAssertEqual(TimeText.format(origin.addingTimeInterval(-5), zone: .utc, reference: origin), "−5s")
+        XCTAssertEqual(TimeText.format(origin.addingTimeInterval(3661), zone: .utc, reference: origin), "+1:01:01")
+        XCTAssertEqual(TimeText.format(origin.addingTimeInterval(0.6), zone: .utc, reference: origin), "+1s")
+    }
+
+    func testLocalAbsoluteFormattingUsesCurrentZoneWithSecondPrecision() throws {
+        let date = Date(timeIntervalSince1970: 0)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        let year = try XCTUnwrap(parts.year), month = try XCTUnwrap(parts.month), day = try XCTUnwrap(parts.day)
+        let hour = try XCTUnwrap(parts.hour), minute = try XCTUnwrap(parts.minute), second = try XCTUnwrap(parts.second)
+        let clock = String(format: "%02d:%02d:%02d", hour, minute, second)
+        let dated = String(format: "%04d-%02d-%02d %@", year, month, day, clock)
+        XCTAssertEqual(TimeText.format(date, zone: .local), clock)
+        XCTAssertEqual(TimeText.format(date, zone: .local, includeDate: true), dated)
+        XCTAssertFalse(TimeText.format(date, zone: .local).hasSuffix(" UTC"))
     }
 }

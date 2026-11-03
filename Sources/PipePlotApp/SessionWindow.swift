@@ -229,7 +229,7 @@ struct SessionWindow: View {
             if let date = hoverDate {
                 Text(
                     TimeText.format(
-                        date, zone: session.timeline.timeZone ?? .local, reference: timeReference(session),
+                        date, zone: session.timeline.timeZone, reference: timeReference(session),
                         includeDate: true)
                 ).monospacedDigit().font(.caption)
             }
@@ -246,7 +246,7 @@ struct SessionWindow: View {
             }
             .disabled(!model.canNavigateForward(session.id)).help("Forward in time navigation")
             Text(
-                "Now  \(TimeText.format(model.sessionNow(session), zone: session.timeline.timeZone ?? .local, reference: timeReference(session)))"
+                "Now  \(TimeText.format(model.sessionNow(session), zone: session.timeline.timeZone, reference: timeReference(session)))"
             )
             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             Button {
@@ -291,7 +291,7 @@ struct SessionWindow: View {
             guides.append(preview)
         }
         return TimelineLocators(
-            range: range, timeZone: session.timeline.timeZone ?? .local, reference: timeReference(session),
+            range: range, timeZone: session.timeline.timeZone, reference: timeReference(session),
             guides: guides, selection: bounds, selectionMode: session.timeline.selection?.mode,
             now: model.sessionNow(session), hover: hoverDate,
             onHover: { hoverDate = $0 },
@@ -379,7 +379,7 @@ private struct SelectionInspector: View {
                 let reference = session.timeGuides.first(where: { $0.id == session.timeline.referenceTimeGuideID }).map
                 { Date(timeIntervalSince1970: $0.value) }
                 Text(
-                    "\(TimeText.format(bounds.lowerBound, zone: session.timeline.timeZone ?? .local, reference: reference, includeDate: true)) – \(TimeText.format(bounds.upperBound, zone: session.timeline.timeZone ?? .local, reference: reference, includeDate: true))"
+                    "\(TimeText.format(bounds.lowerBound, zone: session.timeline.timeZone, reference: reference, includeDate: true)) – \(TimeText.format(bounds.upperBound, zone: session.timeline.timeZone, reference: reference, includeDate: true))"
                 )
                 .font(.caption.monospacedDigit())
                 Text("duration \(duration(bounds.upperBound.timeIntervalSince(bounds.lowerBound)) )")
@@ -1178,12 +1178,12 @@ private struct ChartRow: View {
                 Text(
                     guide.orientation == .verticalTime
                         ? TimeText.format(
-                            Date(timeIntervalSince1970: guide.value), zone: session.timeline.timeZone ?? .local,
+                            Date(timeIntervalSince1970: guide.value), zone: session.timeline.timeZone,
                             reference: session.timeGuides.first(where: {
                                 $0.id == session.timeline.referenceTimeGuideID
                             }).map { Date(timeIntervalSince1970: $0.value) }, includeDate: true)
                         : NumericText.format(
-                            guide.value, scale: chart.settings.numericScale ?? .decimal, unit: chart.settings.unit)
+                            guide.value, scale: chart.settings.numericScale, unit: chart.settings.unit)
                 )
                 .font(.caption).foregroundStyle(.secondary)
             }
@@ -1287,7 +1287,7 @@ private struct ChartRow: View {
     }
     private func hoverReadout(stream: StreamDescriptor, sample: StoredSample, offset: TimeInterval) -> String {
         let value = NumericText.format(
-            sample.value, scale: chart.settings.numericScale ?? .decimal, unit: chart.settings.unit)
+            sample.value, scale: chart.settings.numericScale, unit: chart.settings.unit)
         let signedOffset = String(format: "%+.1fs", offset)
         return "\(stream.name)  \(value)  \(signedOffset)"
     }

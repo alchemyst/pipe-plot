@@ -116,24 +116,7 @@ struct PlotCanvas: View {
     }
 
     private var currentSelectionRange: ClosedRange<Date>? {
-        selection.map { item in
-            let start: Date, end: Date
-            switch item.mode {
-            case .fixed:
-                start = item.start
-                end = item.end
-            case .endFollowsNow:
-                start = item.start
-                end = now
-            case .bothFollowNow(let duration):
-                start = now.addingTimeInterval(-duration)
-                end = now
-            case .startFollowsEnd(let duration):
-                start = item.end.addingTimeInterval(-duration)
-                end = item.end
-            }
-            return min(start, end)...max(start, end)
-        }
+        selection?.resolvedBounds(at: now)
     }
 
     private func isBothFollowNow(_ mode: SelectionMode) -> Bool {
@@ -159,7 +142,7 @@ struct PlotCanvas: View {
         let plot = plotRect(for: size)
         let valueRange = yRange
         var grid = Path()
-        let numericScale = chart.settings.numericScale ?? .decimal
+        let numericScale = chart.settings.numericScale
         let yTicks = NumericText.ticks(
             in: valueRange, scale: numericScale, targetCount: max(2, min(6, Int(plot.height / 55))))
         for value in yTicks {
@@ -176,7 +159,7 @@ struct PlotCanvas: View {
             let fraction = Double(index) / Double(tickCount)
             let date = domain.lowerBound.addingTimeInterval(timeSpan * fraction)
             let x = plot.minX + plot.width * CGFloat(fraction)
-            let label = TimeText.format(date, zone: session.timeline.timeZone ?? .local, reference: referenceTime)
+            let label = TimeText.format(date, zone: session.timeline.timeZone, reference: referenceTime)
             context.draw(
                 Text(label).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary),
                 at: CGPoint(x: x, y: plot.maxY + 12),
@@ -246,7 +229,7 @@ struct PlotCanvas: View {
                     AcceptanceTrace.record("visible-sample-render", stream: stream.id, sample: latest.timestamp)
                 }
             }
-            if chart.settings.showExtrema != false, chart.streams.count <= 6, data.count >= 3 {
+            if chart.settings.showExtrema, chart.streams.count <= 6, data.count >= 3 {
                 let extrema = PeakFinder.extrema(
                     samples: data, visibleRange: domain, plotWidth: Double(plot.width), valueRange: valueRange,
                     maximumCount: 3)
@@ -336,19 +319,14 @@ struct PlotCanvas: View {
                 context.stroke(path, with: .color(forecastColor), style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
             }
         }
-        let savedSelection: (Date, Date)? = selection.map { item in
-            switch item.mode {
-            case .fixed: return (item.start, item.end)
-            case .endFollowsNow: return (item.start, now)
-            case .bothFollowNow(let duration): return (now.addingTimeInterval(-duration), now)
-            case .startFollowsEnd(let duration): return (item.end.addingTimeInterval(-duration), item.end)
-            }
-        }
         if let selectionStart, let selectionPreview {
             drawSelection(
                 from: selectionStart, to: selectionPreview, linked: selectionLinkedPreview, in: plot, context: context)
-        } else if let (start, end) = savedSelection {
-            drawSelection(from: start, to: end, linked: selection?.mode != .fixed, in: plot, context: context)
+        } else if let selection {
+            let bounds = selection.resolvedBounds(at: now)
+            drawSelection(
+                from: bounds.lowerBound, to: bounds.upperBound, linked: selection.mode != .fixed, in: plot,
+                context: context)
         }
         // Separate labelled lanes distinguish saved fits from the active selection and dashed extrapolation.
         for (index, training) in trainingRanges.enumerated() {
@@ -439,7 +417,7 @@ struct PlotCanvas: View {
         if case let .fixed(minimum, maximum) = chart.settings.yScale, minimum < maximum { return minimum...maximum }
         var values = chart.streams.flatMap { samples[$0.id, default: []].map(\.value) }
         values.append(contentsOf: chart.guides.filter { $0.orientation == .horizontalValue }.map(\.value))
-        if chart.settings.includeZero == true { values.append(0) }
+        if chart.settings.includeZero { values.append(0) }
         values.append(
             contentsOf: forecasts.filter { forecast in
                 forecast.value.isFinite && chart.streams.contains(where: { $0.id == forecast.streamID })
@@ -466,15 +444,6 @@ struct PlotCanvas: View {
         let low = range.lowerBound / scale
         let high = range.upperBound / scale
         return (low + (high - low) * fraction) * scale
-    }
-
-    private static func elapsedLabel(_ interval: TimeInterval) -> String {
-        let sign = interval < 0 ? "−" : "+"
-        let total = Int(abs(interval).rounded())
-        let hours = total / 3600, minutes = total % 3600 / 60, seconds = total % 60
-        if hours > 0 { return "\(sign)\(hours):\(String(format: "%02d:%02d", minutes, seconds))" }
-        if minutes > 0 { return "\(sign)\(minutes):\(String(format: "%02d", seconds))" }
-        return "\(sign)\(seconds)s"
     }
 
     static func color(_ index: Int) -> Color {
