@@ -165,13 +165,17 @@ private func runEvents(_ options: Options) throws {
     while true {
         var descriptors = [
             pollfd(fd: STDIN_FILENO, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0),
-            pollfd(fd: connection.fileDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0),
+            pollfd(fd: -1, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0),
         ]
-        let ready = Darwin.poll(&descriptors, nfds_t(descriptors.count), -1)
+        let ready = try connection.withFileDescriptor { fd in
+            descriptors[1].fd = fd
+            return Darwin.poll(&descriptors, nfds_t(descriptors.count), 250)
+        }
         if ready < 0 {
             if errno == EINTR { continue }
             throw SocketError.system("poll", errno)
         }
+        if ready == 0 { continue }
         let socketEvents = descriptors[1].revents
         if socketEvents & Int16(POLLIN | POLLHUP | POLLERR) != 0 {
             guard let message = try connection.receive(ServerMessage.self, timeout: 0.1) else {
@@ -459,15 +463,22 @@ private func runSampler(_ options: Options) throws {
             descriptors.append(pollfd(fd: inputDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0))
         }
         let socketIndex: Int?
-        if let connection = readyConnection {
+        if readyConnection != nil {
             socketIndex = descriptors.count
-            descriptors.append(
-                pollfd(fd: connection.fileDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0))
+            descriptors.append(pollfd(fd: -1, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0))
         } else {
             socketIndex = nil
         }
         let timeout: Int32 = sine != nil || watcher != nil ? 100 : (readyConnection == nil ? -1 : 250)
-        let result = Darwin.poll(&descriptors, nfds_t(descriptors.count), timeout)
+        let result: Int32
+        if let connection = readyConnection, let socketIndex {
+            result = try connection.withFileDescriptor { fd in
+                descriptors[socketIndex].fd = fd
+                return Darwin.poll(&descriptors, nfds_t(descriptors.count), timeout)
+            }
+        } else {
+            result = Darwin.poll(&descriptors, nfds_t(descriptors.count), timeout)
+        }
         if result < 0 {
             if errno == EINTR { continue }
             throw SocketError.system("poll", errno)

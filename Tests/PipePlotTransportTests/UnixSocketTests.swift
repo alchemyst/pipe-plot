@@ -99,8 +99,9 @@ final class UnixSocketTests: XCTestCase {
         let server = UnixSocketServer(socketURL: path) { connection in
             accepted.fulfill()
             var sendBuffer: Int32 = 1_024
-            _ = setsockopt(
-                connection.fileDescriptor, SOL_SOCKET, SO_SNDBUF, &sendBuffer, socklen_t(MemoryLayout<Int32>.size))
+            try? connection.withFileDescriptor { fd in
+                _ = setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sendBuffer, socklen_t(MemoryLayout<Int32>.size))
+            }
             do {
                 try connection.send(bytes: Data(repeating: 0x61, count: 64 * 1_024 * 1_024), timeout: 0.1)
                 XCTFail("Expected the non-reading peer deadline")
@@ -146,14 +147,9 @@ final class UnixSocketTests: XCTestCase {
         let clientCount = 16
         let allReceived = expectation(description: "all concurrent clients served")
         allReceived.expectedFulfillmentCount = clientCount
-        let lock = NSLock()
-        var received = 0
         let server = UnixSocketServer(socketURL: path) { connection in
             do {
                 if try connection.receiveFrame() == Data("client\n".dropLast().utf8) {
-                    lock.lock()
-                    received += 1
-                    lock.unlock()
                     allReceived.fulfill()
                 }
             } catch { XCTFail("Client failed: \(error)") }
@@ -167,10 +163,6 @@ final class UnixSocketTests: XCTestCase {
         }
         clients.forEach { Darwin.close($0) }
         wait(for: [allReceived], timeout: 5)
-        lock.lock()
-        let total = received
-        lock.unlock()
-        XCTAssertEqual(total, clientCount)
     }
 
     func testStopClosesActiveClientsAndUnlinksSocket() throws {
@@ -195,6 +187,113 @@ final class UnixSocketTests: XCTestCase {
         server.stop()
         wait(for: [returned], timeout: 3)
         XCTAssertFalse(FileManager.default.fileExists(atPath: path.path))
+    }
+
+    func testConnectionLeaseSurvivesConcurrentRepeatedCloseWithoutDescriptorReuse() throws {
+        let path = temporarySocketPath()
+        let checked = expectation(description: "descriptor remains leased through close")
+        let server = UnixSocketServer(socketURL: path) { connection in
+            do {
+                let held = try connection.withFileDescriptor { held in
+                    let closed = DispatchSemaphore(value: 0)
+                    DispatchQueue.global().async {
+                        for _ in 0..<8 { connection.close() }
+                        closed.signal()
+                    }
+                    XCTAssertEqual(closed.wait(timeout: .now() + 2), .success)
+                    let replacement = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+                    XCTAssertGreaterThanOrEqual(replacement, 0)
+                    if replacement >= 0 {
+                        XCTAssertNotEqual(replacement, held)
+                        Darwin.close(replacement)
+                    }
+                    XCTAssertGreaterThanOrEqual(fcntl(held, F_GETFD), 0)
+                    return held
+                }
+                XCTAssertEqual(fcntl(held, F_GETFD), -1)
+                XCTAssertEqual(errno, EBADF)
+                XCTAssertThrowsError(try connection.withFileDescriptor { _ in }) { error in
+                    guard case SocketError.closed = error else {
+                        XCTFail("Expected closed, got \(error)")
+                        return
+                    }
+                }
+            } catch { XCTFail("Unexpected lease error: \(error)") }
+            checked.fulfill()
+        }
+        try server.start()
+        defer { server.stop() }
+        let fd = try connect(path)
+        defer { Darwin.close(fd) }
+        wait(for: [checked], timeout: 3)
+    }
+
+    func testConcurrentCloseUnblocksBlockedSendAndReceive() throws {
+        let path = temporarySocketPath()
+        let sendStarted = expectation(description: "send worker started")
+        let sendReturned = expectation(description: "send worker returned")
+        let receiveStarted = expectation(description: "receive worker started")
+        let receiveReturned = expectation(description: "receive worker returned")
+        let server = UnixSocketServer(socketURL: path) { connection in
+            var sendBuffer: Int32 = 1_024
+            try? connection.withFileDescriptor { fd in
+                _ = setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sendBuffer, socklen_t(MemoryLayout<Int32>.size))
+            }
+            sendStarted.fulfill()
+            do {
+                try connection.send(bytes: Data(repeating: 0x61, count: 16 * 1_024 * 1_024), timeout: 5)
+                XCTFail("Non-reading peer unexpectedly consumed the full send")
+            } catch { sendReturned.fulfill() }
+        }
+        try server.start()
+        let fd = try connect(path)
+        defer { Darwin.close(fd) }
+        wait(for: [sendStarted], timeout: 3)
+        Thread.sleep(forTimeInterval: 0.05)
+        server.stop()
+        wait(for: [sendReturned], timeout: 2)
+
+        let secondPath = temporarySocketPath()
+        let receiver = UnixSocketServer(socketURL: secondPath) { connection in
+            receiveStarted.fulfill()
+            _ = try? connection.receiveFrame()
+            receiveReturned.fulfill()
+        }
+        try receiver.start()
+        let secondFD = try connect(secondPath)
+        defer { Darwin.close(secondFD) }
+        wait(for: [receiveStarted], timeout: 3)
+        receiver.stop()
+        wait(for: [receiveReturned], timeout: 2)
+    }
+
+    func testListenerCanRapidlyStopAndRestartWithoutReusingActiveAcceptDescriptor() throws {
+        let path = temporarySocketPath()
+        let received = DispatchSemaphore(value: 0)
+        let server = UnixSocketServer(socketURL: path) { connection in
+            _ = try? connection.receiveFrame(timeout: 1)
+            received.signal()
+        }
+        defer { server.stop() }
+        for _ in 0..<6 {
+            try server.start()
+            let fd = try connect(path)
+            try send(Data("ping\n".utf8), on: fd)
+            Darwin.close(fd)
+            XCTAssertEqual(received.wait(timeout: .now() + 2), .success)
+            server.stop()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: path.path))
+        }
+    }
+
+    func testConnectRetryUsesBoundedMonotonicBudget() {
+        let path = temporarySocketPath()
+        let clock = ContinuousClock()
+        let start = clock.now
+        XCTAssertThrowsError(try PipePlotLocations.connect(socketURL: path, timeout: 0.08))
+        let elapsed = start.duration(to: clock.now)
+        XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(40))
+        XCTAssertLessThan(elapsed, .seconds(1))
     }
 
     private func temporarySocketPath() -> URL {

@@ -2,15 +2,18 @@ import Foundation
 import Darwin
 import PipePlotTransport
 
-/// One shell process at a time, with stdout drained without blocking the IPC loop.
+/// Owned by the CLI input loop. Only that loop calls next/stop; one shell
+/// process group runs at a time and stdout is drained without blocking IPC.
 final class WatchSampler {
     private let command: String
     private let interval: TimeInterval
+    private let clock = ContinuousClock()
     private var pid: pid_t = 0
     private var output: Int32 = -1
-    private var nextStart = Date.distantPast
+    private var nextStart: ContinuousClock.Instant?
     private var lastByte: UInt8?
     private var childStatus: Int32?
+    private var stopped = false
 
     init(command: String, interval: TimeInterval) {
         self.command = command
@@ -18,8 +21,9 @@ final class WatchSampler {
     }
 
     func next() throws -> Data? {
+        guard !stopped else { return nil }
         if pid == 0 {
-            guard Date() >= nextStart else { return nil }
+            if let nextStart, clock.now < nextStart { return nil }
             try start()
         }
         var buffer = [UInt8](repeating: 0, count: 16 * 1024)
@@ -47,7 +51,7 @@ final class WatchSampler {
         pid = 0
         childStatus = nil
         guard status == 0 else { throw WatchError.failed(status: status) }
-        nextStart = Date().addingTimeInterval(interval)
+        nextStart = clock.now.advanced(by: .seconds(interval))
         if let lastByte, lastByte != 10 {
             self.lastByte = nil
             return Data([10])
@@ -93,6 +97,7 @@ final class WatchSampler {
     }
 
     func stop() {
+        stopped = true
         if pid != 0 {
             // The shell and its descendants run in their own process group.
             _ = kill(-pid, SIGKILL)
