@@ -3,7 +3,7 @@ import AppKit
 import PipePlotCore
 
 struct SessionPicker: View {
-    @Bindable var model: PipePlotAppModel
+    let model: PipePlotAppModel
     let onSelect: (SessionID) -> Void
     @State private var renaming: SessionListing?
     @State private var sessionTitle = ""
@@ -92,7 +92,7 @@ struct SessionPicker: View {
 }
 
 struct SettingsView: View {
-    @Bindable var model: PipePlotAppModel
+    let model: PipePlotAppModel
     @State private var selectedSession: SessionID?
     @State private var selectedChart: ChartID?
     @State private var unit = ""
@@ -344,7 +344,7 @@ struct SessionCommandTarget {
 }
 
 struct PipePlotCommands: Commands {
-    @Bindable var model: PipePlotAppModel
+    let model: PipePlotAppModel
     var installInitialWindowOpener: ((OpenWindowAction) -> Void)? = nil
     @Environment(\.openWindow) private var openWindow
     @FocusedValue(SessionModel.self) private var focusedSession: SessionModel?
