@@ -78,7 +78,7 @@ final class PipePlotAppModel {
         if databaseURL == nil || socketURL != nil { startServer() }
     }
 
-    deinit {
+    isolated deinit {
         ingestion?.stop()
         commandNotifications.forEach(NotificationCenter.default.removeObserver)
     }

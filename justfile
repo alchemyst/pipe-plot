@@ -34,3 +34,8 @@ icon:
 # Run package/app tests and the independent transport regression tests.
 check: test
     ./scripts/test-transport.sh
+
+# Compile all Swift package and hosted app/test targets in Swift 6 with diagnostics fatal.
+strict-build:
+    swift test -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+    xcodebuild -project PipePlot.xcodeproj -scheme PipePlot -configuration Debug -destination "platform=macOS,arch=arm64" -derivedDataPath .build/xcode SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build-for-testing

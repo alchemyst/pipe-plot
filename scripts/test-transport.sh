@@ -20,7 +20,7 @@ let package = Package(
             dependencies: [.product(name: "PipePlotTransport", package: "pipeplot")]
         )
     ],
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )
 EOF
 swift test --package-path "$test_dir"

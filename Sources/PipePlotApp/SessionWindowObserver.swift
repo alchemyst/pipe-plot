@@ -40,13 +40,20 @@ final class WindowStateView: NSView {
         ] {
             tokens.append(
                 center.addObserver(forName: name, object: window, queue: .main) { [weak self] notification in
-                    if notification.name == NSWindow.didBecomeKeyNotification { self?.onFocus?() }
-                    self?.scheduleReport()
+                    let becameKey = notification.name == NSWindow.didBecomeKeyNotification
+                    // NotificationCenter executes this observer on the supplied main queue.
+                    MainActor.assumeIsolated {
+                        if becameKey { self?.onFocus?() }
+                        self?.scheduleReport()
+                    }
                 })
         }
         for name in [NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
             tokens.append(
-                center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.scheduleReport() }
+                center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    // The observer queue is main, including when posted by a worker.
+                    MainActor.assumeIsolated { self?.scheduleReport() }
+                }
             )
         }
         scheduleReport()
@@ -74,5 +81,5 @@ final class WindowStateView: NSView {
         tokens.removeAll()
         lastActive = nil
     }
-    deinit { stopObserving() }
+    isolated deinit { stopObserving() }
 }

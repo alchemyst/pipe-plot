@@ -70,14 +70,15 @@ final class BackgroundQueries {
         fitsNeedValidation.formUnion(fits.keys)
     }
 
-    struct QueryKey: Equatable {
+    struct QueryKey: Equatable, Sendable {
         let start: Date
         let end: Date
         let count: Int64
         let last: Date?
     }
-    func display(_ id: StreamID, key: QueryKey, store: SampleStore, failed: @escaping (Error) -> Void) -> [StoredSample]
-    {
+    func display(
+        _ id: StreamID, key: QueryKey, store: SampleStore, failed: @escaping @MainActor @Sendable (Error) -> Void
+    ) -> [StoredSample] {
         _ = revision
         if let entry = displays[id], entry.0 == key { return entry.1 }
         if displayPending.insert(id).inserted {
@@ -107,7 +108,9 @@ final class BackgroundQueries {
         return cached.count == key.count && cached.last == last && cached.start <= last && last <= cached.end
     }
 
-    func stats(_ id: StreamID, key: QueryKey, store: SampleStore, failed: @escaping (Error) -> Void)
+    func stats(
+        _ id: StreamID, key: QueryKey, store: SampleStore, failed: @escaping @MainActor @Sendable (Error) -> Void
+    )
         -> SelectionStatistics?
     {
         _ = revision
@@ -150,7 +153,7 @@ final class BackgroundQueries {
     }
     func fit(
         _ id: StreamID, cacheID: UUID, key: QueryKey, settings: TimeSelection, store: SampleStore,
-        completed: @escaping () -> Void, failed: @escaping (Error) -> Void
+        completed: @escaping @MainActor @Sendable () -> Void, failed: @escaping @MainActor @Sendable (Error) -> Void
     ) -> LinearFit? {
         // Counts/latest time detect arrivals; mapping and history edits call
         // invalidateFits even when those descriptors happen to be unchanged.

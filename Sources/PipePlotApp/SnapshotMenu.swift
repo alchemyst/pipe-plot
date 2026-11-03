@@ -112,5 +112,5 @@ final class ContextMenuRegion: NSView {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
     }
-    deinit { stopMonitoring() }
+    isolated deinit { stopMonitoring() }
 }

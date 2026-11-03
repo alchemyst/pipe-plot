@@ -19,5 +19,5 @@ let package = Package(
             name: "PipePlotTransportTests", dependencies: ["PipePlotTransport"], path: "Tests/PipePlotTransportTests"),
         .testTarget(name: "ppTests", dependencies: ["pp"], path: "Tests/ppTests"),
     ],
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )

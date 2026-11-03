@@ -264,7 +264,7 @@ import PipePlotTransport
         let socket = URL(fileURLWithPath: "/tmp/pp-\(UUID().uuidString.prefix(8)).sock")
         var model: PipePlotAppModel? = PipePlotAppModel(
             databaseURL: directory.appendingPathComponent("release.sqlite"), socketURL: socket)
-        weak var reference = model
+        weak let reference = model
         XCTAssertTrue(FileManager.default.fileExists(atPath: socket.path))
         model = nil
         XCTAssertNil(reference)
