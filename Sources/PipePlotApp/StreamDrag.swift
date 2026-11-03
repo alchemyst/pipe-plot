@@ -23,15 +23,21 @@ final class StreamDragState {
     }
 }
 
+enum StreamDropDestination: Equatable {
+    case onto(ChartID)
+    case before(ChartID)
+    case after(ChartID)
+    /// No visible chart anchors the drop; the store inserts after the source chart.
+    case unanchored
+}
+
 struct StreamDropTarget: Equatable {
     let sessionID: SessionID
-    var onto: ChartID? = nil
-    var before: ChartID? = nil
-    var after: ChartID? = nil
+    let destination: StreamDropDestination
 
     @MainActor func accepts(_ model: PipePlotAppModel) -> Bool {
         guard let id = model.streamDrag.streamID else { return false }
-        return model.canDropStream([id.uuidString], sessionID: sessionID, onto: onto, before: before, after: after)
+        return model.canDropStream([id.uuidString], sessionID: sessionID, destination: destination)
     }
 
     @MainActor func isTargeted(_ model: PipePlotAppModel) -> Bool {
@@ -60,9 +66,7 @@ struct StreamDropDelegate: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         defer { model.streamDrag.end() }
         guard validateDrop(info: info), let id = model.streamDrag.streamID else { return false }
-        return model.dropStream(
-            [id.uuidString], sessionID: target.sessionID,
-            onto: target.onto, before: target.before, after: target.after)
+        return model.dropStream([id.uuidString], sessionID: target.sessionID, destination: target.destination)
     }
 }
 

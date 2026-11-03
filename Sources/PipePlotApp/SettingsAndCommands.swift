@@ -151,10 +151,10 @@ struct SettingsView: View {
                         if let chart, let min = NumericText.parse(minValue, unit: chart.settings.unit),
                             let max = NumericText.parse(maxValue, unit: chart.settings.unit)
                         {
-                            model.updateScale(min: min, max: max, chart: chart.id)
+                            model.updateScale(.fixed(min: min, max: max), chart: chart.id)
                         }
                     }
-                    Button("Auto") { if let chart { model.updateScale(min: 1, max: 0, chart: chart.id) } }
+                    Button("Auto") { if let chart { model.updateScale(.automatic, chart: chart.id) } }
                 }
                 Text("Scale and unit belong to the chart. Moving a stream leaves these settings in place.").font(
                     .caption

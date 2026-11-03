@@ -227,12 +227,12 @@ final class PipePlotAppModel {
         settings.unit = unit.isEmpty ? nil : unit
         update(settings, chart)
     }
-    func updateScale(min: Double, max: Double, chart: ChartID) {
+    func updateScale(_ scale: YScale, chart: ChartID) {
         guard let snapshot = sessions.values.first(where: { $0.charts.contains(where: { $0.id == chart }) }),
             let item = snapshot.charts.first(where: { $0.id == chart })
         else { return }
         var settings = item.settings
-        settings.yScale = min < max ? .fixed(min: min, max: max) : .automatic
+        settings.yScale = scale
         update(settings, chart)
     }
     func addGuide(value: Double, chart: ChartSnapshot, session: SessionSnapshot, label: String? = nil) {
@@ -298,10 +298,7 @@ final class PipePlotAppModel {
             refresh(sessionID)
         }
     }
-    func canDropStream(
-        _ items: [String], sessionID: SessionID, onto destination: ChartID? = nil, before: ChartID? = nil,
-        after: ChartID? = nil
-    ) -> Bool {
+    func canDropStream(_ items: [String], sessionID: SessionID, destination: StreamDropDestination) -> Bool {
         guard items.count == 1, let id = UUID(uuidString: items[0]),
             let session = try? store.snapshot(sessionID: sessionID),
             !session.isDeleted,
@@ -309,28 +306,30 @@ final class PipePlotAppModel {
                 $0.isVisible && $0.streams.contains(where: { $0.id == id && $0.isLayoutHidden != true })
             })
         else { return false }
-        if let destination {
-            return before == nil && after == nil && destination != source.id
-                && session.charts.contains(where: { $0.id == destination && $0.isVisible })
-        }
-        guard before == nil || after == nil else { return false }
-        return [before, after].compactMap { $0 }.allSatisfy { anchor in
-            session.charts.contains(where: { $0.id == anchor && $0.isVisible })
+        switch destination {
+        case .onto(let chartID):
+            return chartID != source.id && session.charts.contains(where: { $0.id == chartID && $0.isVisible })
+        case .before(let anchor), .after(let anchor):
+            return session.charts.contains(where: { $0.id == anchor && $0.isVisible })
+        case .unanchored:
+            return true
         }
     }
 
-    func dropStream(
-        _ items: [String], sessionID: SessionID, onto destination: ChartID? = nil, before: ChartID? = nil,
-        after: ChartID? = nil
-    ) -> Bool {
-        guard canDropStream(items, sessionID: sessionID, onto: destination, before: before, after: after),
+    func dropStream(_ items: [String], sessionID: SessionID, destination: StreamDropDestination) -> Bool {
+        guard canDropStream(items, sessionID: sessionID, destination: destination),
             let id = UUID(uuidString: items[0])
         else { return false }
         do {
-            if let destination {
-                try store.moveStream(id, to: destination)
-            } else {
-                _ = try store.moveStreamToNewChart(id, after: after, before: before)
+            switch destination {
+            case .onto(let chartID):
+                try store.moveStream(id, to: chartID)
+            case .before(let anchor):
+                _ = try store.moveStreamToNewChart(id, before: anchor)
+            case .after(let anchor):
+                _ = try store.moveStreamToNewChart(id, after: anchor)
+            case .unanchored:
+                _ = try store.moveStreamToNewChart(id)
             }
             refreshAll()
             return true

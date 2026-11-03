@@ -34,27 +34,30 @@ final class StreamDropTests: XCTestCase {
             let stream = try XCTUnwrap(ready.streams.first?.id)
             let destination = try model.store.createChart(in: ready.sessionID)
             let other = try model.store.createSession()
-            let target = StreamDropTarget(sessionID: ready.sessionID, onto: destination.id)
+            let target = StreamDropTarget(sessionID: ready.sessionID, destination: .onto(destination.id))
             let items = [stream.uuidString]
             let undoName = model.store.undoActionName(sessionID: ready.sessionID)
             for invalid in [[], ["text"], [UUID().uuidString], items + items] {
-                XCTAssertFalse(model.canDropStream(invalid, sessionID: ready.sessionID, onto: destination.id))
-                XCTAssertFalse(model.dropStream(invalid, sessionID: ready.sessionID, onto: destination.id))
+                XCTAssertFalse(
+                    model.canDropStream(invalid, sessionID: ready.sessionID, destination: .onto(destination.id)))
+                XCTAssertFalse(
+                    model.dropStream(invalid, sessionID: ready.sessionID, destination: .onto(destination.id)))
             }
-            XCTAssertFalse(model.canDropStream(items, sessionID: ready.sessionID, onto: ready.chartID))
-            XCTAssertFalse(model.canDropStream(items, sessionID: other.id, onto: other.charts[0].id))
-            XCTAssertFalse(model.canDropStream(items, sessionID: ready.sessionID, before: UUID()))
-            XCTAssertFalse(model.canDropStream(items, sessionID: ready.sessionID, after: other.charts[0].id))
+            XCTAssertFalse(model.canDropStream(items, sessionID: ready.sessionID, destination: .onto(ready.chartID)))
+            XCTAssertFalse(model.canDropStream(items, sessionID: other.id, destination: .onto(other.charts[0].id)))
+            XCTAssertFalse(model.canDropStream(items, sessionID: ready.sessionID, destination: .before(UUID())))
             XCTAssertFalse(
-                model.canDropStream(items, sessionID: ready.sessionID, onto: destination.id, before: ready.chartID))
-            XCTAssertFalse(
-                model.canDropStream(items, sessionID: ready.sessionID, before: destination.id, after: ready.chartID))
+                model.canDropStream(items, sessionID: ready.sessionID, destination: .after(other.charts[0].id)))
+            XCTAssertTrue(model.canDropStream(items, sessionID: ready.sessionID, destination: .before(destination.id)))
+            XCTAssertTrue(model.canDropStream(items, sessionID: ready.sessionID, destination: .after(destination.id)))
+            XCTAssertTrue(model.canDropStream(items, sessionID: ready.sessionID, destination: .unanchored))
             XCTAssertEqual(model.store.undoActionName(sessionID: ready.sessionID), undoName)
             XCTAssertFalse(target.accepts(model))
             model.streamDrag.begin(stream)
             model.streamDrag.target = target
             XCTAssertTrue(target.isTargeted(model))
-            XCTAssertFalse(StreamDropTarget(sessionID: ready.sessionID, onto: ready.chartID).accepts(model))
+            XCTAssertFalse(
+                StreamDropTarget(sessionID: ready.sessionID, destination: .onto(ready.chartID)).accepts(model))
             // A destination disappearing during a drag must immediately lose feedback.
             try model.store.deleteChart(destination.id)
             XCTAssertFalse(target.isTargeted(model))
@@ -92,7 +95,8 @@ final class StreamDropTests: XCTestCase {
             try model.store.upsertGuide(sourceGuide, chartID: ready.chartID)
             try model.store.upsertGuide(destinationGuide, chartID: destination.id)
             try model.store.updateStreamStyle(stream, colorHex: "#abcdef", dotsVisible: nil, linesVisible: nil)
-            XCTAssertTrue(model.dropStream([stream.uuidString], sessionID: ready.sessionID, onto: destination.id))
+            XCTAssertTrue(
+                model.dropStream([stream.uuidString], sessionID: ready.sessionID, destination: .onto(destination.id)))
             try model.store.append(SampleRow(values: [42], sequence: 1), to: ready.attachmentID)
             @MainActor func session() throws -> SessionSnapshot {
                 try XCTUnwrap(model.store.snapshot(sessionID: ready.sessionID))
@@ -132,10 +136,10 @@ final class StreamDropTests: XCTestCase {
                 let ready = try model.store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1))
                 let stream = try XCTUnwrap(ready.streams.first?.id)
                 let second = try model.store.createChart(in: ready.sessionID)
-                let before: ChartID? = position == 0 ? ready.chartID : (position == 1 ? second.id : nil)
-                let after: ChartID? = position == 2 ? second.id : nil
+                let destination: StreamDropDestination =
+                    position == 0 ? .before(ready.chartID) : (position == 1 ? .before(second.id) : .after(second.id))
                 XCTAssertTrue(
-                    model.dropStream([stream.uuidString], sessionID: ready.sessionID, before: before, after: after))
+                    model.dropStream([stream.uuidString], sessionID: ready.sessionID, destination: destination))
                 let inserted = try XCTUnwrap(model.sessions[ready.sessionID]?.charts[position])
                 XCTAssertEqual(inserted.streams.first?.id, stream)
                 try model.store.append(SampleRow(values: [1], sequence: 1), to: ready.attachmentID)
@@ -146,6 +150,21 @@ final class StreamDropTests: XCTestCase {
                 XCTAssertEqual(model.sessions[ready.sessionID]?.charts[position].id, inserted.id)
                 XCTAssertEqual(model.sessions[ready.sessionID]?.charts[position].streams.first?.sampleCount, 1)
             }
+        }
+    }
+
+    func testUnanchoredInsertionPreservesSourceRelativePosition() throws {
+        try withModel { model, _ in
+            let ready = try model.store.registerSampler(intent: .target, sampler: SamplerIntent(columnCount: 1))
+            let stream = try XCTUnwrap(ready.streams.first?.id)
+            let second = try model.store.createChart(in: ready.sessionID)
+            XCTAssertTrue(
+                model.dropStream([stream.uuidString], sessionID: ready.sessionID, destination: .unanchored))
+            let charts = try XCTUnwrap(model.sessions[ready.sessionID]?.charts)
+            XCTAssertEqual(charts.count, 3)
+            XCTAssertEqual(charts[0].id, ready.chartID)
+            XCTAssertEqual(charts[1].streams.first?.id, stream)
+            XCTAssertEqual(charts[2].id, second.id)
         }
     }
 }

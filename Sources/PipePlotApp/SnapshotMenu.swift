@@ -28,42 +28,42 @@ struct SnapshotMenu: NSViewRepresentable {
     }
 }
 
-struct SnapshotMenuItem {
-    let title: String
-    var enabled = true
-    var checked = false
-    var children: [SnapshotMenuItem]? = nil
-    var action: (() -> Void)? = nil
-    static var separator: Self { .init(title: "-") }
+enum SnapshotMenuItem {
+    case separator
+    case command(title: String, enabled: Bool, checked: Bool, action: () -> Void)
+    case submenu(title: String, children: [Self])
 
     static func command(_ title: String, enabled: Bool = true, checked: Bool = false, action: @escaping () -> Void)
         -> Self
     {
-        .init(title: title, enabled: enabled, checked: checked, action: action)
+        .command(title: title, enabled: enabled, checked: checked, action: action)
     }
     static func submenu(_ title: String, _ children: [Self]) -> Self {
-        .init(title: title, enabled: !children.isEmpty, children: children)
+        .submenu(title: title, children: children)
     }
 
     static func menu(_ entries: [Self]) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         for entry in entries {
-            if entry.title == "-", entry.action == nil, entry.children == nil {
+            switch entry {
+            case .separator:
                 menu.addItem(.separator())
-                continue
-            }
-            let item = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
-            item.isEnabled = entry.enabled
-            item.state = entry.checked ? .on : .off
-            if let children = entry.children { item.submenu = Self.menu(children) }
-            if let action = entry.action {
+            case .command(let title, let enabled, let checked, let action):
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                item.isEnabled = enabled
+                item.state = checked ? .on : .off
                 let target = MenuCommand(action)
                 item.target = target
                 item.action = #selector(MenuCommand.run)
                 item.representedObject = target  // NSMenuItem's target is weak.
+                menu.addItem(item)
+            case .submenu(let title, let children):
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                item.isEnabled = !children.isEmpty
+                item.submenu = Self.menu(children)
+                menu.addItem(item)
             }
-            menu.addItem(item)
         }
         return menu
     }

@@ -192,19 +192,22 @@ struct SessionWindow: View {
         ScrollView {
             LazyVStack(spacing: 4) {
                 ForEach(visibleCharts) { chart in
-                    StreamInsertionTarget(sessionID: session.id, before: chart.id, after: nil, model: model)
+                    StreamInsertionTarget(sessionID: session.id, destination: .before(chart.id), model: model)
                     ChartRowHost(
                         chart: chart, session: session, model: model, hoverDate: $hoverDate,
                         gestures: gestures, selectedChartID: $selectedChartID)
                 }
-                StreamInsertionTarget(sessionID: session.id, before: nil, after: visibleCharts.last?.id, model: model)
+                StreamInsertionTarget(
+                    sessionID: session.id,
+                    destination: visibleCharts.last.map { .after($0.id) } ?? .unanchored,
+                    model: model)
             }.padding(16)
         }.background(Color(nsColor: .underPageBackgroundColor))
     }
 
     private var newChartDropTarget: StreamDropTarget {
         let anchor = visibleCharts.first(where: { $0.id == selectedChartID })?.id ?? visibleCharts.last?.id
-        return StreamDropTarget(sessionID: sessionID, after: anchor)
+        return StreamDropTarget(sessionID: sessionID, destination: anchor.map { .after($0) } ?? .unanchored)
     }
 
     private var errorPresented: Binding<Bool> {
@@ -564,10 +567,9 @@ private struct SelectionInspector: View {
 
 private struct StreamInsertionTarget: View {
     let sessionID: SessionID
-    let before: ChartID?
-    let after: ChartID?
+    let destination: StreamDropDestination
     let model: PipePlotAppModel
-    private var target: StreamDropTarget { StreamDropTarget(sessionID: sessionID, before: before, after: after) }
+    private var target: StreamDropTarget { StreamDropTarget(sessionID: sessionID, destination: destination) }
     private var targeted: Bool { target.isTargeted(model) }
 
     var body: some View {
@@ -591,7 +593,7 @@ private struct ChartRowHost: View {
     @Binding var hoverDate: Date?
     let gestures: SessionGesturePreview
     @Binding var selectedChartID: ChartID?
-    private var target: StreamDropTarget { StreamDropTarget(sessionID: session.id, onto: chart.id) }
+    private var target: StreamDropTarget { StreamDropTarget(sessionID: session.id, destination: .onto(chart.id)) }
     private var mergeTargeted: Bool { target.isTargeted(model) }
 
     var body: some View {
@@ -1124,7 +1126,8 @@ private struct ChartRow: View {
                 "Insert as New Chart Before",
                 session.charts.filter(\.isVisible).map { destination in
                     .command(destination.title) {
-                        _ = model.dropStream([stream.id.uuidString], sessionID: session.id, before: destination.id)
+                        _ = model.dropStream(
+                            [stream.id.uuidString], sessionID: session.id, destination: .before(destination.id))
                     }
                 }),
             .command("Smoothing and derivative…") { derivedStream = stream },
@@ -1320,8 +1323,6 @@ private struct ChartRow: View {
         return date.timeIntervalSince1970 + seconds.truncatingRemainder(dividingBy: 1)
     }
 }
-
-extension StreamDescriptor: Identifiable {}
 
 private struct ReassociationSheet: View {
     let source: StreamDescriptor

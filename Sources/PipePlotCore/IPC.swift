@@ -93,7 +93,7 @@ public struct HelloReply: Codable, Equatable, Sendable {
     }
 }
 public enum StreamState: String, Codable, Sendable { case live, quiet, ended, disconnected, errored }
-public struct StreamDescriptor: Codable, Equatable, Sendable {
+public struct StreamDescriptor: Codable, Equatable, Identifiable, Sendable {
     public var id: StreamID
     public var name: String
     public var state: StreamState
