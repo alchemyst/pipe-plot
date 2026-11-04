@@ -40,15 +40,21 @@ private func parseOptions(_ arguments: [String]) throws -> Options {
         case "--fresh", "--new-lines": options.fresh = true
         case "-n", "--name":
             index += 1
-            guard index < arguments.count else { throw CLIError.usage("\(argument) needs a name\n\(usage)") }
+            guard index < arguments.count, !arguments[index].hasPrefix("-") else {
+                throw CLIError.usage("\(argument) needs a name\n\(usage)")
+            }
             options.names = [arguments[index]]
         case "-u", "--unit":
             index += 1
-            guard index < arguments.count else { throw CLIError.usage("\(argument) needs a unit\n\(usage)") }
+            guard index < arguments.count, !arguments[index].hasPrefix("-") else {
+                throw CLIError.usage("\(argument) needs a unit\n\(usage)")
+            }
             options.unit = arguments[index]
         case "--label":
             index += 1
-            guard index < arguments.count else { throw CLIError.usage("--label needs a source label\n\(usage)") }
+            guard index < arguments.count, !arguments[index].hasPrefix("-") else {
+                throw CLIError.usage("--label needs a source label\n\(usage)")
+            }
             options.sourceLabel = arguments[index]
         case "--test":
             var columns = 1
@@ -63,7 +69,7 @@ private func parseOptions(_ arguments: [String]) throws -> Options {
         case "--event": options.event = true
         case "--watch":
             index += 1
-            guard index < arguments.count, !arguments[index].isEmpty else {
+            guard index < arguments.count, !arguments[index].isEmpty, !arguments[index].hasPrefix("-") else {
                 throw CLIError.usage("--watch needs a shell command\n\(usage)")
             }
             options.watchCommand = arguments[index]
@@ -131,9 +137,9 @@ private let usage = """
 private let samplerReadyTimeout: TimeInterval = 30
 
 private func runEvents(_ options: Options) throws {
+    let intent = try options.sink.asSinkIntent(fresh: options.fresh)
     let connection = try connectOrLaunch()
     defer { connection.close() }
-    let intent = options.sink.asSinkIntent(fresh: options.fresh)
     try connection.send(ClientMessage.hello(HelloRequest(clientLabel: "pp --event", sink: intent, eventMode: true)))
     var attachment: AttachmentID?
     while attachment == nil {
@@ -255,6 +261,10 @@ private final class InterruptMonitor {
 }
 
 private func connectOrLaunch() throws -> SocketConnection {
+    // An explicitly selected endpoint is independent of the installed app.
+    if let path = ProcessInfo.processInfo.environment["PIPEPLOT_SOCKET"] {
+        return try PipePlotLocations.connect(socketURL: URL(fileURLWithPath: path), timeout: 0.35)
+    }
     do { return try PipePlotLocations.connect(timeout: 0.35) } catch {
         try PipePlotLocations.launchInstalledApp()
         return try PipePlotLocations.connect(timeout: 12)
@@ -358,6 +368,7 @@ private func runSampler(_ options: Options) throws {
         guard options.names == nil || options.names!.count == width else {
             throw CLIError.usage("provided \(options.names!.count) line name(s), but input has \(width) columns")
         }
+        let intent = try options.sink.asSinkIntent(fresh: options.fresh)
         let connection = try connectOrLaunch()
         let names = options.names
         let request = SamplerIntent(
@@ -365,7 +376,7 @@ private func runSampler(_ options: Options) throws {
             startedAt: startedAt)
         try connection.send(
             ClientMessage.hello(
-                HelloRequest(clientLabel: "pp", sink: options.sink.asSinkIntent(fresh: options.fresh), sampler: request)
+                HelloRequest(clientLabel: "pp", sink: intent, sampler: request)
             ))
         var gotHello = false
         while true {
@@ -525,14 +536,17 @@ private func runSampler(_ options: Options) throws {
 private enum ParsedSink {
     case target, newChart, newSession
     case sessionNumber(Int, lineNames: [String])
-    case explicitSession(UUID, lineNames: [String])
-    func asSinkIntent(fresh: Bool = false) -> SinkIntent {
+    func asSinkIntent(fresh: Bool = false) throws -> SinkIntent {
         switch self {
         case .target: return fresh ? .fresh : .target
         case .newChart: return .newChart
         case .newSession: return .newSession
-        case .sessionNumber: return .target  // resolved before sampler registration
-        case .explicitSession(let id, let names): return .session(sessionID: id, lineNames: names)
+        case .sessionNumber(let number, let names):
+            let listing = try fetchListing()
+            guard let session = listing.sessions.first(where: { $0.number == number }) else {
+                throw CLIError.protocolFailure("unknown session \(number)")
+            }
+            return .session(sessionID: session.id, lineNames: names)
         }
     }
 }
@@ -544,21 +558,7 @@ do {
         exit(EXIT_SUCCESS)
     }
     let options = try parseOptions(arguments)
-    if case .sessionNumber(let number, let names) = options.sink {
-        let listing = try fetchListing()
-        guard let session = listing.sessions.first(where: { $0.number == number }) else {
-            throw CLIError.protocolFailure("unknown session \(number)")
-        }
-        // Resolve the public small integer to its stable UUID before registration.
-        var explicit = options
-        if options.event {
-            explicit.sink = .explicitSession(session.id, lineNames: [])
-            try runEvents(explicit)
-        } else {
-            explicit.sink = .explicitSession(session.id, lineNames: names)
-            try runSampler(explicit)
-        }
-    } else if options.event {
+    if options.event {
         try runEvents(options)
     } else {
         try runSampler(options)
