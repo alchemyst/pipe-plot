@@ -1,0 +1,58 @@
+{
+  "boundary": "visible Canvas pass, not scanout",
+  "database": "/tmp/pipeplot-acceptance-1_mig44t/acceptance.sqlite",
+  "trace": "/tmp/pipeplot-acceptance-1_mig44t/render.jsonl",
+  "coldLaunch": "explicit isolated app process plus CLI",
+  "macOS": "27.2",
+  "hardware": "Apple M2 Pro",
+  "cold": {
+    "start": 1793787948.4129112,
+    "render": {
+      "event": "visible-sample-render",
+      "pid": 9570,
+      "sampleWall": 1793787948.421379,
+      "stream": "f6ccb44b-9c5a-4651-838d-507b8f555e4a",
+      "uptimeNanoseconds": 359344579564333,
+      "wall": 1793787949.068913
+    },
+    "seconds": 0.6560018062591553
+  },
+  "warm": {
+    "start": 1793787949.072875,
+    "render": {
+      "event": "visible-sample-render",
+      "pid": 9570,
+      "sampleWall": 1793787949.079355,
+      "stream": "d6c8437b-f5c8-488e-9b60-02ab99e33890",
+      "uptimeNanoseconds": 359344655970958,
+      "wall": 1793787949.14532
+    },
+    "seconds": 0.07244491577148438
+  },
+  "competingRender": {
+    "event": "visible-sample-render",
+    "pid": 9570,
+    "sampleWall": 1793788069.1572309,
+    "stream": "d6c8437b-f5c8-488e-9b60-02ab99e33890",
+    "uptimeNanoseconds": 359465179215208,
+    "wall": 1793788069.668868
+  },
+  "sparse": {
+    "silentSeconds": 120,
+    "start": 1793788069.156977,
+    "render": {
+      "event": "visible-sample-render",
+      "pid": 9570,
+      "sampleWall": 1793788069.1572309,
+      "stream": "f6ccb44b-9c5a-4651-838d-507b8f555e4a",
+      "uptimeNanoseconds": 359465178589375,
+      "wall": 1793788069.668242
+    },
+    "seconds": 0.5112650394439697
+  },
+  "storedRows": {
+    "cold": 3,
+    "warm": 2
+  },
+  "passed": true
+}

@@ -22,6 +22,26 @@ enum Issue33AcceptanceFixture {
             fatalError(
                 "PIPEPLOT_ACCEPTANCE_DATABASE must be acceptance.sqlite in a /tmp/pipeplot-acceptance-* directory")
         }
+        // Empty isolated capture fixture for subprocess/presentation acceptance.
+        // An explicit endpoint never connects this process to the user's capture.
+        if let endpoint = ProcessInfo.processInfo.environment["PIPEPLOT_ACCEPTANCE_SOCKET"] {
+            let socket = URL(fileURLWithPath: endpoint).standardizedFileURL
+            guard socket.deletingLastPathComponent().resolvingSymlinksInPath() == parent,
+                socket.lastPathComponent == "capture.sock"
+            else { fatalError("Acceptance socket must be capture.sock beside acceptance.sqlite") }
+            for path in [
+                database.path, database.path + "-wal", database.path + "-shm",
+                database.path + ".metadata.json", socket.path,
+            ] {
+                let file = URL(fileURLWithPath: path)
+                let normalized = file.deletingLastPathComponent().resolvingSymlinksInPath()
+                    .appendingPathComponent(file.lastPathComponent)
+                guard file.resolvingSymlinksInPath().standardizedFileURL == normalized.standardizedFileURL else {
+                    fatalError("Acceptance capture files must not be symbolic links")
+                }
+            }
+            return PipePlotAppModel(databaseURL: database, socketURL: socket)
+        }
         if let appearance = ProcessInfo.processInfo.environment["PIPEPLOT_ACCEPTANCE_APPEARANCE"] {
             switch appearance {
             case "light": NSApplication.shared.appearance = NSAppearance(named: .aqua)
