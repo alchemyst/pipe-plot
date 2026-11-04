@@ -62,14 +62,8 @@ struct PlotCanvas: View {
                     onSelection: { start, end, edge, endFollowsNow, phase in
                         switch phase {
                         case .began, .changed:
-                            var previewStart = start
-                            var previewEnd = end
-                            if edge == .end, case .startFollowsEnd(let duration) = selection?.mode {
-                                previewStart = end.addingTimeInterval(-duration)
-                                previewEnd = end
-                            }
-                            selectionStart = previewStart
-                            selectionPreview = previewEnd
+                            selectionStart = start
+                            selectionPreview = end
                             selectionLinkedPreview = endFollowsNow || (selection.map { $0.mode != .fixed } ?? false)
                         case .ended:
                             selectionStart = nil
@@ -108,7 +102,9 @@ struct PlotCanvas: View {
                     onSelectionModeToggle: onSelectionModeToggle
                 )
                 .accessibilityHidden(true)
-                if selection?.mode == .endFollowsNow, let onFollowSelectionDuration {
+                if selectionPreview == nil, let selection, selection.mode == .endFollowsNow,
+                    domain.contains(selection.start), let onFollowSelectionDuration
+                {
                     Button(action: onFollowSelectionDuration) {
                         Image(systemName: "arrow.left.to.line.compact")
                             .font(.system(size: 10, weight: .bold))
@@ -119,7 +115,7 @@ struct PlotCanvas: View {
                     .buttonStyle(.plain)
                     .help("Make the start follow now at this fixed duration")
                     .accessibilityLabel("Make selection start follow now at a fixed duration")
-                    .position(x: x(selection!.start, in: plot), y: plot.maxY - 8)
+                    .position(x: x(selection.start, in: plot), y: plot.maxY - 29)
                 }
             }
         }
@@ -133,7 +129,10 @@ struct PlotCanvas: View {
     }
 
     private var currentSelectionRange: ClosedRange<Date>? {
-        selection?.resolvedBounds(at: now)
+        if let selectionStart, let selectionPreview {
+            return min(selectionStart, selectionPreview)...max(selectionStart, selectionPreview)
+        }
+        return selection?.resolvedBounds(at: now)
     }
 
     private func isBothFollowNow(_ mode: SelectionMode) -> Bool {

@@ -8,6 +8,7 @@ import PipePlotCore
 struct PlotInteractionOverlay: NSViewRepresentable {
     let guides: [Guide]
     var guideHitRects: [UUID: CGRect] = [:]
+    var selectionBar: CGRect?
     let selectionRange: ClosedRange<Date>?
     let selectionMode: SelectionMode?
     let now: Date
@@ -30,6 +31,7 @@ struct PlotInteractionOverlay: NSViewRepresentable {
         let view = PlotInteractionView()
         view.setAccessibilityElement(false)
         view.guideHitRects = guideHitRects
+        view.selectionBar = selectionBar
         view.update(
             guides: guides, selectionRange: selectionRange, selectionMode: selectionMode, now: now,
             plotBounds: plotBounds, timeAtX: timeAtX,
@@ -42,6 +44,7 @@ struct PlotInteractionOverlay: NSViewRepresentable {
 
     func updateNSView(_ view: PlotInteractionView, context: Context) {
         view.guideHitRects = guideHitRects
+        view.selectionBar = selectionBar
         view.update(
             guides: guides, selectionRange: selectionRange, selectionMode: selectionMode, now: now,
             plotBounds: plotBounds, timeAtX: timeAtX,
@@ -58,13 +61,15 @@ enum PlotSelectionEdge { case start, end }
 @MainActor
 final class PlotInteractionView: NSView {
     private enum Drag {
-        case guide(Guide, isNew: Bool)
-        case selection(start: Date, end: Date, edge: PlotSelectionEdge?)
+        case guide(Guide, isNew: Bool, offset: CGFloat)
+        case selection(start: Date, end: Date, edge: PlotSelectionEdge?, offset: CGFloat)
+        case moveSelection(ClosedRange<Date>, grabbedTime: Date)
         case pan
     }
 
     private var guides: [Guide] = []
     var guideHitRects: [UUID: CGRect] = [:]
+    var selectionBar: CGRect?
     private var selectionRange: ClosedRange<Date>?
     private var selectionMode: SelectionMode?
     private var now = Date()
@@ -140,7 +145,7 @@ final class PlotInteractionView: NSView {
         for area in trackingAreas { removeTrackingArea(area) }
         let area = NSTrackingArea(
             rect: .zero,
-            options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp, .inVisibleRect],
             owner: self, userInfo: nil)
         addTrackingArea(area)
     }
@@ -158,14 +163,13 @@ final class PlotInteractionView: NSView {
         lastPoint = point
         dragMoved = false
 
-        if let edge = hitSelectionHandle(at: point), event.clickCount >= 2 {
+        let target = dragTarget(at: point)
+        if let edge = hitSelectionTriangle(at: point), event.clickCount >= 2 {
             onSelectionModeToggle(edge)
             activeDrag = nil
             return
         }
-        if event.clickCount >= 2, plotBounds.contains(point), hitGuide(at: point) == nil,
-            hitSelectionHandle(at: point) == nil
-        {
+        if event.clickCount >= 2, plotBounds.contains(point), target == nil {
             onBackgroundDoubleClick(timeAtX(point.x))
             activeDrag = nil
             return
@@ -174,19 +178,18 @@ final class PlotInteractionView: NSView {
         if event.modifierFlags.contains(.shift) {
             activeDrag = .pan
             onPan(.zero, .began)
-        } else if let guide = hitGuide(at: point) {
-            activeDrag = .guide(guide, isNew: false)
-        } else if let edge = hitSelectionEdge(at: point), let selectionRange {
-            activeDrag = .selection(start: selectionRange.lowerBound, end: selectionRange.upperBound, edge: edge)
+        } else if let target {
+            activeDrag = target
         } else if let orientation = edgeGuideOrientation(at: point) {
             let guide = Guide(orientation: orientation, value: guideValue(orientation, at: point))
-            activeDrag = .guide(guide, isNew: true)
+            activeDrag = .guide(guide, isNew: true, offset: 0)
             onGuide(guide, .began)
         } else {
             let time = timeAtX(point.x)
-            activeDrag = .selection(start: time, end: time, edge: nil)
+            activeDrag = .selection(start: time, end: time, edge: nil, offset: 0)
             onSelection(time, time, nil, false, .began)
         }
+        updateCursor(at: point)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -195,29 +198,19 @@ final class PlotInteractionView: NSView {
         onHover(timeAtX(point.x))
         let movement = CGSize(width: point.x - lastPoint.x, height: point.y - lastPoint.y)
         if hypot(point.x - dragOrigin.x, point.y - dragOrigin.y) >= 3 { dragMoved = true }
+        if !dragMoved, case .pan = activeDrag {
+            onPan(movement, .changed)
+            lastPoint = point
+            return
+        }
+        guard dragMoved else { return }
         switch activeDrag {
-        case let .guide(original, isNew):
-            let changed = replacingValue(in: original, at: point)
-            onGuide(changed, .changed)
-            self.activeDrag = .guide(changed, isNew: isNew)
-        case let .selection(start, end, edge):
-            let time = timeAtX(point.x)
-            switch edge {
-            case .start: onSelection(min(time, end), max(time, end), .start, tracksNowFromStart, .changed)
-            case .end:
-                let linked = isAtOrBeyondNow(point.x)
-                if case .startFollowsEnd(let duration) = selectionMode {
-                    let upper = linked ? now : time
-                    onSelection(upper.addingTimeInterval(-duration), upper, .end, linked, .changed)
-                } else if case .bothFollowNow(let duration) = selectionMode, linked {
-                    onSelection(now.addingTimeInterval(-duration), now, .end, true, .changed)
-                } else {
-                    onSelection(min(start, time), max(start, time), .end, linked, .changed)
-                }
-            case nil:
-                let lower = min(timeAtX(dragOrigin.x), time), upper = max(timeAtX(dragOrigin.x), time)
-                onSelection(lower, upper, nil, isAtOrBeyondNow(xAtTime(upper)), .changed)
-            }
+        case let .guide(original, _, offset):
+            onGuide(replacingValue(in: original, at: point, offset: offset), .changed)
+        case let .moveSelection(range, grabbedTime):
+            moveSelection(range, grabbedTime: grabbedTime, to: point, phase: .changed)
+        case let .selection(start, end, edge, offset):
+            resizeSelection(start: start, end: end, edge: edge, offset: offset, to: point, phase: .changed)
         case .pan:
             onPan(movement, .changed)
         }
@@ -225,55 +218,85 @@ final class PlotInteractionView: NSView {
         needsDisplay = true
     }
 
-    override func mouseMoved(with event: NSEvent) { onHover(timeAtX(localPoint(event).x)) }
-    override func mouseEntered(with event: NSEvent) { onHover(timeAtX(localPoint(event).x)) }
-    override func mouseExited(with event: NSEvent) { onHover(nil) }
+    override func mouseMoved(with event: NSEvent) {
+        let point = localPoint(event)
+        onHover(timeAtX(point.x))
+        updateCursor(at: point)
+    }
+
+    override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
+
+    override func mouseExited(with event: NSEvent) {
+        onHover(nil)
+        if activeDrag == nil { NSCursor.arrow.set() }
+    }
+
+    override func cursorUpdate(with event: NSEvent) { updateCursor(at: localPoint(event)) }
 
     override func mouseUp(with event: NSEvent) {
         guard let activeDrag else { return }
         let point = localPoint(event)
         onHover(timeAtX(point.x))
+        defer {
+            self.activeDrag = nil
+            updateCursor(at: point)
+        }
         switch activeDrag {
-        case let .guide(guide, isNew):
+        case let .guide(guide, isNew, offset):
             if !dragMoved {
                 onGuide(guide, .cancelled)
                 if !isNew { onGuideSelected(guide) }
             } else {
-                onGuide(replacingValue(in: guide, at: point), .ended)
+                onGuide(replacingValue(in: guide, at: point, offset: offset), .ended)
             }
-        case let .selection(start, end, edge):
-            if !dragMoved {
+        case let .moveSelection(range, grabbedTime):
+            if dragMoved { moveSelection(range, grabbedTime: grabbedTime, to: point, phase: .ended) }
+        case let .selection(start, end, edge, offset):
+            if dragMoved {
+                resizeSelection(start: start, end: end, edge: edge, offset: offset, to: point, phase: .ended)
+            } else {
                 onSelection(start, end, edge, false, .cancelled)
                 if edge == nil { onBackgroundClick() }
-                self.activeDrag = nil
-                return
-            }
-            let time = timeAtX(point.x)
-            switch edge {
-            case .start: onSelection(min(time, end), max(time, end), .start, tracksNowFromStart, .ended)
-            case .end:
-                let linked = isAtOrBeyondNow(point.x) && start <= now
-                if case .startFollowsEnd(let duration) = selectionMode {
-                    let upper = linked ? now : time
-                    onSelection(upper.addingTimeInterval(-duration), upper, .end, linked, .ended)
-                } else if case .bothFollowNow(let duration) = selectionMode, linked {
-                    onSelection(now.addingTimeInterval(-duration), now, .end, true, .ended)
-                } else {
-                    let lower = min(start, linked ? now : time), upper = max(start, linked ? now : time)
-                    onSelection(lower, upper, .end, linked, .ended)
-                }
-            case nil:
-                let origin = timeAtX(dragOrigin.x)
-                let linked = isAtOrBeyondNow(xAtTime(max(origin, time)))
-                let lower = min(origin, time), upper = max(origin, time)
-                onSelection(lower, linked ? now : upper, nil, linked, .ended)
             }
         case .pan:
             let movement = CGSize(width: point.x - lastPoint.x, height: point.y - lastPoint.y)
             onPan(movement, .ended)
         }
-        self.activeDrag = nil
-        needsDisplay = true
+    }
+
+    private func moveSelection(
+        _ range: ClosedRange<Date>, grabbedTime: Date, to point: CGPoint, phase: PlotGesturePhase
+    ) {
+        let delta = timeAtX(point.x).timeIntervalSince(grabbedTime)
+        // Moving the whole interval sets both times explicitly, even for a live interval.
+        onSelection(range.lowerBound + delta, range.upperBound + delta, nil, false, phase)
+    }
+
+    private func resizeSelection(
+        start: Date, end: Date, edge: PlotSelectionEdge?, offset: CGFloat, to point: CGPoint, phase: PlotGesturePhase
+    ) {
+        let x = point.x - offset
+        let time = timeAtX(x)
+        switch edge {
+        case .start:
+            let upper = tracksNowFromStart ? now : end
+            onSelection(min(time, upper), max(time, upper), .start, tracksNowFromStart, phase)
+        case .end:
+            let linked = isAtOrBeyondNow(x) && start <= now
+            let upper = linked ? now : time
+            if case .startFollowsEnd(let duration) = selectionMode {
+                onSelection(upper - duration, upper, .end, linked, phase)
+            } else if case .bothFollowNow(let duration) = selectionMode, linked {
+                onSelection(now - duration, now, .end, true, phase)
+            } else {
+                onSelection(min(start, upper), max(start, upper), .end, linked, phase)
+            }
+        case nil:
+            let origin = timeAtX(dragOrigin.x)
+            let upper = max(origin, time)
+            let linked = isAtOrBeyondNow(xAtTime(upper)) && min(origin, time) <= now
+            onSelection(min(origin, time), linked ? now : upper, nil, linked, phase)
+        }
     }
 
     override func magnify(with event: NSEvent) {
@@ -307,35 +330,40 @@ final class PlotInteractionView: NSView {
     override func cancelOperation(_ sender: Any?) {
         guard let activeDrag else { return }
         switch activeDrag {
-        case let .guide(guide, _):
+        case let .guide(guide, _, _):
             onGuide(guide, .cancelled)
-        case let .selection(start, end, edge): onSelection(start, end, edge, false, .cancelled)
+        case let .selection(start, end, edge, _): onSelection(start, end, edge, false, .cancelled)
+        case let .moveSelection(range, _):
+            onSelection(range.lowerBound, range.upperBound, nil, false, .cancelled)
         case .pan: onPan(.zero, .cancelled)
         }
         self.activeDrag = nil
-        needsDisplay = true
+        if let window { updateCursor(at: convert(window.mouseLocationOutsideOfEventStream, from: nil)) }
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        guard let selectionRange, let context = NSGraphicsContext.current?.cgContext else { return }
-        let y = min(plotBounds.maxY - 8, max(bounds.minY + 10, plotBounds.maxY - 8))
+        guard let selectionRange else { return }
+        let color = NSColor.controlAccentColor
         for (index, date) in [selectionRange.lowerBound, selectionRange.upperBound].enumerated() {
             let x = xAtTime(date)
-            let centerY = y
-            let path = NSBezierPath()
-            if index == 0 {
-                path.move(to: CGPoint(x: x + 7, y: centerY))
-                path.line(to: CGPoint(x: x - 4, y: centerY - 7))
-                path.line(to: CGPoint(x: x - 4, y: centerY + 7))
-            } else {
-                path.move(to: CGPoint(x: x - 7, y: centerY))
-                path.line(to: CGPoint(x: x + 4, y: centerY - 7))
-                path.line(to: CGPoint(x: x + 4, y: centerY + 7))
+            guard isVisibleEndpoint(x) else { continue }
+            let y = triangleY
+            if selectionBar == nil {
+                let grip = NSBezierPath(roundedRect: gripRect(at: x), xRadius: 3, yRadius: 3)
+                NSColor.windowBackgroundColor.setFill()
+                grip.fill()
+                color.setStroke()
+                grip.lineWidth = 1.5
+                grip.stroke()
             }
+            let path = NSBezierPath()
+            path.move(to: CGPoint(x: x, y: y - 7))
+            path.line(to: CGPoint(x: x + (index == 0 ? 8 : -8), y: y))
+            path.line(to: CGPoint(x: x, y: y + 7))
             path.close()
-            context.setStrokeColor(NSColor.controlAccentColor.cgColor)
-            context.setLineWidth(1.5)
+            color.setStroke()
+            path.lineWidth = 1.5
             let tracking: Bool
             switch (selectionMode ?? .fixed, index) {
             case (.fixed, _): tracking = false
@@ -343,8 +371,9 @@ final class PlotInteractionView: NSView {
             default: tracking = false
             }
             if tracking {
-                NSColor.controlAccentColor.setFill()
+                color.setFill()
                 path.fill()
+                path.stroke()
             } else {
                 NSColor.windowBackgroundColor.setFill()
                 path.fill()
@@ -368,17 +397,70 @@ final class PlotInteractionView: NSView {
         }
     }
 
+    private var triangleY: CGFloat { selectionBar?.midY ?? plotBounds.maxY - 8 }
+
+    private func gripRect(at x: CGFloat) -> CGRect {
+        CGRect(x: x - 3.5, y: plotBounds.midY - 8, width: 7, height: 16)
+    }
+
+    private func isVisibleEndpoint(_ x: CGFloat) -> Bool { x >= plotBounds.minX && x <= plotBounds.maxX }
+
     private func hitSelectionEdge(at point: CGPoint) -> PlotSelectionEdge? {
         guard let selectionRange else { return nil }
-        let startDistance = abs(point.x - xAtTime(selectionRange.lowerBound))
-        let endDistance = abs(point.x - xAtTime(selectionRange.upperBound))
+        let start = xAtTime(selectionRange.lowerBound), end = xAtTime(selectionRange.upperBound)
+        let startDistance = isVisibleEndpoint(start) ? abs(point.x - start) : .infinity
+        let endDistance = isVisibleEndpoint(end) ? abs(point.x - end) : .infinity
         if min(startDistance, endDistance) > 9 { return nil }
         return startDistance <= endDistance ? .start : .end
     }
 
-    private func hitSelectionHandle(at point: CGPoint) -> PlotSelectionEdge? {
-        guard abs(point.y - (plotBounds.maxY - 8)) <= 10 else { return nil }
+    private func hitSelectionTriangle(at point: CGPoint) -> PlotSelectionEdge? {
+        guard abs(point.y - triangleY) <= 8 else { return nil }
         return hitSelectionEdge(at: point)
+    }
+
+    private func dragTarget(at point: CGPoint) -> Drag? {
+        let edge =
+            hitSelectionTriangle(at: point)
+            ?? (selectionBar == nil && abs(point.y - plotBounds.midY) <= 10 ? hitSelectionEdge(at: point) : nil)
+        if let edge, let selectionRange {
+            return resizeTarget(edge, range: selectionRange, at: point)
+        }
+        if point.y < (selectionBar?.minY ?? .infinity), let guide = hitGuide(at: point) {
+            let offset =
+                switch guide.orientation {
+                case .verticalTime: point.x - xAtTime(Date(timeIntervalSince1970: guide.value))
+                case .horizontalValue: point.y - yAtValue(guide.value)
+                }
+            return .guide(guide, isNew: false, offset: offset)
+        }
+        guard let selectionRange else { return nil }
+        if let selectionBar {
+            let left = max(plotBounds.minX, xAtTime(selectionRange.lowerBound))
+            let right = min(plotBounds.maxX, xAtTime(selectionRange.upperBound))
+            if point.y >= selectionBar.minY, point.y <= selectionBar.maxY, point.x >= left, point.x <= right {
+                return .moveSelection(selectionRange, grabbedTime: timeAtX(point.x))
+            }
+        } else if point.y >= plotBounds.minY, point.y <= plotBounds.maxY, let edge = hitSelectionEdge(at: point) {
+            return resizeTarget(edge, range: selectionRange, at: point)
+        }
+        return nil
+    }
+
+    private func resizeTarget(_ edge: PlotSelectionEdge, range: ClosedRange<Date>, at point: CGPoint) -> Drag {
+        let endpoint = edge == .start ? range.lowerBound : range.upperBound
+        return .selection(
+            start: range.lowerBound, end: range.upperBound, edge: edge, offset: point.x - xAtTime(endpoint))
+    }
+
+    private func updateCursor(at point: CGPoint) {
+        switch activeDrag ?? (bounds.contains(point) ? dragTarget(at: point) : nil) {
+        case .moveSelection: (activeDrag == nil ? NSCursor.openHand : .closedHand).set()
+        case .selection(_, _, .some, _): NSCursor.columnResize.set()
+        case let .guide(guide, _, _):
+            (guide.orientation == .verticalTime ? NSCursor.columnResize : .rowResize).set()
+        default: NSCursor.arrow.set()
+        }
     }
 
     private func edgeGuideOrientation(at point: CGPoint) -> GuideOrientation? {
@@ -407,9 +489,14 @@ final class PlotInteractionView: NSView {
         }
     }
 
-    private func replacingValue(in guide: Guide, at point: CGPoint) -> Guide {
+    private func replacingValue(in guide: Guide, at point: CGPoint, offset: CGFloat) -> Guide {
         var changed = guide
-        changed.value = guideValue(guide.orientation, at: point)
+        let anchor =
+            switch guide.orientation {
+            case .verticalTime: CGPoint(x: point.x - offset, y: point.y)
+            case .horizontalValue: CGPoint(x: point.x, y: point.y - offset)
+            }
+        changed.value = guideValue(guide.orientation, at: anchor)
         return changed
     }
 }

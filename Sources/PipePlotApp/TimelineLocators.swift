@@ -23,6 +23,7 @@ struct TimelineLocators: View {
     var body: some View {
         GeometryReader { geometry in
             let plot = CGRect(x: 84, y: 23, width: max(1, geometry.size.width - 112), height: 49)
+            let selectionBar = CGRect(x: plot.minX, y: 56, width: plot.width, height: 16)
             let x: (Date) -> CGFloat = { plot.minX + $0.timeIntervalSince(range.lowerBound) / span * plot.width }
             let date: (CGFloat) -> Date = {
                 range.lowerBound.addingTimeInterval(Double(($0 - plot.minX) / plot.width) * span)
@@ -109,7 +110,8 @@ struct TimelineLocators: View {
                     }
                 }
                 PlotInteractionOverlay(
-                    guides: guides, guideHitRects: flagHitRects(in: plot, x: x), selectionRange: selection,
+                    guides: guides, guideHitRects: flagHitRects(in: plot, x: x), selectionBar: selectionBar,
+                    selectionRange: selection,
                     selectionMode: selectionMode, now: now,
                     plotBounds: plot, timeAtX: date, valueAtY: { _ in 0 }, xAtTime: x, yAtValue: { _ in 0 },
                     onGuide: { guide, phase in if guide.orientation == .verticalTime { onGuide(guide, phase) } },
@@ -121,7 +123,7 @@ struct TimelineLocators: View {
             }
         }.frame(height: 78).background(.bar)
             .help(
-                "Drag a locator to move it; click to edit. Drag interval endpoints; double-click each triangle to toggle tracking."
+                "Drag a locator to move it; click to edit. Drag the interval bar to move it, or drag its endpoints to resize. Double-click a triangle to toggle tracking."
             )
             .accessibilityHidden(true)
     }

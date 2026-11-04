@@ -5,6 +5,68 @@ import PipePlotCore
 
 /// Isolated native-responder integration, not external desktop input automation.
 @MainActor final class NativeResponderAcceptanceTests: XCTestCase {
+    func testRulerDragsPreserveTheGrabPointAndKeepResizeSeparateFromMove() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 78), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        window.isReleasedWhenClosed = false
+        let view = PlotInteractionView(frame: NSRect(x: 0, y: 0, width: 600, height: 78))
+        window.contentView = view
+        defer { window.close() }
+
+        let time: (CGFloat) -> Date = { Date(timeIntervalSince1970: Double($0)) }
+        let marker = Guide(orientation: .verticalTime, value: 230, label: "Marker")
+        let initial = time(160)...time(300)
+        var selectionUpdates: [(ClosedRange<Date>, PlotSelectionEdge?, PlotGesturePhase)] = []
+        var guideUpdates: [(Double, PlotGesturePhase)] = []
+        var cleared = false
+        view.guideHitRects = [marker.id: CGRect(x: 230, y: 23, width: 100, height: 14)]
+        view.selectionBar = CGRect(x: 84, y: 56, width: 488, height: 16)
+        view.update(
+            guides: [marker], selectionRange: initial, selectionMode: .fixed, now: time(550),
+            plotBounds: CGRect(x: 84, y: 23, width: 488, height: 49),
+            timeAtX: time, valueAtY: { _ in 0 }, xAtTime: { CGFloat($0.timeIntervalSince1970) }, yAtValue: { _ in 0 },
+            onGuide: { guideUpdates.append(($0.value, $1)) },
+            onSelection: { start, end, edge, _, phase in selectionUpdates.append((start...end, edge, phase)) },
+            onPan: { _, _ in }, onZoom: { _, _, _ in }, onHover: { _ in },
+            onBackgroundClick: { cleared = true }, onBackgroundDoubleClick: { _ in }, onGuideSelected: { _ in },
+            onSelectionModeToggle: { _ in })
+
+        func event(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: view.convert(NSPoint(x: x, y: y), to: nil), modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+
+        // The bar remains draggable directly below a time marker.
+        view.mouseDown(with: try event(.leftMouseDown, 230, 64))
+        view.mouseUp(with: try event(.leftMouseUp, 230, 64))
+        XCTAssertFalse(cleared)
+        XCTAssertTrue(selectionUpdates.isEmpty)
+        view.mouseDown(with: try event(.leftMouseDown, 230, 64))
+        view.mouseDragged(with: try event(.leftMouseDragged, 260, 64))
+        view.mouseUp(with: try event(.leftMouseUp, 270, 64))
+        XCTAssertEqual(selectionUpdates.map(\.0), [time(190)...time(330), time(200)...time(340)])
+        XCTAssertEqual(selectionUpdates.map(\.2), [.changed, .ended])
+        XCTAssertTrue(guideUpdates.isEmpty)
+
+        selectionUpdates.removeAll()
+        // Grabbing inside the triangle leaves the opposite boundary fixed.
+        view.mouseDown(with: try event(.leftMouseDown, 164, 64))
+        view.mouseDragged(with: try event(.leftMouseDragged, 184, 64))
+        view.mouseUp(with: try event(.leftMouseUp, 184, 64))
+        XCTAssertEqual(selectionUpdates.map(\.0), [time(180)...time(300), time(180)...time(300)])
+        XCTAssertEqual(selectionUpdates.map(\.1), [.start, .start])
+
+        // The flag is picked up 50 points from its stem. Keep that offset through mouse-up.
+        view.mouseDown(with: try event(.leftMouseDown, 280, 28))
+        view.mouseDragged(with: try event(.leftMouseDragged, 290, 28))
+        view.mouseUp(with: try event(.leftMouseUp, 305, 28))
+        XCTAssertEqual(guideUpdates.map(\.0), [240, 255])
+        XCTAssertEqual(guideUpdates.map(\.1), [.changed, .ended])
+    }
+
     func testGuideDragEscapePreservesRedoAndReleaseCommitsOnceWithLaterSamples() throws {
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
