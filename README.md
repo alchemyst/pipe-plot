@@ -76,6 +76,10 @@ The shared ruler includes a loop-style interval brace and labelled time locators
 
 Saved sessions can be renamed or moved to Trash from the saved-session picker. Recently deleted sessions can be restored with their data; deleting or closing a session disconnects its producers. Restoration never restarts a shell command.
 
+## Similar projects
+
+[Compare PipePlot with ttyplot, wesplot, LabPlot and other plotting tools](docs/SIMILAR_PROJECTS.md).
+
 ## Development
 
 `Sources/PipePlotCore` owns parsing, storage and reversible model edits. `Sources/PipePlotTransport` owns local socket framing and discovery. `Sources/pp` is the CLI; `Sources/PipePlotApp` is the native interface. Raw observations are separate from presentation edits so undo does not restore stale sample arrays.
