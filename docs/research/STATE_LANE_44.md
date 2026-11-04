@@ -15,3 +15,11 @@ Decision recorded 2026-11-04 before prototype implementation. Issue [#44](https:
 One time domain and one explicit selection drive the analog chart and both state lanes. Align the plot edges so a given timestamp lands at the same x-coordinate in every row. Use pointer drag in Pan or Select mode, and visible native controls for pan, zoom, mode, reset, and clearing the selection. Show the same crosshair on every row.
 
 Each row will provide a keyboard and VoiceOver target. Left and Right move among visible raw observations. The VoiceOver adjustable action will invoke the same stepping behavior. Report the row name, raw value, receipt timestamp and state classification in an accessibility value. The prototype will expose the shared viewport and selection as text so they can be read through standard navigation.
+
+## Run the fixture
+
+On macOS, run `scripts/research/evaluate-issue44.sh` from the checkout. Add `--build-only` to compile without opening a window. The fixture has no socket, session database, or persisted layout.
+
+- Pressure, Inlet valve and Pump enabled share the same time grid, selection shading and observation crosshair. Use the pan and zoom buttons or drag in Pan mode. Switch to Select and drag from any plot.
+- Inlet valve includes a fractional unsupported observation, a long same-value gap, a reconnect and an interval between differing observations. Pump enabled includes a reconnect between two nearby Low observations. An outlined square marks an unsupported value.
+- A focused row uses Left and Right to step. Space starts and finishes a selection at raw receipt times. The VoiceOver interface exposes equivalent adjustable actions and a named Set selection boundary action.
