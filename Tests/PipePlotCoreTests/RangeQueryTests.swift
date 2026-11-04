@@ -2,6 +2,54 @@ import XCTest
 @testable import PipePlotCore
 
 final class RangeQueryTests: XCTestCase {
+    func testSparseSignedSelectionStatisticsSurviveViewportChangesAndReopen() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = directory.appendingPathComponent("history.sqlite")
+        let first = UUID(), second = UUID(), emptyInSelection = UUID()
+        func time(_ offset: Double) -> Date { Date(timeIntervalSince1970: 1_000 + offset) }
+        let selection = TimeSelection(start: time(1), end: time(10))
+        let bounds = selection.resolvedBounds(at: time(40))
+        let initialViewport = time(1)...time(10)
+        let widerViewport = time(-10)...time(40)
+
+        func check(_ store: SampleStore, viewport: ClosedRange<Date>) throws {
+            let display = try store.displaySamples(
+                streamID: first, from: viewport.lowerBound, to: viewport.upperBound, bucketCount: 1)
+            XCTAssertLessThan(display.count, 5)
+            let a = try XCTUnwrap(
+                store.statistics(streamID: first, from: bounds.lowerBound, to: bounds.upperBound))
+            XCTAssertEqual(a.count, 5)
+            XCTAssertEqual(a.minimum, -8)
+            XCTAssertEqual(a.maximum, 11)
+            XCTAssertEqual(a.mean, 1.2, accuracy: 1e-12)
+            let b = try XCTUnwrap(
+                store.statistics(streamID: second, from: bounds.lowerBound, to: bounds.upperBound))
+            XCTAssertEqual(b.count, 2)
+            XCTAssertEqual(b.minimum, -3)
+            XCTAssertEqual(b.maximum, 0)
+            XCTAssertEqual(b.mean, -1.5, accuracy: 1e-12)
+            XCTAssertNil(
+                try store.statistics(streamID: emptyInSelection, from: bounds.lowerBound, to: bounds.upperBound))
+        }
+
+        do {
+            let store = try SampleStore(databaseURL: database)
+            for (offset, value) in [(0.5, 100.0), (1, -8), (2.25, 0), (5, 4), (8.75, -1), (10, 11), (18, -70)] {
+                try store.append(values: [value], timestamp: time(offset), to: [first])
+            }
+            try store.append(values: [-3], timestamp: time(3.5), to: [second])
+            try store.append(values: [0], timestamp: time(9), to: [second])
+            try store.append(values: [90], timestamp: time(22), to: [emptyInSelection])
+            try check(store, viewport: initialViewport)
+            try check(store, viewport: widerViewport)
+        }
+
+        let reopened = try SampleStore(databaseURL: database)
+        try check(reopened, viewport: initialViewport)
+        try check(reopened, viewport: widerViewport)
+    }
+
     func testLongRangeUsesAllRawSamplesAndRetainsExtrema() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
