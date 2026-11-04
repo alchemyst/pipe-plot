@@ -2,16 +2,18 @@ import Foundation
 import Synchronization
 
 /// Explicit, process-local acceptance instrumentation. Disabled unless the app
-/// receives --acceptance-trace PATH; no preferences or normal capture are changed.
+/// receives --acceptance-trace PATH or PIPEPLOT_ACCEPTANCE_TRACE.
 enum AcceptanceTrace {
     // The mutex serializes deduplication and whole-line file writes together.
     private static let lastRendered = Mutex<[UUID: Date]>([:])
     private static let destination: URL? = {
         let arguments = ProcessInfo.processInfo.arguments
-        guard let index = arguments.firstIndex(of: "--acceptance-trace"), arguments.indices.contains(index + 1) else {
-            return nil
+        if let index = arguments.firstIndex(of: "--acceptance-trace"), arguments.indices.contains(index + 1) {
+            return URL(fileURLWithPath: arguments[index + 1])
         }
-        return URL(fileURLWithPath: arguments[index + 1])
+        return ProcessInfo.processInfo.environment["PIPEPLOT_ACCEPTANCE_TRACE"].map {
+            URL(fileURLWithPath: $0)
+        }
     }()
     static func record(_ event: String, stream: UUID? = nil, sample: Date? = nil) {
         guard let destination else { return }

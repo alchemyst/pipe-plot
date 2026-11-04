@@ -4,6 +4,7 @@ import XCTest
 import SQLite3
 import Darwin
 import PipePlotCore
+import PipePlotTransport
 @testable import PipePlotApp
 
 /// Opt-in real-time application workload; all data is isolated in a temporary store.
@@ -14,10 +15,29 @@ import PipePlotCore
         else {
             throw XCTSkip("Set PIPEPLOT_SOAK_SECONDS=3600 for the hour-long acceptance workload")
         }
+        try runVisibleWindowTest { try await self.runSoak(seconds: duration) }
+    }
+
+    func testVisibleConcurrentCaptureResponsiveness() throws {
+        guard let trace = ProcessInfo.processInfo.environment["PIPEPLOT_ACCEPTANCE_TRACE"] else {
+            throw XCTSkip("Set PIPEPLOT_ACCEPTANCE_TRACE to a fresh file to measure visible concurrent capture")
+        }
+        try runVisibleWindowTest {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate()
+            print("VISIBLE_CAPTURE pid=\(ProcessInfo.processInfo.processIdentifier)")
+            fflush(stdout)
+            for chartCount in [1, 3] {
+                try await self.measureVisibleCapture(chartCount: chartCount, trace: URL(fileURLWithPath: trace))
+            }
+        }
+    }
+
+    private func runVisibleWindowTest(_ run: @escaping @MainActor () async throws -> Void) throws {
         _ = NSApplication.shared
         var failure: Error?
         Task { @MainActor in
-            do { try await runSoak(seconds: duration) } catch { failure = error }
+            do { try await run() } catch { failure = error }
             NSApp.stop(nil)
             if let event = NSEvent.otherEvent(
                 with: .applicationDefined, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
@@ -28,6 +48,233 @@ import PipePlotCore
         }
         NSApp.run()
         if let failure { throw failure }
+    }
+
+    private struct TraceRow: Decodable {
+        let event: String
+        let stream: UUID?
+        let sampleWall: Double?
+        let uptimeNanoseconds: UInt64
+    }
+
+    private struct ProducerMeasurement: Sendable {
+        let stream: StreamID
+        let sends: [Int64: UInt64]
+        let endedAt: UInt64
+    }
+
+    private nonisolated static let historyRows = 6_000
+    private nonisolated static let bursts = 80
+    private nonisolated static let rowsPerBurst = 8
+    private nonisolated static let burstInterval = Duration.milliseconds(50)
+
+    private func measureVisibleCapture(chartCount: Int, trace: URL) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "visible-capture-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let socket = URL(fileURLWithPath: "/tmp/pp-\(UUID().uuidString.prefix(8)).sock")
+        let model = PipePlotAppModel(databaseURL: directory.appendingPathComponent("capture.sqlite"), socketURL: socket)
+        defer { model.applicationWillTerminate() }
+        let sessionID = try model.store.createSession(title: "Visible capture · \(chartCount) charts").id
+        let first = try XCTUnwrap(model.store.snapshot(sessionID: sessionID)?.charts.first)
+        var chartIDs = [first.id]
+        for _ in 1..<chartCount { chartIDs.append(try model.store.createChart(in: sessionID).id) }
+        let producers = try chartIDs.map { try Self.connectProducer(socket: socket, chart: $0) }
+        defer { producers.forEach { $0.connection.close() } }
+
+        let now = Date()
+        let historyStart = now - 60
+        let selection = TimeSelection(start: now - 45, end: now - 25)
+        for (index, producer) in producers.enumerated() {
+            for row in 0..<Self.historyRows {
+                try model.store.append(
+                    SampleRow(
+                        timestamp: historyStart + Double(row) / 100,
+                        values: [Self.historyValue(row, chart: index)]),
+                    to: producer.ready.attachmentID)
+            }
+        }
+        try model.store.setSelection(selection, sessionID: sessionID)
+        model.refreshAll()
+        let presentation = model.sessionModel(for: sessionID)
+        let seeded = try XCTUnwrap(presentation.snapshot)
+        var timeline = seeded.timeline
+        timeline.followNow = false
+        timeline.visibleStart = historyStart
+        timeline.visibleEnd = Date() + 30
+        model.navigate(timeline, session: seeded)
+
+        let screen = try XCTUnwrap(NSScreen.main)
+        let desktop = screen.visibleFrame
+        let window = NSWindow(
+            contentRect: NSRect(x: desktop.minX + 20, y: desktop.minY + 20, width: 1_000, height: 1_300),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: SessionWindow(sessionID: sessionID, model: model))
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        try await Task.sleep(for: .seconds(1))
+        let hosting = try XCTUnwrap(window.contentView)
+        let plots = chartPlots(in: hosting)
+        print(
+            "VISIBLE_GEOMETRY charts=\(chartCount) desktop=\(desktop) window=\(window.frame) chartBounds=\(plots.map(\.bounds)) visibleBounds=\(plots.map(\.visibleRect))"
+        )
+        XCTAssertTrue(desktop.contains(window.frame), "Use a display large enough for the complete benchmark window")
+        XCTAssertTrue(window.occlusionState.contains(.visible))
+        XCTAssertTrue(model.isDisplayActive(sessionID))
+        XCTAssertEqual(plots.count, chartCount)
+        for plot in plots {
+            let visible = plot.visibleRect
+            let bounds = plot.bounds
+            guard visible.insetBy(dx: -1, dy: -1).contains(bounds) else {
+                return XCTFail("Chart bounds \(bounds) extend outside visible region \(visible)")
+            }
+        }
+        let initialQueries = model.queries.submittedQueryCount
+        let initialRefreshes = model.displayRefreshCount
+        let started = DispatchTime.now().uptimeNanoseconds
+        print("VISIBLE_BEGIN charts=\(chartCount) startUptimeNanoseconds=\(started)")
+        fflush(stdout)
+        let producersWork = producers.enumerated().map { index, producer in
+            Task.detached {
+                try await Self.runProducer(connection: producer.connection, ready: producer.ready, chart: index)
+            }
+        }
+        // Match the navigation menu's model entry points, keeping the live edge
+        // in view so an exact row-to-render match remains possible throughout.
+        for step in 0..<6 {
+            try await Task.sleep(for: .milliseconds(600))
+            let current = try XCTUnwrap(presentation.snapshot)
+            let domain = model.domain(for: current)
+            if step.isMultiple(of: 2) {
+                model.pan(10, width: 800, session: current, from: domain)
+            } else {
+                let midpoint = domain.lowerBound + domain.upperBound.timeIntervalSince(domain.lowerBound) / 2
+                model.zoom(1.025, anchor: midpoint, session: current, from: domain)
+            }
+            XCTAssertNotEqual(model.domain(for: try XCTUnwrap(presentation.snapshot)), domain)
+        }
+        var measurements: [ProducerMeasurement] = []
+        for task in producersWork { measurements.append(try await task.value) }
+        // Allow the last coalesced refresh and the Canvas render to land.
+        try await Task.sleep(for: .seconds(1))
+        let queryCount = model.queries.submittedQueryCount - initialQueries
+        let refreshCount = model.displayRefreshCount - initialRefreshes
+        let snapshot = try XCTUnwrap(presentation.snapshot)
+        XCTAssertEqual(snapshot.timeline.selection, selection)
+        XCTAssertNil(model.errorMessage)
+
+        for (index, producer) in producers.enumerated() {
+            let stream = producer.ready.streams[0].id
+            let expectedHistory = (0..<Self.historyRows).map { Self.historyValue($0, chart: index) }
+            let expectedLive = (0..<(Self.bursts * Self.rowsPerBurst)).map { Self.liveValue($0, chart: index) }
+            let stored = try model.store.samples.query(streamID: stream).map(\.value)
+            XCTAssertEqual(stored.count, Self.historyRows + Self.bursts * Self.rowsPerBurst)
+            XCTAssertTrue(stored == expectedHistory + expectedLive, "Stored sequence differs for chart \(index + 1)")
+            let chart = try XCTUnwrap(snapshot.charts.first { $0.id == producer.ready.chartID })
+            let display = model.visibleSamples(for: chart, session: snapshot)
+            XCTAssertTrue(display.ready.contains(stream))
+            XCTAssertTrue(display.samples[stream, default: []].contains { $0.value == 1_000 + Double(index) })
+            XCTAssertTrue(display.samples[stream, default: []].contains { $0.value == -1_000 - Double(index) })
+            let stats = try XCTUnwrap(model.stats(for: stream, in: selection))
+            XCTAssertEqual(stats.maximum, 1_000 + Double(index))
+            XCTAssertEqual(stats.minimum, -1_000 - Double(index))
+        }
+
+        let rows = try String(contentsOf: trace, encoding: .utf8).split(separator: "\n").compactMap {
+            try? JSONDecoder().decode(TraceRow.self, from: Data($0.utf8))
+        }.filter { $0.event == "visible-sample-render" && $0.uptimeNanoseconds >= started }
+        var latency: [Double] = []
+        for measurement in measurements {
+            var streamLatency: [Double] = []
+            var liveMatches = 0
+            var matched: Set<Int64> = []
+            for row in rows where row.stream == measurement.stream {
+                guard let sample = row.sampleWall else { continue }
+                let key = Self.timestampKey(sample)
+                guard let sentAt = measurement.sends[key], row.uptimeNanoseconds >= sentAt,
+                    matched.insert(key).inserted
+                else { continue }
+                streamLatency.append(Double(row.uptimeNanoseconds - sentAt) / 1_000_000)
+                if row.uptimeNanoseconds <= measurement.endedAt { liveMatches += 1 }
+            }
+            XCTAssertGreaterThan(liveMatches, 0, "Every chart must render a live sample during capture")
+            print(
+                "VISIBLE_STREAM charts=\(chartCount) id=\(measurement.stream) matches=\(streamLatency.count) duringCapture=\(liveMatches)"
+            )
+            latency += streamLatency
+        }
+        let sorted = latency.sorted()
+        let ingestSeconds = Double(try XCTUnwrap(measurements.map(\.endedAt).max()) - started) / 1e9
+        let accepted = measurements.reduce(0) { $0 + $1.sends.count }
+        XCTAssertEqual(accepted, chartCount * Self.bursts * Self.rowsPerBurst)
+        let median =
+            sorted.isEmpty ? 0 : (sorted[(sorted.count - 1) / 2] + sorted[sorted.count / 2]) / 2
+        let p95 = sorted.isEmpty ? 0 : sorted[Int(ceil(Double(sorted.count) * 0.95)) - 1]
+        print(
+            "VISIBLE_RESULT charts=\(chartCount) accepted=\(accepted) ingestSeconds=\(ingestSeconds) rowsPerSecond=\(Double(accepted) / ingestSeconds) renderedMatches=\(sorted.count) latencyMedianMs=\(median) latencyP95Ms=\(p95) latencyMaxMs=\(sorted.last ?? 0) queries=\(queryCount) refreshes=\(refreshCount)"
+        )
+        fflush(stdout)
+    }
+
+    private func chartPlots(in view: NSView) -> [PlotInteractionView] {
+        if let plot = view as? PlotInteractionView {
+            // Chart overlays are 210 points tall. The shared ruler is 78 points.
+            return plot.bounds.height > 100 ? [plot] : []
+        }
+        return view.subviews.flatMap { chartPlots(in: $0) }
+    }
+
+    private nonisolated static func connectProducer(socket: URL, chart: ChartID) throws
+        -> (connection: SocketConnection, ready: ReadyReply)
+    {
+        let connection = try PipePlotLocations.connect(socketURL: socket, timeout: 2)
+        try connection.send(
+            ClientMessage.hello(
+                HelloRequest(sink: .chart(chartID: chart, lineNames: []), sampler: SamplerIntent(columnCount: 1))))
+        guard case .hello? = try connection.receive(ServerMessage.self, timeout: 2),
+            case .ready(let ready)? = try connection.receive(ServerMessage.self, timeout: 2)
+        else { throw SampleStoreError.sql("Producer registration failed") }
+        return (connection, ready)
+    }
+
+    private nonisolated static func runProducer(connection: SocketConnection, ready: ReadyReply, chart: Int)
+        async throws -> ProducerMeasurement
+    {
+        let clock = ContinuousClock()
+        var nextBurst = clock.now
+        var sends: [Int64: UInt64] = [:]
+        for burst in 0..<bursts {
+            try await clock.sleep(until: nextBurst)
+            nextBurst += burstInterval
+            for row in 0..<rowsPerBurst {
+                let time = Date()
+                let start = DispatchTime.now().uptimeNanoseconds
+                try connection.send(
+                    ClientMessage.row(
+                        SampleRow(timestamp: time, values: [liveValue(burst * rowsPerBurst + row, chart: chart)])))
+                guard case .accepted? = try connection.receive(ServerMessage.self, timeout: 3) else {
+                    throw SampleStoreError.sql("Missing acceptance acknowledgement")
+                }
+                sends[timestampKey(time.timeIntervalSince1970)] = start
+            }
+        }
+        return ProducerMeasurement(
+            stream: ready.streams[0].id, sends: sends, endedAt: DispatchTime.now().uptimeNanoseconds)
+    }
+
+    private nonisolated static func historyValue(_ row: Int, chart: Int) -> Double {
+        if row == 2_345 { return 1_000 + Double(chart) }
+        if row == 2_346 { return -1_000 - Double(chart) }
+        return Double(row % 25)
+    }
+
+    private nonisolated static func liveValue(_ row: Int, chart: Int) -> Double {
+        Double(100 * (chart + 1) + row % 50)
+    }
+
+    private nonisolated static func timestampKey(_ timestamp: Double) -> Int64 {
+        Int64((timestamp * 1e6).rounded())
     }
 
     private func runSoak(seconds: Double) async throws {
