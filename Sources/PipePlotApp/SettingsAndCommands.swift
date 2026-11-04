@@ -2,13 +2,48 @@ import SwiftUI
 import AppKit
 import PipePlotCore
 
+let sessionTrashName: String = {
+    let localized = try? URL.trashDirectory.resourceValues(forKeys: [.localizedNameKey]).localizedName
+    if let localized, localized != ".Trash", localized != "Trash" { return localized }
+
+    // Foundation may report “Trash” even where the system uses “Bin”.
+    let language = Locale.Language(identifier: Locale.preferredLanguages.first ?? "en")
+    let binRegions: Set<String> = ["AU", "GB", "IN", "ZA"]
+    if language.languageCode?.identifier == "en", let region = language.region?.identifier,
+        binRegions.contains(region)
+    {
+        return "Bin"
+    }
+    return "Trash"
+}()
+
 struct SessionPicker: View {
     let model: PipePlotAppModel
     let onSelect: (SessionID) -> Void
     @State private var renaming: SessionListing?
     @State private var sessionTitle = ""
+    @State private var isSelecting = false
+    @State private var selection: Set<SessionID> = []
+    @State private var pendingDeletion: [SessionID] = []
+    @State private var cleanupCutoff: Date?
+    @State private var confirmsDeletion = false
+    @State private var confirmsEmptyTrash = false
+    @State private var pendingPurge: Set<SessionID> = []
+
+    private var trashedSessions: [SessionListing] {
+        model.sessionCatalog.values.filter(\.isDeleted).sorted { $0.number < $1.number }
+    }
+
+    private var savedSessions: [SessionListing] {
+        model.sessionCatalog.values.filter { !$0.isDeleted }.sorted { $0.number < $1.number }
+    }
+
+    private var selectedSessions: [SessionID] {
+        savedSessions.map(\.id).filter { selection.contains($0) }
+    }
 
     var body: some View {
+        let trashedSessions = trashedSessions
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 Image(systemName: "waveform.path.ecg").font(.largeTitle).foregroundStyle(.tint)
@@ -19,52 +54,83 @@ struct SessionPicker: View {
                 Spacer()
             }
             Divider()
-            Text("Saved sessions").font(.headline)
-            if model.sessionCatalog.isEmpty {
+            HStack {
+                Text("Saved sessions").font(.headline)
+                Spacer()
+                Button(isSelecting ? "Done" : "Select Sessions") {
+                    isSelecting.toggle()
+                    selection.removeAll()
+                }
+                Button("Clean Up Older Than a Week…") {
+                    let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+                    let oldSessions = savedSessions.filter { session in
+                        guard !session.isOpen, let closedAt = session.closedAt else { return false }
+                        return closedAt < cutoff
+                    }
+                    confirmDeletion(of: oldSessions.map(\.id), closedBefore: cutoff)
+                }
+            }.disabled(savedSessions.isEmpty)
+            if savedSessions.isEmpty {
                 ContentUnavailableView(
                     "No saved sessions", systemImage: "chart.xyaxis.line",
                     description: Text("Create a session or start a pipeline with `pp`."))
             } else {
-                List(model.sessionCatalog.values.filter { !$0.isDeleted }.sorted { $0.number < $1.number }) { session in
-                    Button {
-                        onSelect(session.id)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "chart.xyaxis.line").font(.title2).foregroundStyle(.tint)
-                            VStack(alignment: .leading) {
-                                Text("\(session.number) · \(session.title)").font(.headline)
-                                Text(
-                                    "\(session.chartCount) charts · \(session.streamCount) streams"
-                                ).font(.caption).foregroundStyle(.secondary)
+                List(savedSessions) { session in
+                    if isSelecting {
+                        Toggle(
+                            isOn: Binding(
+                                get: { selection.contains(session.id) },
+                                set: { selected in
+                                    if selected {
+                                        selection.insert(session.id)
+                                    } else {
+                                        selection.remove(session.id)
+                                    }
+                                }
+                            )
+                        ) {
+                            sessionRow(session)
+                        }.toggleStyle(.checkbox)
+                    } else {
+                        Button {
+                            onSelect(session.id)
+                        } label: {
+                            sessionRow(session)
+                        }.buttonStyle(.plain)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button("Move to \(sessionTrashName)", systemImage: "trash", role: .destructive) {
+                                    model.deleteSession(session.id)
+                                }
                             }
-                            Spacer()
-                            Text(session.isOpen ? "Open" : "Saved").font(.caption).foregroundStyle(.secondary)
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                        }.padding(.vertical, 4)
-                    }.buttonStyle(.plain)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button("Move to Trash", systemImage: "trash", role: .destructive) {
-                                model.deleteSession(session.id)
+                            .contextMenu {
+                                Button("Rename…") {
+                                    sessionTitle = session.title
+                                    renaming = session
+                                }
+                                Button("Move to \(sessionTrashName)", role: .destructive) {
+                                    model.deleteSession(session.id)
+                                }
                             }
-                        }
-                        .contextMenu {
-                            Button("Rename…") {
-                                sessionTitle = session.title
-                                renaming = session
-                            }
-                            Button("Move to Trash", role: .destructive) { model.deleteSession(session.id) }
-                        }
+                    }
                 }.listStyle(.inset)
             }
-            if model.sessionCatalog.values.contains(where: \.isDeleted) {
-                Menu("Recently deleted sessions") {
-                    ForEach(model.sessionCatalog.values.filter(\.isDeleted).sorted { $0.number < $1.number }) {
-                        session in
-                        Button("Restore \(session.number) · \(session.title)") { model.restoreSession(session.id) }
-                    }
+            Menu(sessionTrashName) {
+                ForEach(trashedSessions) { session in
+                    Button("Restore \(session.number) · \(session.title)") { model.restoreSession(session.id) }
                 }
-            }
+                if !trashedSessions.isEmpty { Divider() }
+                Button("Empty \(sessionTrashName)…", role: .destructive) {
+                    pendingPurge = Set(trashedSessions.map(\.id))
+                    confirmsEmptyTrash = true
+                }.disabled(trashedSessions.isEmpty && !model.store.hasPendingTrashCleanup)
+            }.disabled(model.isEmptyingTrash)
             HStack {
+                if isSelecting && !savedSessions.isEmpty {
+                    Button("Move Selected to \(sessionTrashName)…", systemImage: "trash", role: .destructive) {
+                        confirmDeletion(of: selectedSessions)
+                    }.disabled(selectedSessions.isEmpty)
+                    Text("\(selectedSessions.count) selected").foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button {
                     model.createSessionWindow()
@@ -73,6 +139,53 @@ struct SessionPicker: View {
                 }.buttonStyle(.borderedProminent)
             }
         }.padding(24).background(Color(nsColor: .windowBackgroundColor))
+            .onChange(of: savedSessions.map(\.id)) { _, ids in
+                selection.formIntersection(ids)
+                if ids.isEmpty { isSelecting = false }
+            }
+            .alert(
+                pendingDeletion.isEmpty ? "No old sessions" : "Move \(pendingDeletion.count) to \(sessionTrashName)?",
+                isPresented: $confirmsDeletion
+            ) {
+                if pendingDeletion.isEmpty {
+                    Button("OK", role: .cancel) {}
+                } else {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Move to \(sessionTrashName)", role: .destructive) {
+                        model.deleteSessions(pendingDeletion, closedBefore: cleanupCutoff)
+                    }
+                }
+            } message: {
+                if pendingDeletion.isEmpty {
+                    Text("There are no closed sessions older than seven days.")
+                } else if cleanupCutoff != nil {
+                    Text(
+                        "Closed sessions older than seven days will be moved to the \(sessionTrashName), where you can restore them."
+                    )
+                } else {
+                    Text("Selected sessions will be moved to the \(sessionTrashName), where you can restore them.")
+                }
+            }
+            .alert("Empty \(sessionTrashName)?", isPresented: $confirmsEmptyTrash) {
+                Button("Cancel", role: .cancel) {}
+                Button("Empty \(sessionTrashName)", role: .destructive) {
+                    let ids = pendingPurge
+                    Task { await model.emptyTrash(ids) }
+                }
+            } message: {
+                Text("Sessions in the \(sessionTrashName) and their captured data will be permanently deleted.")
+            }
+            .alert(
+                "PipePlot",
+                isPresented: Binding(
+                    get: { model.errorMessage != nil },
+                    set: { if !$0 { model.clearError() } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(model.errorMessage ?? "")
+            }
             .sheet(item: $renaming) { session in
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Rename session").font(.headline)
@@ -85,6 +198,28 @@ struct SessionPicker: View {
                 }.padding(24).frame(width: 360)
             }
     }
+    private func sessionRow(_ session: SessionListing) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "chart.xyaxis.line").font(.title2).foregroundStyle(.tint)
+            VStack(alignment: .leading) {
+                Text("\(session.number) · \(session.title)").font(.headline)
+                Text("\(session.chartCount) charts · \(session.streamCount) streams")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(session.isOpen ? "Open" : "Saved").font(.caption).foregroundStyle(.secondary)
+            if !isSelecting {
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+            }
+        }.padding(.vertical, 4)
+    }
+
+    private func confirmDeletion(of ids: [SessionID], closedBefore cutoff: Date? = nil) {
+        pendingDeletion = ids
+        cleanupCutoff = cutoff
+        confirmsDeletion = true
+    }
+
     private func commitTitle(_ id: SessionID) {
         model.renameSession(id, to: sessionTitle)
         renaming = nil

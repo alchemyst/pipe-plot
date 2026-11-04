@@ -8,6 +8,7 @@ import PipePlotCore
 final class SessionModel {
     let id: SessionID
     private(set) var snapshot: SessionSnapshot?
+    private(set) var isPermanentlyDeleted = false
     var selectedChartID: ChartID?
     var chartAxisDrafts: [ChartID: ChartAxisDraft] = [:]
     var guideAlertDrafts: [UUID: GuideAlertDraft] = [:]
@@ -37,6 +38,19 @@ final class SessionModel {
         }
         if normalized != chartAxisDrafts { chartAxisDrafts = normalized }
         return true
+    }
+
+    func markPermanentlyDeleted() {
+        snapshot = nil
+        isPermanentlyDeleted = true
+        displayActive = false
+        selectedChartID = nil
+        chartAxisDrafts.removeAll()
+        guideAlertDrafts.removeAll()
+        forecastStatuses.removeAll()
+        valueGuideRequest = nil
+        navigationBack.removeAll()
+        navigationForward.removeAll()
     }
 
     func setDisplayActive(_ active: Bool) -> Bool {
@@ -92,6 +106,7 @@ struct SessionListing: Identifiable, Equatable {
     let title: String
     let isDeleted: Bool
     let isOpen: Bool
+    let closedAt: Date?
     let chartCount: Int
     let streamCount: Int
 
@@ -101,6 +116,7 @@ struct SessionListing: Identifiable, Equatable {
         title = snapshot.title
         isDeleted = snapshot.isDeleted
         isOpen = snapshot.isOpen
+        closedAt = snapshot.isOpen ? nil : (snapshot.lastClosedAt ?? snapshot.timeline.clockStoppedAt)
         chartCount = snapshot.charts.count
         streamCount = snapshot.charts.reduce(0) { $0 + $1.streams.count }
     }

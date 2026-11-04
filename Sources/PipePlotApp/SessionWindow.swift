@@ -155,7 +155,7 @@ struct SessionWindow: View {
                 ContentUnavailableView {
                     Label("Deleted session", systemImage: "trash")
                 } description: {
-                    Text("This session and its captured data are retained in Recently Deleted.")
+                    Text("This session and its captured data are in the \(sessionTrashName).")
                 } actions: {
                     Button("Restore Session") { model.restoreSession(session.id) }.buttonStyle(.borderedProminent)
                 }
@@ -175,6 +175,8 @@ struct SessionWindow: View {
                 }
             }
             if sessionModel.displayActive { timelineBar(session) }
+        } else if sessionModel.isPermanentlyDeleted {
+            ContentUnavailableView("Session Permanently Deleted", systemImage: "trash")
         } else {
             ProgressView().task { model.refresh(sessionID) }
         }

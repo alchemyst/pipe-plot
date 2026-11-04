@@ -38,7 +38,7 @@ struct SessionWindowToolbar: ToolbarContent {
             .help(inspectorVisible ? "Hide chart settings" : "Show settings for the selected chart")
             Menu {
                 Button("Rename Session…", action: renameSession)
-                Button("Move Session to Trash", role: .destructive) {
+                Button("Move Session to \(sessionTrashName)", role: .destructive) {
                     guard let session = presentationTarget.snapshot else { return }
                     model.deleteSession(session.id)
                 }

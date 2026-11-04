@@ -35,6 +35,7 @@ public final class PipePlotStore: @unchecked Sendable {
     }
     private let metadataURL: URL
     private var sessions: [SessionRecord] = []
+    private var pendingTrashStreams: Set<StreamID> = []
     private var targetChartID: ChartID?
     private var nextNumber = 1
     private var epoch: UInt64 = 0
@@ -59,10 +60,12 @@ public final class PipePlotStore: @unchecked Sendable {
                 .subtracting(state.sessions.filter(\.isDeleted).map(\.id))
             restoreOpenSessionIDs = savedOpenSessionIDs
             sessions = state.sessions
+            pendingTrashStreams = state.pendingTrashStreams ?? []
             targetChartID = state.targetChartID
             nextNumber = state.nextNumber
             recency = state.recency
             for i in sessions.indices {
+                if sessions[i].isOpen { sessions[i].lastClosedAt = Date() }
                 sessions[i].isOpen = false
                 for c in sessions[i].charts.indices {
                     for s in sessions[i].charts[c].streams.indices
@@ -100,6 +103,7 @@ public final class PipePlotStore: @unchecked Sendable {
             }
         }
         committedState = memoryState()
+        try? finishTrashCleanup()
     }
 
     @discardableResult public func createSession(title: String? = nil) throws -> SessionSnapshot {
@@ -252,9 +256,22 @@ public final class PipePlotStore: @unchecked Sendable {
         return sessions.filter(\.isDeleted).map(snapshotRecord)
     }
     public func deleteSession(sessionID: SessionID) throws {
+        _ = try deleteSession(sessionID: sessionID, closedBefore: nil)
+    }
+
+    @discardableResult
+    public func deleteSession(sessionID: SessionID, closedBefore cutoff: Date?) throws -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard let i = sessionIndex(sessionID), !sessions[i].isDeleted else { throw DomainError.unknownSession }
+        guard let i = sessionIndex(sessionID), !sessions[i].isDeleted else {
+            if cutoff != nil { return false }
+            throw DomainError.unknownSession
+        }
+        if let cutoff {
+            guard !sessions[i].isOpen, let closedAt = sessions[i].lastClosedAt ?? sessions[i].timeline.clockStoppedAt,
+                closedAt < cutoff
+            else { return false }
+        }
         let wasOpen = sessions[i].isOpen, targetBefore = targetChartID
         for (aid, var a) in attachments where a.sessionID == sessionID && a.active {
             a.active = false
@@ -282,7 +299,54 @@ public final class PipePlotStore: @unchecked Sendable {
             .sessionDeleted(sessionID, wasOpen: wasOpen, targetBefore: targetBefore, targetAfter: targetChartID),
             in: sessionID)
         try persist()
+        return true
     }
+    public var hasPendingTrashCleanup: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !pendingTrashStreams.isEmpty
+    }
+
+    public func emptyTrash(sessionIDs: Set<SessionID>) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        let deleted = sessions.filter { $0.isDeleted && sessionIDs.contains($0.id) }
+        if !deleted.isEmpty {
+            let ids = Set(deleted.map(\.id))
+            let charts = deleted.flatMap(\.charts)
+            let chartIDs = Set(charts.map(\.id))
+            let retiredAttachments = attachments.values.filter { ids.contains($0.sessionID) }
+            pendingTrashStreams.formUnion(charts.flatMap(\.streams).map(\.id))
+            pendingTrashStreams.formUnion(retiredAttachments.flatMap(\.streamIDs))
+            sessions.removeAll { ids.contains($0.id) }
+            pendingTrashStreams.subtract(sessions.flatMap(\.charts).flatMap(\.streams).map(\.id))
+            recency.removeAll { chartIDs.contains($0) }
+            savedOpenSessionIDs.subtract(ids)
+            restoreOpenSessionIDs.subtract(ids)
+            for id in ids {
+                undoStacks[id] = nil
+                redoStacks[id] = nil
+            }
+            for attachment in retiredAttachments {
+                attachments[attachment.id] = nil
+                for stream in attachment.streamIDs where owners[stream] == attachment.id {
+                    owners[stream] = nil
+                }
+            }
+            attachmentOrder.removeAll { attachments[$0] == nil }
+            // Persist the purge intent first so a failed or interrupted SQL write can be retried.
+            try persist()
+        }
+        try finishTrashCleanup()
+    }
+
+    private func finishTrashCleanup() throws {
+        guard !pendingTrashStreams.isEmpty else { return }
+        try samples.purge(streamIDs: pendingTrashStreams)
+        pendingTrashStreams.removeAll()
+        try persist()
+    }
+
     public func restoreSession(sessionID: SessionID) throws {
         lock.lock()
         defer { lock.unlock() }
@@ -1113,6 +1177,7 @@ public final class PipePlotStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let i = sessionIndex(sessionID), !sessions[i].isDeleted || !open else { throw DomainError.unknownSession }
+        if !open && sessions[i].isOpen { sessions[i].lastClosedAt = Date() }
         sessions[i].isOpen = open
         if !open {
             let active = attachments.values.filter { $0.sessionID == sessionID && $0.active }
@@ -1597,7 +1662,8 @@ public final class PipePlotStore: @unchecked Sendable {
         SessionSnapshot(
             id: s.id, number: s.number, title: s.title,
             charts: s.charts.map { chartSnapshot($0, target: targetChartID) }, timeGuides: s.timeGuides,
-            timeline: s.timeline, isOpen: s.isOpen, rejectedLineCount: s.rejectedLineCount, isDeleted: s.isDeleted)
+            timeline: s.timeline, isOpen: s.isOpen, rejectedLineCount: s.rejectedLineCount, isDeleted: s.isDeleted,
+            lastClosedAt: s.lastClosedAt)
     }
     private func persist() throws {
         guard suppressPersistDepth == 0 else { return }
@@ -1609,7 +1675,8 @@ public final class PipePlotStore: @unchecked Sendable {
             if !terminationSnapshotTaken { restoreOpenSessionIDs = Set(sessions.filter(\.isOpen).map(\.id)) }
             let state = PersistedState(
                 sessions: sessions, targetChartID: targetChartID, nextNumber: nextNumber, recency: recency,
-                restoreOpenSessionIDs: restoreOpenSessionIDs)
+                restoreOpenSessionIDs: restoreOpenSessionIDs,
+                pendingTrashStreams: pendingTrashStreams.isEmpty ? nil : pendingTrashStreams)
             let data = try JSONEncoder().encode(state)
             try data.write(to: metadataURL, options: .atomic)
             committedState = memoryState()
@@ -1620,7 +1687,8 @@ public final class PipePlotStore: @unchecked Sendable {
     }
     private func memoryState() -> MemoryState {
         MemoryState(
-            previouslyOpenSessionIDs: savedOpenSessionIDs, sessions: sessions, targetChartID: targetChartID,
+            previouslyOpenSessionIDs: savedOpenSessionIDs, sessions: sessions, pendingTrashStreams: pendingTrashStreams,
+            targetChartID: targetChartID,
             nextNumber: nextNumber, epoch: epoch, lastContinuation: lastContinuation, attachments: attachments,
             owners: owners, attachmentOrder: attachmentOrder, undoStacks: undoStacks, redoStacks: redoStacks,
             recency: recency, restoreOpenSessionIDs: restoreOpenSessionIDs,
@@ -1629,6 +1697,7 @@ public final class PipePlotStore: @unchecked Sendable {
     private func restoreMemoryState(_ s: MemoryState) {
         savedOpenSessionIDs = s.previouslyOpenSessionIDs
         sessions = s.sessions
+        pendingTrashStreams = s.pendingTrashStreams
         targetChartID = s.targetChartID
         nextNumber = s.nextNumber
         epoch = s.epoch
@@ -1654,6 +1723,7 @@ private struct Continuation {
 private struct MemoryState {
     var previouslyOpenSessionIDs: Set<SessionID>
     var sessions: [SessionRecord]
+    var pendingTrashStreams: Set<StreamID>
     var targetChartID: ChartID?
     var nextNumber: Int
     var epoch: UInt64
@@ -1685,6 +1755,7 @@ private struct SessionRecord: Codable {
     var isOpen: Bool
     var rejectedLineCount: Int
     var isDeleted: Bool = false
+    var lastClosedAt: Date?
 }
 private struct ChartRecord: Codable {
     var id: ChartID
@@ -1714,6 +1785,7 @@ private struct PersistedState: Codable {
     var nextNumber: Int
     var recency: [ChartID]
     var restoreOpenSessionIDs: Set<SessionID>?
+    var pendingTrashStreams: Set<StreamID>?
 }
 private struct ReassociationItem {
     var sourceID: StreamID
@@ -1765,7 +1837,7 @@ private enum UndoRecord {
 
 private extension SessionRecord {
     enum CodingKeys: String, CodingKey {
-        case id, number, title, charts, timeGuides, timeline, isOpen, rejectedLineCount, isDeleted
+        case id, number, title, charts, timeGuides, timeline, isOpen, rejectedLineCount, isDeleted, lastClosedAt
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1778,6 +1850,7 @@ private extension SessionRecord {
         isOpen = try c.decode(Bool.self, forKey: .isOpen)
         rejectedLineCount = try c.decodeIfPresent(Int.self, forKey: .rejectedLineCount) ?? 0
         isDeleted = try c.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false
+        lastClosedAt = try c.decodeIfPresent(Date.self, forKey: .lastClosedAt)
     }
 }
 

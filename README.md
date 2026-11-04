@@ -56,7 +56,7 @@ New charts show connecting lines by default; dots can be enabled independently. 
 
 Prominent local peaks and troughs are labelled from observed samples when a chart has at most six streams; the display does not interpolate points. Hover readouts reserve their space, and selection boundaries are marked across the chart stack. A linked boundary has a distinct marker and follows the chosen clock behavior.
 
-The shared time axis displays local time or UTC. A session time guide can serve as the time origin, displaying signed elapsed times from that guide. The toolbar also provides recent history spans, Show All History, Follow Now, and Back/Forward viewport navigation. Session controls rename a session or move it to Recently Deleted; the saved-session picker restores deleted sessions.
+The shared time axis displays local time or UTC. A session time guide can serve as the time origin, displaying signed elapsed times from that guide. The toolbar also provides recent history spans, Show All History, Follow Now, and Back/Forward viewport navigation. Session controls rename a session or move it to Trash; the saved-session picker restores deleted sessions.
 
 The session clock advances while at least one producer remains connected, even during silence. When its final producer disconnects, the clock freezes at disconnect time and resumes on the next connection.
 
@@ -74,7 +74,7 @@ Chart and stream menus provide rename, move, style, hide and restore actions. Hi
 
 The shared ruler includes a loop-style interval brace and labelled time locators. Click a locator flag to edit its exact time/label; double-click each interval triangle independently to toggle tracking. The selection Forecast menu can create a new target guide with an exact SI/binary value even when no guides exist; creating its guide and forecast is one Undo step. Open chart, stream, guide and selection menus keep a fixed native menu tree while live updates continue.
 
-Saved sessions can be renamed or moved to Trash from the saved-session picker. Recently deleted sessions can be restored with their data; deleting or closing a session disconnects its producers. Restoration never restarts a shell command.
+In Saved Sessions, select multiple sessions to move them to Trash together, or use Clean Up Older Than a Week for sessions closed more than seven days ago. The Trash menu (called Bin in some regions) lets you restore sessions with their data or empty it to delete them permanently. Moving a session to Trash or closing it disconnects its producers. Restoration never restarts a shell command.
 
 ## Similar projects
 

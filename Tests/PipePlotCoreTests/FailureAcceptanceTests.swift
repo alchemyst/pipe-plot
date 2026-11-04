@@ -44,6 +44,36 @@ final class FailureAcceptanceTests: XCTestCase {
         )
     }
 
+    func testInterruptedEmptyTrashRetriesSampleRemovalOnRestart() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = directory.appendingPathComponent("trash.sqlite")
+        let store = try PipePlotStore(databaseURL: database)
+        let trashed = try store.registerSampler(intent: .newSession, sampler: SamplerIntent(columnCount: 1))
+        let kept = try store.registerSampler(intent: .newSession, sampler: SamplerIntent(columnCount: 1))
+        try store.append(SampleRow(values: [1]), to: trashed.attachmentID)
+        try store.append(SampleRow(values: [2]), to: kept.attachmentID)
+        try store.deleteSession(sessionID: trashed.sessionID)
+
+        let rejectDelete =
+            "CREATE TRIGGER reject_delete BEFORE DELETE ON samples BEGIN SELECT RAISE(ABORT, 'test'); END"
+        XCTAssertEqual(sqlite3_exec(store.samples.db, rejectDelete, nil, nil, nil), SQLITE_OK)
+        XCTAssertThrowsError(try store.emptyTrash(sessionIDs: [trashed.sessionID, kept.sessionID]))
+        XCTAssertNil(try store.snapshot(sessionID: trashed.sessionID))
+        XCTAssertThrowsError(try store.restoreSession(sessionID: trashed.sessionID))
+        XCTAssertTrue(store.hasPendingTrashCleanup)
+        XCTAssertEqual(try store.samples.query(streamID: trashed.streams[0].id).map(\.value), [1])
+
+        XCTAssertEqual(sqlite3_exec(store.samples.db, "DROP TRIGGER reject_delete", nil, nil, nil), SQLITE_OK)
+        let reopened = try PipePlotStore(databaseURL: database)
+        XCTAssertFalse(reopened.hasPendingTrashCleanup)
+        XCTAssertNil(try reopened.snapshot(sessionID: trashed.sessionID))
+        XCTAssertTrue(try reopened.samples.query(streamID: trashed.streams[0].id).isEmpty)
+        XCTAssertEqual(try reopened.samples.count(streamID: trashed.streams[0].id), 0)
+        XCTAssertEqual(try reopened.listSessions().map(\.id), [kept.sessionID])
+        XCTAssertEqual(try reopened.samples.query(streamID: kept.streams[0].id).map(\.value), [2])
+    }
+
     func testMetadataWriteFailurePreservesAcknowledgedDataAndRecoversRawCommit() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

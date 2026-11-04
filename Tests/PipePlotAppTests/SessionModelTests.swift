@@ -82,6 +82,34 @@ final class SessionModelTests: XCTestCase {
         XCTAssertEqual(aModel.selectedChartID, a.chartID)
     }
 
+    func testBulkTrashAndCleanupRespectTheClosedSessionCutoff() throws {
+        let model = try makeModel()
+        let old = try model.store.createSession()
+        let reopened = try model.store.createSession()
+        let boundary = try model.store.createSession()
+        let other = try model.store.createSession()
+        try model.store.setSessionOpen(false, sessionID: old.id)
+        try model.store.setSessionOpen(false, sessionID: reopened.id)
+        try model.store.setSessionOpen(false, sessionID: boundary.id)
+        let oldSnapshot = try XCTUnwrap(model.store.snapshot(sessionID: old.id))
+        let boundarySnapshot = try XCTUnwrap(model.store.snapshot(sessionID: boundary.id))
+        let cutoff = try XCTUnwrap(boundarySnapshot.lastClosedAt)
+        XCTAssertLessThan(try XCTUnwrap(oldSnapshot.lastClosedAt), cutoff)
+        model.refreshAll()
+
+        // An explicit producer registration can reopen a session while the picker still shows it as closed.
+        _ = try model.store.registerSampler(
+            intent: .session(sessionID: reopened.id, lineNames: []), sampler: SamplerIntent(columnCount: 1))
+        model.deleteSessions([old.id, reopened.id, boundary.id], closedBefore: cutoff)
+        XCTAssertEqual(Set(try model.store.listDeletedSessions().map(\.id)), [old.id])
+        XCTAssertEqual(model.sessionCatalog[reopened.id]?.isOpen, true)
+
+        model.deleteSessions([boundary.id, other.id])
+        XCTAssertEqual(Set(try model.store.listDeletedSessions().map(\.id)), [old.id, boundary.id, other.id])
+        model.restoreSession(boundary.id)
+        XCTAssertEqual(model.sessionCatalog[boundary.id]?.isDeleted, false)
+    }
+
     func testSessionObjectSurvivesRefreshCloseReopenTrashAndRestore() throws {
         let model = try makeModel()
         let created = try model.store.createSession()

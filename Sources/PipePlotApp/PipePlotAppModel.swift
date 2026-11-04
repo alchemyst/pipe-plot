@@ -31,6 +31,7 @@ final class PipePlotAppModel {
         return created
     }
     private(set) var errorMessage: String?
+    private(set) var isEmptyingTrash = false
     private(set) var editRevision = 0
     let streamDrag = StreamDragState()
     var forecastStatuses: [SessionID: ForecastStatus] {
@@ -109,7 +110,7 @@ final class PipePlotAppModel {
         guard !didBootstrap else { return nil }
         didBootstrap = true
         do {
-            let all = try store.listSessions()
+            let all = try store.listSessions() + store.listDeletedSessions()
             for session in all {
                 _ = sessionModel(for: session.id).update(session)
                 indexStreams(in: session)
@@ -400,18 +401,46 @@ final class PipePlotAppModel {
     func reorderChart(_ id: ChartID, to index: Int) { perform { try store.reorderChart(id, to: index) } }
     func deleteChart(_ id: ChartID) { perform { try store.deleteChart(id) } }
     func restoreChart(_ id: ChartID) { perform { try store.restoreChart(id) } }
-    func deleteSession(_ id: SessionID) {
-        do {
-            if let ingestion {
-                try ingestion.closeSession(id, delete: true)
-            } else {
-                try store.deleteSession(sessionID: id)
+    func deleteSession(_ id: SessionID) { deleteSessions([id]) }
+
+    func deleteSessions(_ ids: [SessionID], closedBefore cutoff: Date? = nil) {
+        for id in ids where sessionCatalog[id]?.isDeleted != true {
+            do {
+                if let ingestion {
+                    try ingestion.closeSession(id, delete: true, closedBefore: cutoff)
+                } else {
+                    try store.deleteSession(sessionID: id, closedBefore: cutoff)
+                }
+            } catch {
+                errorMessage = error.localizedDescription
             }
-            refreshAll()
+        }
+        refreshAll()
+    }
+    func emptyTrash(_ ids: Set<SessionID>) async {
+        guard !isEmptyingTrash else { return }
+        isEmptyingTrash = true
+        defer { isEmptyingTrash = false }
+        do {
+            try await Task.detached(priority: .utility) { [store] in
+                try store.emptyTrash(sessionIDs: ids)
+            }.value
         } catch {
             errorMessage = error.localizedDescription
         }
+        let removed = ids.filter { id in
+            do { return try store.snapshot(sessionID: id) == nil } catch { return false }
+        }
+        for id in removed {
+            sessionModels[id]?.markPermanentlyDeleted()
+            undoManagers.removeValue(forKey: id)?.menuState.invalidate()
+        }
+        openedSessionIDs.subtract(removed)
+        pendingWindowIDs.subtract(removed)
+        streamSessions = streamSessions.filter { !removed.contains($0.value) }
+        refreshAll()
     }
+
     func restoreSession(_ id: SessionID) {
         do {
             try store.restoreSession(sessionID: id)
@@ -502,7 +531,7 @@ final class PipePlotAppModel {
     }
 
     func tick(_ id: SessionID, now: Date = Date()) {
-        guard isDisplayActive(id) else { return }
+        guard !isEmptyingTrash, isDisplayActive(id) else { return }
         displayRefreshCount &+= 1
         if sessionModel(for: id).snapshot?.timeline.clockStoppedAt == nil {
             sessionModel(for: id).advanceClock(to: now)
@@ -1010,6 +1039,10 @@ final class PipePlotAppModel {
     }
     func windowClosed(_ id: SessionID) {
         guard !terminating else { return }
+        if sessionModels[id]?.isPermanentlyDeleted == true {
+            sessionModels[id] = nil
+            return
+        }
         _ = sessionModel(for: id).setDisplayActive(true)
         openedSessionIDs.remove(id)
         pendingWindowIDs.remove(id)

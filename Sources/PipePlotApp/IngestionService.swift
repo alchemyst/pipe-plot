@@ -138,9 +138,14 @@ private final class IngestionConnectionRegistry: @unchecked Sendable {
         items.removeValue(forKey: key)
         lock.unlock()
     }
-    func closeConnections(for id: SessionID, mutation: () throws -> Void) throws {
+    func closeConnections(for id: SessionID, mutation: () throws -> Bool) throws {
         lock.lock()
-        do { try mutation() } catch {
+        do {
+            guard try mutation() else {
+                lock.unlock()
+                return
+            }
+        } catch {
             lock.unlock()
             throw error
         }
@@ -311,13 +316,13 @@ final class IngestionService: Sendable {
 
     func start() throws { try server.start() }
     func stop() { server.stop() }
-    func closeSession(_ id: SessionID, delete: Bool = false) throws {
+    func closeSession(_ id: SessionID, delete: Bool = false, closedBefore cutoff: Date? = nil) throws {
         try registry.closeConnections(for: id) {
             if delete {
-                try store.deleteSession(sessionID: id)
-            } else {
-                try store.setSessionOpen(false, sessionID: id)
+                return try store.deleteSession(sessionID: id, closedBefore: cutoff)
             }
+            try store.setSessionOpen(false, sessionID: id)
+            return true
         }
     }
 }

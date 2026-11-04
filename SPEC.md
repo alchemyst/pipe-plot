@@ -77,7 +77,7 @@ This first-use amendment records the additional behaviors now represented in the
 ### Selection and session controls
 
 - Draw distinct start and end selection markers across chart rows. Show the selected interval and its boundary mode in the inspector. Boundaries can be fixed, have the end follow now, have both ends follow now at a fixed duration, or have the start follow the end at a fixed duration. A linked boundary has a visual marker distinct from a fixed boundary. Selection inclusion can be limited to chosen streams for analysis.
-- Session windows provide rename and move-to-Trash controls; Recently Deleted sessions can be restored from the session picker. The timeline toolbar provides last 5 minutes, last 15 minutes, last hour, Show All History, Follow Now, and separate Back/Forward viewport navigation.
+- Session windows provide rename and move-to-Trash controls. The session picker supports bulk moves to Trash, cleanup of sessions closed more than seven days ago, restoration, and permanent removal through Empty Trash. The timeline toolbar provides last 5 minutes, last 15 minutes, last hour, Show All History, Follow Now, and separate Back/Forward viewport navigation.
 - Display absolute times in local time or UTC. A selected session time guide can be used as a time reference, in which case timeline and guide labels show signed elapsed time from that instant. Stored guide timestamps remain absolute.
 
 The implementation record above has not been manually visually verified across all chart sizes, data densities, timezones, and notification-permission states. Use the acceptance scenarios and visual checks in `docs/VALIDATION.md` before calling those interactions fully validated.

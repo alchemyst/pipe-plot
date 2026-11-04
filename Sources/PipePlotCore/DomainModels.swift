@@ -222,10 +222,11 @@ public struct SessionSnapshot: Codable, Equatable, Identifiable, Sendable {
     public var isOpen: Bool
     public var rejectedLineCount: Int
     public var isDeleted: Bool
+    public var lastClosedAt: Date?
     public init(
         id: SessionID, number: Int, title: String, charts: [ChartSnapshot], timeGuides: [Guide] = [],
         timeline: TimelineState = TimelineState(), isOpen: Bool = true, rejectedLineCount: Int = 0,
-        isDeleted: Bool = false
+        isDeleted: Bool = false, lastClosedAt: Date? = nil
     ) {
         self.id = id
         self.number = number
@@ -236,9 +237,10 @@ public struct SessionSnapshot: Codable, Equatable, Identifiable, Sendable {
         self.isOpen = isOpen
         self.rejectedLineCount = rejectedLineCount
         self.isDeleted = isDeleted
+        self.lastClosedAt = lastClosedAt
     }
     private enum CodingKeys: String, CodingKey {
-        case id, number, title, charts, timeGuides, timeline, isOpen, rejectedLineCount, isDeleted
+        case id, number, title, charts, timeGuides, timeline, isOpen, rejectedLineCount, isDeleted, lastClosedAt
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -251,6 +253,7 @@ public struct SessionSnapshot: Codable, Equatable, Identifiable, Sendable {
         isOpen = try c.decode(Bool.self, forKey: .isOpen)
         rejectedLineCount = try c.decodeIfPresent(Int.self, forKey: .rejectedLineCount) ?? 0
         isDeleted = try c.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false
+        lastClosedAt = try c.decodeIfPresent(Date.self, forKey: .lastClosedAt)
     }
 }
 public struct SampleBounds: Codable, Equatable, Sendable {

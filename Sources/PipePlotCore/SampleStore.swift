@@ -194,6 +194,29 @@ public final class SampleStore: @unchecked Sendable {
         )
     }
 
+    func purge(streamIDs: Set<StreamID>) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            for streamID in streamIDs {
+                let id = streamID.uuidString.lowercased()
+                try execute(
+                    """
+                    DELETE FROM samples WHERE stream_id='\(id)';
+                    DELETE FROM stream_meta WHERE stream_id='\(id)';
+                    DELETE FROM fit_versions WHERE stream_id='\(id)';
+                    """)
+            }
+            try execute("COMMIT")
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
+        // The deletion is committed. If compaction is busy, SQLite can reuse the freed pages.
+        try? execute("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+    }
+
     private func nextSequence(for id: String) throws -> UInt64 {
         let insert = try self.statement("INSERT OR IGNORE INTO stream_meta(stream_id) VALUES(?)")
         defer { insert.close() }
