@@ -82,6 +82,89 @@ final class SessionModelTests: XCTestCase {
         XCTAssertEqual(aModel.selectedChartID, a.chartID)
     }
 
+    func testTimeNavigationPreservesFixedChartRangesDuringCaptureAndAfterReopen() throws {
+        let model = try makeModel()
+        let session = try model.store.createSession()
+        let first = try XCTUnwrap(session.charts.first)
+        let second = try model.store.createChart(in: session.id)
+        let firstRange = YScale.fixed(min: -10, max: 20)
+        let secondRange = YScale.fixed(min: 100, max: 250)
+        try model.store.updateSettings(AxisSettings(yScale: firstRange), chartID: first.id)
+        try model.store.updateSettings(AxisSettings(yScale: secondRange), chartID: second.id)
+        let producers = try [first.id, second.id].map { chartID in
+            try model.store.registerSampler(
+                intent: .chart(chartID: chartID, lineNames: []), sampler: SamplerIntent(columnCount: 1))
+        }
+        let start = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970) - 60)
+        let selection = TimeSelection(start: start + 5, end: start + 10)
+        try model.store.setSelection(selection, sessionID: session.id)
+        let undo = model.undoManager(for: session.id)
+        let undoBeforeNavigation = undo.undoActionName
+        XCTAssertFalse(undoBeforeNavigation.isEmpty)
+        let presentation = model.sessionModel(for: session.id)
+
+        func capture(_ index: Int) throws -> SessionSnapshot {
+            for (chartIndex, producer) in producers.enumerated() {
+                try model.store.append(
+                    SampleRow(timestamp: start + Double(index), values: [Double(index + 100 * chartIndex)]),
+                    to: producer.attachmentID)
+            }
+            model.refresh(session.id)
+            return try XCTUnwrap(presentation.snapshot)
+        }
+
+        func checkState(_ snapshot: SessionSnapshot, sampleCount: Int64) {
+            XCTAssertEqual(snapshot.charts.map(\.settings.yScale), [firstRange, secondRange])
+            XCTAssertEqual(snapshot.timeline.selection, selection)
+            XCTAssertEqual(snapshot.charts.flatMap(\.streams).map(\.sampleCount), [sampleCount, sampleCount])
+            XCTAssertEqual(undo.undoActionName, undoBeforeNavigation)
+            XCTAssertFalse(undo.canRedo)
+        }
+
+        model.showAllHistory(try capture(0))
+        let allHistory = try capture(1)
+        XCTAssertFalse(allHistory.timeline.followNow)
+        XCTAssertEqual(allHistory.timeline.visibleStart, start)
+        checkState(allHistory, sampleCount: 2)
+
+        model.followNow(allHistory)
+        let following = try capture(2)
+        XCTAssertTrue(following.timeline.followNow)
+        checkState(following, sampleCount: 3)
+
+        model.navigateBack(following)
+        let back = try capture(3)
+        XCTAssertEqual(back.timeline, allHistory.timeline)
+        checkState(back, sampleCount: 4)
+
+        model.navigateForward(back)
+        let forward = try capture(4)
+        XCTAssertEqual(forward.timeline, following.timeline)
+        checkState(forward, sampleCount: 5)
+
+        XCTAssertTrue(model.frameSelection(forward))
+        let framed = try capture(5)
+        XCTAssertFalse(framed.timeline.followNow)
+        XCTAssertEqual(framed.timeline.visibleStart, selection.start)
+        XCTAssertEqual(framed.timeline.visibleEnd, selection.end)
+        checkState(framed, sampleCount: 6)
+
+        model.windowClosed(session.id)
+        XCTAssertFalse(try XCTUnwrap(presentation.snapshot).isOpen)
+        model.openSession(session.id)
+        let reopened = try XCTUnwrap(presentation.snapshot)
+        XCTAssertTrue(reopened.isOpen)
+        checkState(reopened, sampleCount: 6)
+        for (chartIndex, producer) in producers.enumerated() {
+            XCTAssertEqual(
+                try model.store.samples.query(streamID: producer.streams[0].id).map(\.value),
+                (0..<6).map { Double($0 + 100 * chartIndex) })
+        }
+        undo.undo()
+        XCTAssertNil(presentation.snapshot?.timeline.selection)
+        XCTAssertEqual(presentation.snapshot?.charts.map(\.settings.yScale), [firstRange, secondRange])
+    }
+
     func testBulkTrashAndCleanupRespectTheClosedSessionCutoff() throws {
         let model = try makeModel()
         let old = try model.store.createSession()

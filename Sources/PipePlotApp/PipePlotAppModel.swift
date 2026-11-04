@@ -837,6 +837,17 @@ final class PipePlotAppModel {
         timeline.historySpan = nil
         navigate(timeline, session: session)
     }
+    @discardableResult
+    func frameSelection(_ session: SessionSnapshot) -> Bool {
+        guard let selection = session.timeline.selection else { return false }
+        let bounds = resolvedSelectionBounds(selection, session: session)
+        var timeline = session.timeline
+        timeline.followNow = false
+        timeline.visibleStart = bounds.lowerBound
+        timeline.visibleEnd = bounds.upperBound
+        navigate(timeline, session: session)
+        return true
+    }
     func setSelection(_ selection: TimeSelection?, session: SessionSnapshot) {
         do {
             try store.setSelection(selection, sessionID: session.id)

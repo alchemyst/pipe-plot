@@ -135,14 +135,7 @@ struct SessionWindow: View {
                 model.zoom(press.key == "w" ? 1.25 : 0.8, anchor: anchor, session: session)
                 return .handled
             case "f":
-                guard let selection = session.timeline.selection else { return .ignored }
-                let bounds = model.resolvedSelectionBounds(selection, session: session)
-                var timeline = session.timeline
-                timeline.followNow = false
-                timeline.visibleStart = bounds.lowerBound
-                timeline.visibleEnd = bounds.upperBound
-                model.navigate(timeline, session: session)
-                return .handled
+                return model.frameSelection(session) ? .handled : .ignored
             default: break
             }
             return .ignored
@@ -298,13 +291,7 @@ struct SessionWindow: View {
                     .command("Zoom in") { zoomTimeline(1.25, session: session) },
                     .command("Zoom out") { zoomTimeline(0.8, session: session) },
                     .command("Frame selection", enabled: session.timeline.selection != nil) {
-                        guard let selection = session.timeline.selection else { return }
-                        let bounds = model.resolvedSelectionBounds(selection, session: session)
-                        var timeline = session.timeline
-                        timeline.followNow = false
-                        timeline.visibleStart = bounds.lowerBound
-                        timeline.visibleEnd = bounds.upperBound
-                        model.navigate(timeline, session: session)
+                        model.frameSelection(session)
                     },
                     .command(
                         "Select visible time range",
