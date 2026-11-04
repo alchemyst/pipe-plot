@@ -6,7 +6,7 @@
 
 Set Chart 1 to −5…15 and Chart 2 to 100…180 in the chart inspector. With both producers live, used Time Range → Show All History, Follow Now, Back, Forward, then dragged a fixed selection and pressed F. The first chart's inspector kept −5…15 through those actions. After F, the displayed time domain matched the selection. The Edit menu still showed Undo Selection.
 
-After closing the window, both configured ranges were present in the on-disk metadata. The isolated native inspector reopen was not observed. The model regression checks both ranges after every action and after close/reopen, exact captured values, and that the next semantic undo removes the selection. It also exercises the same Frame Selection action as the menu and F.
+After closing the window, both configured ranges were present in the on-disk metadata. Relaunched the isolated app, opened Session 1 from Saved sessions, and verified both ranges in the inspector. The model regression checks both ranges after every action and after close/reopen, exact captured values, and that the next semantic undo removes the selection. It also exercises the same Frame Selection action as the menu and F.
 
 ## #42 · Smallest native window during capture
 
