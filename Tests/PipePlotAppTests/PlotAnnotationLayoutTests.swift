@@ -15,6 +15,22 @@ final class PlotAnnotationLayoutTests: XCTestCase {
         let largest = Double.greatestFiniteMagnitude
         XCTAssertEqual(PlotValueRange.automatic([-largest, largest]), -largest...largest)
     }
+    func testCollapsedPlotsHaveNoUsableGeometryOrBadge() {
+        for size in [
+            CGSize.zero, CGSize(width: 56, height: 210), CGSize(width: 57, height: 210),
+            CGSize(width: 420, height: 22), CGSize(width: 420, height: 23),
+            CGSize(width: CGFloat.infinity, height: 210),
+        ] {
+            let plot = PlotCanvas.plotRect(for: size)
+            XCTAssertFalse(PlotGeometry.isUsable(plot))
+            XCTAssertEqual(
+                PlotAnnotationLayout.badge(
+                    size: CGSize(width: 70, height: 12), preferredOrigin: .zero, plot: plot),
+                .zero)
+        }
+        XCTAssertTrue(PlotGeometry.isUsable(PlotCanvas.plotRect(for: CGSize(width: 420, height: 210))))
+    }
+
     func testBadgesStayInsideAllEdgesIncludingOversizedText() {
         let plot = CGRect(x: 56, y: 4, width: 400, height: 200)
         for point in [CGPoint(x: 0, y: -10), CGPoint(x: 500, y: 210)] {

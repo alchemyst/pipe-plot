@@ -40,7 +40,7 @@ struct PlotCanvas: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let plot = plotRect(for: geometry.size)
+            let plot = Self.plotRect(for: geometry.size)
             ZStack(alignment: .topLeading) {
                 drawingCanvas
                     .accessibilityElement(children: .ignore)
@@ -54,8 +54,8 @@ struct PlotCanvas: View {
                     selectionMode: selection?.mode,
                     now: now,
                     plotBounds: plot,
-                    timeAtX: { date(at: $0, width: geometry.size.width, plot: plot) },
-                    valueAtY: { value(at: $0, height: geometry.size.height, plot: plot) },
+                    timeAtX: { date(at: $0, plot: plot) },
+                    valueAtY: { value(at: $0, plot: plot) },
                     xAtTime: { x($0, in: plot) },
                     yAtValue: { y($0, range: yRange, in: plot) },
                     onGuide: onGuide,
@@ -102,7 +102,8 @@ struct PlotCanvas: View {
                     onSelectionModeToggle: onSelectionModeToggle
                 )
                 .accessibilityHidden(true)
-                if selectionPreview == nil, let selection, selection.mode == .endFollowsNow,
+                if PlotGeometry.isUsable(plot), selectionPreview == nil, let selection,
+                    selection.mode == .endFollowsNow,
                     domain.contains(selection.start), let onFollowSelectionDuration
                 {
                     Button(action: onFollowSelectionDuration) {
@@ -139,28 +140,28 @@ struct PlotCanvas: View {
         if case .bothFollowNow = mode { return true }
         return false
     }
-    private func plotRect(for size: CGSize) -> CGRect {
-        CGRect(x: 56, y: 4, width: max(1, size.width - 56), height: max(1, size.height - 22))
+    nonisolated static func plotRect(for size: CGSize) -> CGRect {
+        CGRect(x: 56, y: 4, width: max(0, size.width - 56), height: max(0, size.height - 22))
     }
-    private func date(at x: CGFloat, width: CGFloat, plot: CGRect) -> Date {
-        let fraction = min(1, max(0, (x - plot.minX) / max(plot.width, 1)))
+    private func date(at x: CGFloat, plot: CGRect) -> Date {
+        let fraction = min(1, max(0, (x - plot.minX) / plot.width))
         return domain.lowerBound.addingTimeInterval(timeSpan * Double(fraction))
     }
-    private func value(at y: CGFloat, height: CGFloat, plot: CGRect) -> Double {
+    private func value(at y: CGFloat, plot: CGRect) -> Double {
         let range = yRange
-        let fraction = min(1, max(0, 1 - (y - plot.minY) / max(plot.height, 1)))
+        let fraction = min(1, max(0, 1 - (y - plot.minY) / plot.height))
         return interpolatedValue(in: range, fraction: Double(fraction))
     }
 
     private func draw(in graphicsContext: GraphicsContext, size: CGSize) {
-        guard size.width > 1, size.height > 1 else { return }
+        let plot = Self.plotRect(for: size)
+        guard PlotGeometry.isUsable(plot) else { return }
         var context = graphicsContext
-        let plot = plotRect(for: size)
         let valueRange = yRange
         var grid = Path()
         let numericScale = chart.settings.numericScale
         let yTicks = NumericText.ticks(
-            in: valueRange, scale: numericScale, targetCount: max(2, min(6, Int(plot.height / 55))))
+            in: valueRange, scale: numericScale, targetCount: max(2, Int(min(6, plot.height / 55))))
         for value in yTicks {
             let position = y(value, range: valueRange, in: plot)
             grid.move(to: CGPoint(x: plot.minX, y: position))
@@ -168,7 +169,7 @@ struct PlotCanvas: View {
         }
         context.stroke(grid, with: .color(.secondary.opacity(0.13)), lineWidth: 1)
 
-        let tickCount = max(2, min(6, Int(size.width / 125)))
+        let tickCount = max(2, Int(min(6, size.width / 125)))
         let referenceTime = session.timeGuides.first(where: { $0.id == session.timeline.referenceTimeGuideID })
             .map { Date(timeIntervalSince1970: $0.value) }
         for index in 0...tickCount {

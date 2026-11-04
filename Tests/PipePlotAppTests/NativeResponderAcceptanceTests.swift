@@ -67,6 +67,71 @@ import PipePlotCore
         XCTAssertEqual(guideUpdates.map(\.1), [.changed, .ended])
     }
 
+    func testPlotCollapseCancelsSelectionDragAndSkipsCoordinateTransforms() async throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 210), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        window.isReleasedWhenClosed = false
+        let view = PlotInteractionView(frame: NSRect(x: 0, y: 0, width: 400, height: 210))
+        window.contentView = view
+        defer { window.close() }
+
+        let initial = Date(timeIntervalSince1970: 100)...Date(timeIntervalSince1970: 200)
+        var phases: [PlotGesturePhase] = []
+        var hover: Date?
+        var transforms = 0
+        let didClear = expectation(description: "Cleared hover on collapse")
+        func layout(width: CGFloat) {
+            view.update(
+                guides: [], selectionRange: initial, selectionMode: .fixed, now: Date(timeIntervalSince1970: 400),
+                plotBounds: CGRect(x: 56, y: 4, width: width, height: 188),
+                timeAtX: {
+                    transforms += 1
+                    return Date(timeIntervalSince1970: Double($0))
+                }, valueAtY: { _ in 0 }, xAtTime: { CGFloat($0.timeIntervalSince1970) }, yAtValue: { _ in 0 },
+                onGuide: { _, _ in },
+                onSelection: { _, _, _, _, phase in phases.append(phase) },
+                onPan: { _, _ in XCTFail("Unexpected pan") },
+                onZoom: { _, _, _ in XCTFail("Unexpected zoom") },
+                onHover: {
+                    hover = $0
+                    if $0 == nil { didClear.fulfill() }
+                },
+                onBackgroundClick: { XCTFail("Unexpected clear-selection action") },
+                onBackgroundDoubleClick: { _ in XCTFail("Unexpected locator action") },
+                onGuideSelected: { _ in }, onSelectionModeToggle: { _ in })
+        }
+        func event(_ type: NSEvent.EventType, x: CGFloat) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: view.convert(NSPoint(x: x, y: 100), to: nil), modifierFlags: [],
+                    timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                    pressure: 1))
+        }
+
+        layout(width: 344)
+        view.mouseDown(with: try event(.leftMouseDown, x: 250))
+        view.mouseDragged(with: try event(.leftMouseDragged, x: 270))
+        XCTAssertEqual(phases, [.began, .changed])
+        XCTAssertNotNil(hover)
+
+        layout(width: 0)
+        let beforeCollapse = transforms
+        view.mouseMoved(with: try event(.mouseMoved, x: 250))
+        view.mouseDragged(with: try event(.leftMouseDragged, x: 280))
+        view.mouseUp(with: try event(.leftMouseUp, x: 280))
+        view.mouseDown(with: try event(.leftMouseDown, x: 250))
+        await fulfillment(of: [didClear], timeout: 1)
+        XCTAssertEqual(transforms, beforeCollapse)
+        XCTAssertEqual(phases, [.began, .changed, .cancelled])
+        XCTAssertNil(hover)
+
+        layout(width: 344)
+        view.mouseMoved(with: try event(.mouseMoved, x: 175))
+        XCTAssertEqual(hover, Date(timeIntervalSince1970: 175))
+        XCTAssertEqual(phases, [.began, .changed, .cancelled])
+    }
+
     func testGuideDragEscapePreservesRedoAndReleaseCommitsOnceWithLaterSamples() throws {
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

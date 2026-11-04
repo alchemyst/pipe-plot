@@ -17,9 +17,18 @@ enum PlotValueRange {
     }
 }
 
+enum PlotGeometry {
+    static func isUsable(_ plot: CGRect) -> Bool {
+        plot.origin.x.isFinite && plot.origin.y.isFinite
+            && plot.size.width > 1 && plot.size.height > 1
+            && plot.maxX.isFinite && plot.maxY.isFinite
+    }
+}
+
 enum PlotAnnotationLayout {
     /// Keeps measured badges inside the plot even when finite limits prevent axis padding.
     static func badge(size: CGSize, preferredOrigin: CGPoint, plot: CGRect, occupied: [CGRect] = []) -> CGRect {
+        guard PlotGeometry.isUsable(plot) else { return .zero }
         let width = min(plot.width, size.width + 10)
         let height = min(plot.height, size.height + 4)
         let preferred = CGRect(

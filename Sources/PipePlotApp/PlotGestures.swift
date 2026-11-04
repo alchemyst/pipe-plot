@@ -74,6 +74,8 @@ final class PlotInteractionView: NSView {
     private var selectionMode: SelectionMode?
     private var now = Date()
     private var plotBounds = CGRect.zero
+    private var geometryNeedsReset = false
+    private var canInteract: Bool { !geometryNeedsReset && PlotGeometry.isUsable(plotBounds) }
     private var timeAtX: (CGFloat) -> Date = { _ in .now }
     private var valueAtY: (CGFloat) -> Double = { _ in 0 }
     private var xAtTime: (Date) -> CGFloat = { _ in 0 }
@@ -87,6 +89,8 @@ final class PlotInteractionView: NSView {
     private var onBackgroundDoubleClick: (Date) -> Void = { _ in }
     private var onGuideSelected: (Guide) -> Void = { _ in }
     private var onSelectionModeToggle: (PlotSelectionEdge) -> Void = { _ in }
+    private enum NavigationGesture { case pan, zoom }
+    private var activeNavigation: NavigationGesture?
     private var activeDrag: Drag?
     private var dragOrigin = CGPoint.zero
     private var lastPoint = CGPoint.zero
@@ -123,6 +127,7 @@ final class PlotInteractionView: NSView {
         self.selectionRange = selectionRange
         self.selectionMode = selectionMode
         self.now = now
+        let collapsed = PlotGeometry.isUsable(self.plotBounds) && !PlotGeometry.isUsable(plotBounds)
         self.plotBounds = plotBounds
         self.timeAtX = timeAtX
         self.valueAtY = valueAtY
@@ -138,6 +143,16 @@ final class PlotInteractionView: NSView {
         self.onGuideSelected = onGuideSelected
         self.onSelectionModeToggle = onSelectionModeToggle
         needsDisplay = true
+        if collapsed && !geometryNeedsReset {
+            geometryNeedsReset = true
+            // SwiftUI may be laying out the representable while this update runs.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.geometryNeedsReset = false
+                self.cancelOperation(nil)
+                self.onHover(nil)
+            }
+        }
     }
 
     override func updateTrackingAreas() {
@@ -152,10 +167,11 @@ final class PlotInteractionView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
-        return bounds.contains(local) ? self : nil
+        return canInteract && bounds.contains(local) ? self : nil
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard canInteract else { return }
         window?.makeFirstResponder(self)
         let point = localPoint(event)
         onHover(timeAtX(point.x))
@@ -193,7 +209,7 @@ final class PlotInteractionView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let activeDrag else { return }
+        guard canInteract, let activeDrag else { return }
         let point = localPoint(event)
         onHover(timeAtX(point.x))
         let movement = CGSize(width: point.x - lastPoint.x, height: point.y - lastPoint.y)
@@ -219,6 +235,7 @@ final class PlotInteractionView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        guard canInteract else { return }
         let point = localPoint(event)
         onHover(timeAtX(point.x))
         updateCursor(at: point)
@@ -234,7 +251,7 @@ final class PlotInteractionView: NSView {
     override func cursorUpdate(with event: NSEvent) { updateCursor(at: localPoint(event)) }
 
     override func mouseUp(with event: NSEvent) {
-        guard let activeDrag else { return }
+        guard canInteract, let activeDrag else { return }
         let point = localPoint(event)
         onHover(timeAtX(point.x))
         defer {
@@ -300,19 +317,29 @@ final class PlotInteractionView: NSView {
     }
 
     override func magnify(with event: NSEvent) {
+        guard canInteract else { return }
         let point = localPoint(event)
         let factor = exp(Double(event.magnification))
-        onZoom(factor, timeAtX(point.x), gesturePhase(event.phase, default: .changed))
+        let phase = gesturePhase(event.phase, default: .changed)
+        activeNavigation = phase == .ended || phase == .cancelled ? nil : .zoom
+        onZoom(factor, timeAtX(point.x), phase)
     }
 
     override func scrollWheel(with event: NSEvent) {
-        let phase = event.phase.isEmpty ? event.momentumPhase : event.phase
+        guard canInteract else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let eventPhase = event.phase.isEmpty ? event.momentumPhase : event.phase
+        let phase = gesturePhase(eventPhase, default: .ended)
         if event.modifierFlags.contains(.control) {
             let point = localPoint(event)
-            onZoom(exp(Double(event.scrollingDeltaY) / 120), timeAtX(point.x), gesturePhase(phase, default: .ended))
+            activeNavigation = phase == .ended || phase == .cancelled ? nil : .zoom
+            onZoom(exp(Double(event.scrollingDeltaY) / 120), timeAtX(point.x), phase)
         } else if event.modifierFlags.contains(.shift) || abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) {
             let delta = event.scrollingDeltaX == 0 ? event.scrollingDeltaY : event.scrollingDeltaX
-            onPan(CGSize(width: delta, height: 0), gesturePhase(phase, default: .ended))
+            activeNavigation = phase == .ended || phase == .cancelled ? nil : .pan
+            onPan(CGSize(width: delta, height: 0), phase)
         } else {
             // Ordinary vertical scrolling belongs to the stack, not its X scale.
             super.scrollWheel(with: event)
@@ -328,6 +355,12 @@ final class PlotInteractionView: NSView {
     }
 
     override func cancelOperation(_ sender: Any?) {
+        switch activeNavigation {
+        case .pan: onPan(.zero, .cancelled)
+        case .zoom: onZoom(1, now, .cancelled)
+        case nil: break
+        }
+        activeNavigation = nil
         guard let activeDrag else { return }
         switch activeDrag {
         case let .guide(guide, _, _):
@@ -343,7 +376,7 @@ final class PlotInteractionView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        guard let selectionRange else { return }
+        guard PlotGeometry.isUsable(plotBounds), let selectionRange else { return }
         let color = NSColor.controlAccentColor
         for (index, date) in [selectionRange.lowerBound, selectionRange.upperBound].enumerated() {
             let x = xAtTime(date)
@@ -454,6 +487,10 @@ final class PlotInteractionView: NSView {
     }
 
     private func updateCursor(at point: CGPoint) {
+        guard canInteract else {
+            NSCursor.arrow.set()
+            return
+        }
         switch activeDrag ?? (bounds.contains(point) ? dragTarget(at: point) : nil) {
         case .moveSelection: (activeDrag == nil ? NSCursor.openHand : .closedHand).set()
         case .selection(_, _, .some, _): NSCursor.columnResize.set()

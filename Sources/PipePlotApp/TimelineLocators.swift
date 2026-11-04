@@ -22,14 +22,15 @@ struct TimelineLocators: View {
     private var span: TimeInterval { max(0.001, range.upperBound.timeIntervalSince(range.lowerBound)) }
     var body: some View {
         GeometryReader { geometry in
-            let plot = CGRect(x: 84, y: 23, width: max(1, geometry.size.width - 112), height: 49)
+            let plot = CGRect(x: 84, y: 23, width: max(0, geometry.size.width - 112), height: 49)
             let selectionBar = CGRect(x: plot.minX, y: 56, width: plot.width, height: 16)
             let x: (Date) -> CGFloat = { plot.minX + $0.timeIntervalSince(range.lowerBound) / span * plot.width }
             let date: (CGFloat) -> Date = {
                 range.lowerBound.addingTimeInterval(Double(($0 - plot.minX) / plot.width) * span)
             }
             ZStack(alignment: .topLeading) {
-                Canvas { context, size in
+                Canvas { context, _ in
+                    guard PlotGeometry.isUsable(plot) else { return }
                     for index in 0...4 {
                         let t = range.lowerBound.addingTimeInterval(span * Double(index) / 4)
                         let anchor: UnitPoint = index == 0 ? .topLeading : (index == 4 ? .topTrailing : .top)
@@ -128,6 +129,7 @@ struct TimelineLocators: View {
             .accessibilityHidden(true)
     }
     private func flagHitRects(in plot: CGRect, x: (Date) -> CGFloat) -> [UUID: CGRect] {
+        guard PlotGeometry.isUsable(plot) else { return [:] }
         var ends = [CGFloat](repeating: plot.minX - 4, count: 2)
         var rects: [UUID: CGRect] = [:]
         for guide in guides.sorted(by: { $0.value < $1.value }) {
