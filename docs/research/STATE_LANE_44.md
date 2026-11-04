@@ -23,3 +23,11 @@ On macOS, run `scripts/research/evaluate-issue44.sh` from the checkout. Add `--b
 - Pressure, Inlet valve and Pump enabled share the same time grid, selection shading and observation crosshair. Use the pan and zoom buttons or drag in Pan mode. Switch to Select and drag from any plot.
 - Inlet valve includes a fractional unsupported observation, a long same-value gap, a reconnect and an interval between differing observations. Pump enabled includes a reconnect between two nearby Low observations. An outlined square marks an unsupported value.
 - A focused row uses Left and Right to step. Space starts and finishes a selection at raw receipt times. The VoiceOver interface exposes equivalent adjustable actions and a named Set selection boundary action.
+
+## Native observations
+
+Verified on macOS 27.2 on 2026-11-04. Zoom In then Pan Right changed the shared domain from 0–20 s to 7.5–17.5 s. A pointer drag in Select mode shaded the same interval in all three rows. With Pressure focused, Right, Space, Right, Space selected its raw 8.0 s and 9.5 s receipts and aligned the crosshair across all rows. Hover on the Pump marker at 8.25 s exposed the raw 2.0 value and classified it as unsupported. Hover in the later empty interval returned “No nearby observation.” The rendered Inlet lane showed separate High points at 11.5 s and 13.75 s, with the reconnect interval blank.
+
+The macOS accessibility tree exposed a separate target for each row with Increment, Decrement, and Set selection boundary actions. Invoking Pump enabled's Increment exposed the raw 2.0 observation and receipt time through the row's accessibility value. VoiceOver audio was not exercised.
+
+Keep this as a research fixture. At higher density, the dotted association could be mistaken for a hold and discrete events may collide in a pixel column. Revisit the mark and density policy against representative captures before integrating it.

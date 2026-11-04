@@ -154,7 +154,7 @@ private struct StateLaneLab: View {
         let observation = cursor.observation
         let date = Self.epoch.addingTimeInterval(observation.time)
         let receipt = date.ISO8601Format(.iso8601(timeZone: .gmt, includingFractionalSeconds: true))
-        let raw = "\(cursor.row), raw \(observation.value) at \(receipt)"
+        let raw = "\(cursor.row), raw \(observation.value) at \(receipt) UTC"
         let row = rows.first { $0.id == cursor.row }
         return row?.discrete == true ? raw + ", " + observation.state : raw
     }
