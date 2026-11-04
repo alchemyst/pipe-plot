@@ -92,6 +92,38 @@ final class RawCSVExportTests: XCTestCase {
         }
     }
 
+    func testExportCannotReplaceCaptureFilesOrAliases() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = directory.appendingPathComponent("samples.sqlite")
+        let store = try PipePlotStore(databaseURL: database)
+        _ = try store.createSession()
+        let stream = StreamDescriptor(id: UUID(), name: "active")
+        try store.samples.append(values: [42], timestamp: Date(), to: [stream.id])
+
+        let protected = [
+            database, directory.appendingPathComponent("samples.sqlite-wal"),
+            directory.appendingPathComponent("samples.sqlite-shm"), database.appendingPathExtension("metadata.json"),
+        ]
+        let snapshots = try protected.map { try Data(contentsOf: $0) }
+        let alias = directory.appendingPathComponent("alias.csv")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: database)
+        let upperCase = directory.appendingPathComponent("SAMPLES.SQLITE")
+        var destinations = protected + [alias]
+        if FileManager.default.fileExists(atPath: upperCase.path) { destinations.append(upperCase) }
+
+        let entries = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
+        for destination in destinations {
+            XCTAssertThrowsError(try store.samples.exportRawCSV(streams: [stream], to: destination)) { error in
+                XCTAssertEqual((error as? CocoaError)?.code, .fileWriteInvalidFileName)
+            }
+        }
+        XCTAssertEqual(try protected.map { try Data(contentsOf: $0) }, snapshots)
+        XCTAssertEqual(try Data(contentsOf: alias), snapshots.first)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)), entries)
+        XCTAssertEqual(try store.samples.query(streamID: stream.id).map(\.value), [42])
+    }
+
     func testFailedExportPreservesExistingDestinationAndRemovesStaging() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

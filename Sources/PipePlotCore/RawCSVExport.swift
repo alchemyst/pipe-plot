@@ -10,6 +10,7 @@ extension SampleStore {
         streams: [StreamDescriptor], bounds: ClosedRange<Date>? = nil, to destination: URL
     ) throws {
         try Task.checkCancellation()
+        try validateExportDestination(destination)
         let files = FileManager.default
         let staging = destination.deletingLastPathComponent()
             .appendingPathComponent(".pipeplot-export-\(UUID().uuidString)", isDirectory: true)
@@ -40,6 +41,27 @@ extension SampleStore {
         // Staging beside the destination keeps the final rename on the same volume.
         if rename(temporary.path, destination.path) != 0 {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private func validateExportDestination(_ destination: URL) throws {
+        let resolved = destination.resolvingSymlinksInPath().standardizedFileURL
+        let identifierKey: Set<URLResourceKey> = [.fileResourceIdentifierKey]
+        let destinationID = try? resolved.resourceValues(forKeys: identifierKey).fileResourceIdentifier as? NSObject
+        let protected = [
+            databaseURL,
+            URL(fileURLWithPath: databaseURL.path + "-wal"),
+            URL(fileURLWithPath: databaseURL.path + "-shm"),
+            databaseURL.appendingPathExtension("metadata.json"),
+        ]
+        for file in protected {
+            let existing = file.resolvingSymlinksInPath().standardizedFileURL
+            let existingID = try? existing.resourceValues(forKeys: identifierKey).fileResourceIdentifier as? NSObject
+            if resolved.path == existing.path || (destinationID != nil && destinationID == existingID) {
+                throw CocoaError(
+                    .fileWriteInvalidFileName,
+                    userInfo: [NSLocalizedDescriptionKey: "Choose a CSV destination outside the active capture files."])
+            }
         }
     }
 
