@@ -101,7 +101,7 @@ final class CLIContractTests: XCTestCase {
 
     func testSilentPipeRecoversWhenFirstRowArrives() throws {
         let fixture = try CLIFixture()
-        let result = try fixture.runPipe(["-n", "late"]) { input, readStderr in
+        let result = try fixture.runPipe(["-n", "late"]) { input, readStderr, _ in
             try waitForDiagnostic("no bytes have arrived", readStderr)
             XCTAssertTrue(try fixture.store.listSessions().isEmpty)
             try input.write(contentsOf: Data("42\n".utf8))
@@ -114,7 +114,7 @@ final class CLIContractTests: XCTestCase {
 
     func testPartialLineWaitsForCompletion() throws {
         let fixture = try CLIFixture()
-        let result = try fixture.runPipe([]) { input, readStderr in
+        let result = try fixture.runPipe([]) { input, readStderr, _ in
             try input.write(contentsOf: Data("4".utf8))
             try waitForDiagnostic("data has arrived", readStderr)
             XCTAssertTrue(try fixture.store.listSessions().isEmpty)
@@ -128,7 +128,7 @@ final class CLIContractTests: XCTestCase {
 
     func testRejectedInputWhilePipeRemainsOpen() throws {
         let fixture = try CLIFixture()
-        let result = try fixture.runPipe([]) { input, readStderr in
+        let result = try fixture.runPipe([]) { input, readStderr, _ in
             try input.write(contentsOf: Data(String(repeating: "bad\n", count: 100).utf8))
             try waitForDiagnostic("input rows have been rejected", readStderr)
             XCTAssertTrue(try fixture.store.listSessions().isEmpty)
@@ -142,7 +142,7 @@ final class CLIContractTests: XCTestCase {
 
     func testEmptyEOF() throws {
         let fixture = try CLIFixture(startServer: false)
-        let result = try fixture.runPipe([]) { _, _ in }
+        let result = try fixture.runPipe([]) { _, _, _ in }
         XCTAssertEqual(result.status, 0)
         XCTAssertEqual(result.stdout, "")
         XCTAssertEqual(result.stderr, "pp: stdin ended without any input\n")
@@ -151,11 +151,63 @@ final class CLIContractTests: XCTestCase {
     func testHealthyPipeDoesNotReportWaiting() throws {
         let fixture = try CLIFixture()
         try assertCapture(
-            fixture.runPipe([]) { input, _ in
+            fixture.runPipe([]) { input, _, _ in
                 try input.write(contentsOf: Data("1\n".utf8))
                 Thread.sleep(forTimeInterval: 2.5)
                 XCTAssertEqual(try fixture.store.listSessions().first?.charts.first?.streams.first?.sampleCount, 1)
             })
+    }
+
+    func testMalformedNumericRowsAcrossWrites() throws {
+        let fixture = try CLIFixture()
+        let mib = 1024 * 1024
+        let result = try fixture.runPipe([]) { input, readStderr, pid in
+            func write(_ text: String) throws { try input.write(contentsOf: Data(text.utf8)) }
+            try write("1\t2\r")
+            Thread.sleep(forTimeInterval: 0.03)
+            XCTAssertTrue(try fixture.store.listSessions().isEmpty)
+            try write("\n3")
+            try write("\0 4\nNa")
+            try write("N 6\n7 in")
+            try write("f\n")
+            try waitForDiagnostic("row 4: NaN and infinity", readStderr)
+
+            // Keep the row open after writing far more than the parser limit.
+            // The producer reuses its block, and the child must discard excess bytes.
+            let before = try residentBytes(pid)
+            let block = Data(repeating: 0x20, count: 64 * 1024)
+            try write("8 9")
+            for _ in 0..<(32 * mib / block.count) { try input.write(contentsOf: block) }
+            let after = try residentBytes(pid)
+            XCTAssertLessThan(after, before + UInt64(8 * mib))
+            try write("\n10 11 12\n13")
+            try write(" 14\n15 16")
+        }
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertEqual(result.stdout, "")
+        XCTAssertEqual(
+            result.stderr.split(separator: "\n").map(String.init),
+            [
+                "pp: row 2: input row contains a NUL byte",
+                "pp: row 3: NaN and infinity are not accepted",
+                "pp: row 4: NaN and infinity are not accepted",
+                "pp: row 5: input row exceeds 64 KiB",
+                "pp: row 6: expected 2 columns, got 3",
+            ])
+
+        let session = try XCTUnwrap(fixture.store.listSessions().first)
+        XCTAssertEqual(session.rejectedLineCount, 5)
+        let streams = try XCTUnwrap(session.charts.first).streams
+        XCTAssertEqual(streams.map(\.state), [.ended, .ended])
+        let stored = try streams.map { try fixture.store.samples.query(streamID: $0.id) }
+        XCTAssertEqual(stored.map { $0.map(\.value) }, [[1, 13, 15], [2, 14, 16]])
+    }
+
+    private func residentBytes(_ pid: pid_t) throws -> UInt64 {
+        var info = proc_taskinfo()
+        let size = Int32(MemoryLayout<proc_taskinfo>.size)
+        let read = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, size)
+        return try XCTUnwrap(read == size ? info.pti_resident_size : nil, "Could not read pp resident memory")
     }
 
     private func waitForDiagnostic(_ diagnostic: String, _ readStderr: () throws -> String) throws {
@@ -215,23 +267,24 @@ private final class CLIFixture {
         try Data(input.utf8).write(to: inputURL)
         let stdin = try FileHandle(forReadingFrom: inputURL)
         defer { try? stdin.close() }
-        return try runProcess(arguments, stdin: stdin, interruptWhen: interruptWhen) { _ in }
+        return try runProcess(arguments, stdin: stdin, interruptWhen: interruptWhen) { _, _ in }
     }
 
     func runPipe(
-        _ arguments: [String], produce: (FileHandle, () throws -> String) throws -> Void
+        _ arguments: [String], produce: (FileHandle, () throws -> String, pid_t) throws -> Void
     ) throws -> CLIResult {
         let input = Pipe()
         defer { try? input.fileHandleForWriting.close() }
-        return try runProcess(arguments, stdin: input) { stderrURL in
-            try produce(input.fileHandleForWriting) { try String(contentsOf: stderrURL, encoding: .utf8) }
+        _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+        return try runProcess(arguments, stdin: input) { stderrURL, pid in
+            try produce(input.fileHandleForWriting, { try String(contentsOf: stderrURL, encoding: .utf8) }, pid)
             try input.fileHandleForWriting.close()
         }
     }
 
     private func runProcess(
         _ arguments: [String], stdin: Any, interruptWhen: (() throws -> Bool)? = nil,
-        afterLaunch: (URL) throws -> Void
+        afterLaunch: (URL, pid_t) throws -> Void
     ) throws -> CLIResult {
         let stdoutURL = directory.appending(path: "stdout")
         let stderrURL = directory.appending(path: "stderr")
@@ -254,13 +307,19 @@ private final class CLIFixture {
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
+        // Bound fixture writes too, even if a regressed child stops draining its pipe.
+        let watchdog = DispatchWorkItem {
+            if process.isRunning { _ = kill(process.processIdentifier, SIGKILL) }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 15, execute: watchdog)
         defer {
+            watchdog.cancel()
             if process.isRunning {
                 _ = kill(process.processIdentifier, SIGKILL)
                 process.waitUntilExit()
             }
         }
-        try afterLaunch(stderrURL)
+        try afterLaunch(stderrURL, process.processIdentifier)
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(10))
         var interruptSent = false

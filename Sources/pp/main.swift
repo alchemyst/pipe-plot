@@ -263,7 +263,7 @@ private final class InterruptMonitor {
 private func connectOrLaunch() throws -> SocketConnection {
     // An explicitly selected endpoint is independent of the installed app.
     if let path = ProcessInfo.processInfo.environment["PIPEPLOT_SOCKET"] {
-        return try PipePlotLocations.connect(socketURL: URL(fileURLWithPath: path), timeout: 0.35)
+        return try PipePlotLocations.connect(socketURL: URL(fileURLWithPath: path), timeout: 12)
     }
     do { return try PipePlotLocations.connect(timeout: 0.35) } catch {
         try PipePlotLocations.launchInstalledApp()
@@ -427,14 +427,7 @@ private func runSampler(_ options: Options) throws {
             }
             return
         }
-        guard let connection = readyConnection else {
-            if inputEnded {
-                let message =
-                    receivedStdin ? "stdin ended without a usable numeric row" : "stdin ended without any input"
-                fputs("pp: \(message)\n", stderr)
-            }
-            return
-        }
+        guard let connection = readyConnection else { return }
         try connection.send(ClientMessage.row(row))
         switch try readServerMessage(connection) {
         case .accepted: messageCount += 1
