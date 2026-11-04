@@ -42,6 +42,8 @@ pp --test 2
 
 `pp` launches the installed app when needed. Standard output stays clean during capture; diagnostics go to standard error. Rows are timestamped locally when received. All columns are values, including the first column. Spaces, tabs, negatives and scientific notation work. Invalid/non-finite rows and changes in column count are rejected as whole rows. A final valid row need not end with a newline.
 
+If a pipe stays open for about two seconds before its first usable numeric row, `pp` reports what it has received on standard error. Run the producer alone to check when it emits complete numeric rows. Producers and intermediate filters can buffer their output when writing to a pipe. For example, Python's unbuffered mode works on macOS with `python3 -u sampler.py | pp`. In a Python producer you can also use `print(value, flush=True)` after each sample.
+
 The target sink is explicit and shared across windows. Changing focus never redirects a producer. Cmd-N creates a new session; Cmd-Shift-D creates and targets a chart. Existing producers retain their assigned streams.
 
 `pp --test [columns]` generates a local sine-wave stream at one row per second (one column by default, up to 32). It uses the same target, chart, and session routing options as a pipeline. Press Ctrl-C to finish and retain the generated samples; no producer process is started.

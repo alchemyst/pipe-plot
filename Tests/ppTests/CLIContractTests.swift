@@ -99,6 +99,75 @@ final class CLIContractTests: XCTestCase {
         XCTAssertTrue(try fixture.store.listSessions().isEmpty)
     }
 
+    func testSilentPipeRecoversWhenFirstRowArrives() throws {
+        let fixture = try CLIFixture()
+        let result = try fixture.runPipe(["-n", "late"]) { input, readStderr in
+            try waitForDiagnostic("no bytes have arrived", readStderr)
+            XCTAssertTrue(try fixture.store.listSessions().isEmpty)
+            try input.write(contentsOf: Data("42\n".utf8))
+        }
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout, "")
+        XCTAssertEqual(result.stderr.split(separator: "\n").count, 1)
+        XCTAssertEqual(try fixture.store.listSessions().first?.charts.first?.streams.first?.sampleCount, 1)
+    }
+
+    func testPartialLineWaitsForCompletion() throws {
+        let fixture = try CLIFixture()
+        let result = try fixture.runPipe([]) { input, readStderr in
+            try input.write(contentsOf: Data("4".utf8))
+            try waitForDiagnostic("data has arrived", readStderr)
+            XCTAssertTrue(try fixture.store.listSessions().isEmpty)
+            try input.write(contentsOf: Data("2\n".utf8))
+        }
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout, "")
+        XCTAssertEqual(result.stderr.split(separator: "\n").count, 1)
+        XCTAssertEqual(try fixture.store.listSessions().first?.charts.first?.streams.first?.sampleCount, 1)
+    }
+
+    func testRejectedInputWhilePipeRemainsOpen() throws {
+        let fixture = try CLIFixture()
+        let result = try fixture.runPipe([]) { input, readStderr in
+            try input.write(contentsOf: Data(String(repeating: "bad\n", count: 100).utf8))
+            try waitForDiagnostic("input rows have been rejected", readStderr)
+            XCTAssertTrue(try fixture.store.listSessions().isEmpty)
+        }
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout, "")
+        XCTAssertEqual(result.stderr.split(separator: "\n").count, 11)
+        XCTAssertTrue(result.stderr.contains("further invalid rows suppressed"))
+        XCTAssertTrue(result.stderr.contains("stdin ended without a usable numeric row"))
+    }
+
+    func testEmptyEOF() throws {
+        let fixture = try CLIFixture(startServer: false)
+        let result = try fixture.runPipe([]) { _, _ in }
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout, "")
+        XCTAssertEqual(result.stderr, "pp: stdin ended without any input\n")
+    }
+
+    func testHealthyPipeDoesNotReportWaiting() throws {
+        let fixture = try CLIFixture()
+        try assertCapture(
+            fixture.runPipe([]) { input, _ in
+                try input.write(contentsOf: Data("1\n".utf8))
+                Thread.sleep(forTimeInterval: 2.5)
+                XCTAssertEqual(try fixture.store.listSessions().first?.charts.first?.streams.first?.sampleCount, 1)
+            })
+    }
+
+    private func waitForDiagnostic(_ diagnostic: String, _ readStderr: () throws -> String) throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(8))
+        while clock.now < deadline {
+            if try readStderr().contains(diagnostic) { return }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTFail("Missing diagnostic: \(diagnostic). Got: \(try readStderr())")
+    }
+
     private func assertCapture(_ result: CLIResult) {
         XCTAssertEqual(result.status, 0, result.stderr)
         XCTAssertEqual(result.stdout, "")
@@ -146,7 +215,35 @@ private final class CLIFixture {
         try Data(input.utf8).write(to: inputURL)
         let stdin = try FileHandle(forReadingFrom: inputURL)
         defer { try? stdin.close() }
-        let stdout = Pipe(), stderr = Pipe()
+        return try runProcess(arguments, stdin: stdin, interruptWhen: interruptWhen) { _ in }
+    }
+
+    func runPipe(
+        _ arguments: [String], produce: (FileHandle, () throws -> String) throws -> Void
+    ) throws -> CLIResult {
+        let input = Pipe()
+        defer { try? input.fileHandleForWriting.close() }
+        return try runProcess(arguments, stdin: input) { stderrURL in
+            try produce(input.fileHandleForWriting) { try String(contentsOf: stderrURL, encoding: .utf8) }
+            try input.fileHandleForWriting.close()
+        }
+    }
+
+    private func runProcess(
+        _ arguments: [String], stdin: Any, interruptWhen: (() throws -> Bool)? = nil,
+        afterLaunch: (URL) throws -> Void
+    ) throws -> CLIResult {
+        let stdoutURL = directory.appending(path: "stdout")
+        let stderrURL = directory.appending(path: "stderr")
+        try Data().write(to: stdoutURL)
+        try Data().write(to: stderrURL)
+        let stdout = try FileHandle(forWritingTo: stdoutURL)
+        let stderr = try FileHandle(forWritingTo: stderrURL)
+        defer {
+            try? stdout.close()
+            try? stderr.close()
+        }
+        func readStderr() throws -> String { try String(contentsOf: stderrURL, encoding: .utf8) }
         let process = Process()
         process.executableURL = Bundle(for: CLIContractTests.self).bundleURL.deletingLastPathComponent()
             .appending(path: "pp")
@@ -157,7 +254,13 @@ private final class CLIFixture {
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
-        defer { if process.isRunning { _ = kill(process.processIdentifier, SIGKILL) } }
+        defer {
+            if process.isRunning {
+                _ = kill(process.processIdentifier, SIGKILL)
+                process.waitUntilExit()
+            }
+        }
+        try afterLaunch(stderrURL)
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(10))
         var interruptSent = false
@@ -175,8 +278,7 @@ private final class CLIFixture {
         process.waitUntilExit()
         return CLIResult(
             status: process.terminationStatus,
-            stdout: String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
-            stderr: String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+            stdout: try String(contentsOf: stdoutURL, encoding: .utf8), stderr: try readStderr())
     }
 
     private static func handle(_ connection: SocketConnection, store: PipePlotStore) throws {

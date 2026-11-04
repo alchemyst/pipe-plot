@@ -427,7 +427,14 @@ private func runSampler(_ options: Options) throws {
             }
             return
         }
-        guard let connection = readyConnection else { return }
+        guard let connection = readyConnection else {
+            if inputEnded {
+                let message =
+                    receivedStdin ? "stdin ended without a usable numeric row" : "stdin ended without any input"
+                fputs("pp: \(message)\n", stderr)
+            }
+            return
+        }
         try connection.send(ClientMessage.row(row))
         switch try readServerMessage(connection) {
         case .accepted: messageCount += 1
@@ -457,6 +464,11 @@ private func runSampler(_ options: Options) throws {
     }
 
     let inputDescriptor = FileHandle.standardInput.fileDescriptor
+    let usesStdin = sine == nil && watcher == nil
+    let clock = ContinuousClock()
+    let waitingDeadline = clock.now.advanced(by: .seconds(2))
+    var receivedStdin = false
+    var reportedWaiting = false
     var inputEnded = false
     var nextTestSample = Date()
     while !inputEnded && !interrupt.interrupted {
@@ -469,7 +481,7 @@ private func runSampler(_ options: Options) throws {
             continue
         }
         var descriptors: [pollfd] = []
-        let inputIndex: Int? = sine == nil && watcher == nil ? descriptors.count : nil
+        let inputIndex: Int? = usesStdin ? descriptors.count : nil
         if inputIndex != nil {
             descriptors.append(pollfd(fd: inputDescriptor, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0))
         }
@@ -480,7 +492,7 @@ private func runSampler(_ options: Options) throws {
         } else {
             socketIndex = nil
         }
-        let timeout: Int32 = sine != nil || watcher != nil ? 100 : (readyConnection == nil ? -1 : 250)
+        let timeout: Int32 = usesStdin ? 250 : 100
         let result: Int32
         if let connection = readyConnection, let socketIndex {
             result = try connection.withFileDescriptor { fd in
@@ -517,11 +529,34 @@ private func runSampler(_ options: Options) throws {
                 if errno == EINTR { continue }
                 throw SocketError.system("read stdin", errno)
             }
-            if count == 0 { inputEnded = true } else { try consume(parser.append(Data(buffer[..<count]))) }
+            if count == 0 {
+                inputEnded = true
+            } else {
+                receivedStdin = true
+                try consume(parser.append(Data(buffer[..<count])))
+            }
+        }
+        if usesStdin && !inputEnded && readyConnection == nil && !reportedWaiting && clock.now >= waitingDeadline {
+            let message: String
+            if diagnostics > 0 {
+                message = "stdin is open, but input rows have been rejected"
+            } else if receivedStdin {
+                message = "stdin is open and data has arrived, but there is no usable numeric row yet"
+            } else {
+                message = "stdin is open, but no bytes have arrived"
+            }
+            fputs("pp: waiting for a numeric row: \(message)\n", stderr)
+            reportedWaiting = true
         }
     }
     try consume(parser.finish())
-    guard let connection = readyConnection else { return }
+    guard let connection = readyConnection else {
+        if inputEnded {
+            let message = receivedStdin ? "stdin ended without a usable numeric row" : "stdin ended without any input"
+            fputs("pp: \(message)\n", stderr)
+        }
+        return
+    }
     defer { connection.close() }
     try connection.send(ClientMessage.finish(interrupt.interrupted ? .interrupted : .eof))
     while true {
