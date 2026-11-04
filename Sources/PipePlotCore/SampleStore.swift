@@ -17,7 +17,9 @@ public final class SampleStore: @unchecked Sendable {
     public static let maximumQueryRows = 50_000
     var db: OpaquePointer?
     let lock = NSRecursiveLock()
+    let databaseURL: URL
     public init(databaseURL: URL) throws {
+        self.databaseURL = databaseURL
         let dir = databaseURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         guard
@@ -76,6 +78,7 @@ public final class SampleStore: @unchecked Sendable {
     /// Independent WAL reader for UI analysis. It cannot write and does not hold
     /// the ingestion connection's lock while scanning a long historical range.
     public init(readOnlyDatabaseURL: URL) throws {
+        databaseURL = readOnlyDatabaseURL
         guard
             sqlite3_open_v2(readOnlyDatabaseURL.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
                 == SQLITE_OK
@@ -253,7 +256,7 @@ public final class SampleStore: @unchecked Sendable {
         try meta.int64(Int64(sequence + 1), at: 4)
         guard try meta.step() == .done else { throw SampleStoreError.sql("Stream metadata update returned a row") }
     }
-    private func execute(_ sql: String) throws {
+    func execute(_ sql: String) throws {
         var errorText: UnsafeMutablePointer<CChar>?
         let rc = sqlite3_exec(db, sql, nil, nil, &errorText)
         if rc != SQLITE_OK {

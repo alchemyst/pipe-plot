@@ -38,6 +38,16 @@ struct SelectionInspector: View {
                 selectionMenu
                 inclusionMenu
                 forecastMenu
+                Button {
+                    RawCSVExport.chooseDestination(
+                        store: model.store.samples, streams: streams.filter { includedIDs.contains($0.id) },
+                        bounds: bounds, name: "Selection")
+                } label: {
+                    Label("Export Selection CSV…", systemImage: "square.and.arrow.up").labelStyle(.iconOnly)
+                }
+                .buttonStyle(.borderless)
+                .disabled(includedIDs.isEmpty)
+                .help("Export Selection CSV…")
                 Spacer(minLength: 0)
                 Button("Clear") { onSelection(nil) }.buttonStyle(.borderless)
             }

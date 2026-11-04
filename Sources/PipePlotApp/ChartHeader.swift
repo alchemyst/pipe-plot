@@ -48,6 +48,10 @@ struct ChartHeader: View {
                         enabled: chart.streams.contains { $0.isLayoutHidden != true },
                         action: onSelectVisibleRange),
                     .command("Clear Selection", enabled: session.timeline.selection != nil, action: onClearSelection),
+                    .command("Export Chart CSV…", enabled: !chart.streams.isEmpty) {
+                        RawCSVExport.chooseDestination(
+                            store: model.store.samples, streams: chart.streams, name: chart.title)
+                    },
                 ]
                 if let index = charts.firstIndex(where: { $0.id == chart.id }) {
                     items += [
