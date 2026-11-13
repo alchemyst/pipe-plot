@@ -7,6 +7,7 @@ struct SelectionInspector: View {
     let model: PipePlotAppModel
     let onSelection: (TimeSelection?) -> Void
 
+    @State private var statisticsHeight: CGFloat = 64
     @State private var forecastRequest: ForecastTargetRequest?
 
     private var charts: [ChartSnapshot] { session.charts }
@@ -24,17 +25,26 @@ struct SelectionInspector: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 10) {
-                Label("Selection", systemImage: "selection.pin.in.out").font(.caption.weight(.semibold))
-                let reference = session.timeGuides.first(where: { $0.id == session.timeline.referenceTimeGuideID }).map
-                { Date(timeIntervalSince1970: $0.value) }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text("Selection").font(.headline).accessibilityAddTraits(.isHeader)
+                    Button("Edit Selection…") {
+                        model.sessionModel(for: session.id).selectionEditorRequest = SelectionEditorRequest(
+                            selection: selection, zone: session.timeline.timeZone)
+                    }
+                    Spacer(minLength: 0)
+                }
                 Text(
-                    "\(TimeText.format(bounds.lowerBound, zone: session.timeline.timeZone, reference: reference, includeDate: true)) – \(TimeText.format(bounds.upperBound, zone: session.timeline.timeZone, reference: reference, includeDate: true))"
+                    "From \(SelectionEditorDraft.format(bounds.lowerBound, zone: session.timeline.timeZone))"
                 )
-                .font(.caption.monospacedDigit())
-                Text("duration \(duration(bounds.upperBound.timeIntervalSince(bounds.lowerBound)) )")
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                Text(modeLabel).font(.caption).foregroundStyle(.secondary)
+                Text(
+                    "To     \(SelectionEditorDraft.format(bounds.upperBound, zone: session.timeline.timeZone))"
+                )
+                Text("Duration \(duration(bounds.upperBound.timeIntervalSince(bounds.lowerBound))) · \(modeLabel)")
+            }
+            .font(.callout.monospacedDigit())
+            .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
                 selectionMenu
                 inclusionMenu
                 forecastMenu
@@ -50,7 +60,7 @@ struct SelectionInspector: View {
                 .help("Export Selection CSV…")
                 Spacer(minLength: 0)
                 Button("Clear") { onSelection(nil) }.buttonStyle(.borderless)
-            }
+            }.frame(height: 28)
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
                     ForEach(streams.filter { includedIDs.contains($0.id) }) { stream in
@@ -58,10 +68,17 @@ struct SelectionInspector: View {
                     }
                     if streams.isEmpty { Text("No visible streams").foregroundStyle(.secondary).font(.caption) }
                 }
-            }.scrollIndicators(.hidden)
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) {
+                    $0.size.height
+                } action: {
+                    statisticsHeight = $0
+                }
+            }.frame(height: max(64, statisticsHeight)).scrollIndicators(.hidden)
         }
+        .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, 14).padding(.vertical, 8)
-        .frame(height: 108)
+
         .background(.regularMaterial)
         .overlay(alignment: .top) { Rectangle().fill(.separator).frame(height: 0.5) }
         .accessibilityElement(children: .contain)
@@ -100,6 +117,11 @@ struct SelectionInspector: View {
     private var selectionMenu: some View {
         SnapshotMenu(title: "Boundary") {
             [
+                .command("Edit Selection…") {
+                    model.sessionModel(for: session.id).selectionEditorRequest = SelectionEditorRequest(
+                        selection: selection, zone: session.timeline.timeZone)
+                },
+                .separator,
                 .command("Fix interval") { updateMode(.fixed) },
                 .command("Link end to now") { updateMode(.endFollowsNow) },
                 .command("Link start to end at fixed duration") {
@@ -188,24 +210,27 @@ struct SelectionInspector: View {
     private func statisticCard(_ stream: StreamDescriptor) -> some View {
         let stats = model.stats(for: stream.id, in: selection)
         return VStack(alignment: .leading, spacing: 2) {
-            Text(stream.name).font(.caption.weight(.semibold)).lineLimit(1)
-            if let stats {
-                Text(
-                    "n \(stats.count) · \(duration(stats.lastSampleAt.timeIntervalSince(stats.firstSampleAt))): \(format(stats.firstValue)) → \(format(stats.lastValue))"
-                )
-                Text(
-                    "min \(format(stats.minimum)) · max \(format(stats.maximum)) · sample-weighted mean \(format(stats.mean)) · Δ \(format(stats.change))"
-                )
-            } else {
-                if model.statisticsFailed(stream.id) {
-                    HStack {
-                        Text("Statistics unavailable")
-                        Button("Retry") { model.retryStats(stream.id) }
-                    }.foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(stream.name).font(.caption.weight(.semibold)).lineLimit(1)
+                if let stats {
+                    Text(
+                        "n \(stats.count) · \(duration(stats.lastSampleAt.timeIntervalSince(stats.firstSampleAt))): \(format(stats.firstValue)) → \(format(stats.lastValue))"
+                    )
+                    Text(
+                        "min \(format(stats.minimum)) · max \(format(stats.maximum)) · sample-weighted mean \(format(stats.mean)) · Δ \(format(stats.change))"
+                    )
                 } else {
-                    Text(model.isCalculatingStats(stream.id) ? "Calculating…" : "No samples in range")
-                        .foregroundStyle(.secondary)
+                    if model.statisticsFailed(stream.id) {
+                        Text("Statistics unavailable").foregroundStyle(.secondary)
+                    } else {
+                        Text(model.isCalculatingStats(stream.id) ? "Calculating…" : "No samples in range")
+                            .foregroundStyle(.secondary)
+                    }
                 }
+            }
+            .accessibilityElement(children: .combine)
+            if stats == nil, model.statisticsFailed(stream.id) {
+                Button("Retry statistics for \(stream.name)") { model.retryStats(stream.id) }
             }
         }
         .font(.caption2.monospacedDigit())

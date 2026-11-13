@@ -13,7 +13,6 @@ struct SessionWindow: View {
     @State private var showRenameSession = false
     @State private var sessionTitle = ""
     @State private var editingLocator: Guide?
-    @State private var inspectorVisible = false
 
     init(sessionID: SessionID, model: PipePlotAppModel) {
         self.sessionID = sessionID
@@ -35,29 +34,32 @@ struct SessionWindow: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            sessionContent
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                sessionContent
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle(session.map { "\($0.number) · \($0.title)" } ?? "PipePlot")
         .toolbar {
             SessionWindowToolbar(
-                model: model, sessionModel: sessionModel, inspectorVisible: inspectorVisible,
+                model: model, sessionModel: sessionModel, inspectorVisible: sessionModel.inspectorVisible,
                 toggleInspector: {
-                    if !inspectorVisible, sessionModel.selectedChartID == nil {
+                    if !sessionModel.inspectorVisible, sessionModel.selectedChartID == nil {
                         sessionModel.selectedChartID =
                             SessionCommandTarget(
                                 focused: sessionModel, editingText: false
                             ).chart?.id
                     }
-                    inspectorVisible.toggle()
+                    sessionModel.inspectorVisible.toggle()
                 },
                 renameSession: {
                     sessionTitle = session?.title ?? ""
                     showRenameSession = true
                 })
         }
-        .inspector(isPresented: $inspectorVisible) {
+        .inspector(isPresented: $sessionModel.inspectorVisible) {
             ChartInspector(model: model, sessionModel: sessionModel)
         }
         .onAppear { model.refresh(sessionID) }
@@ -80,6 +82,15 @@ struct SessionWindow: View {
                     }.keyboardShortcut(.defaultAction)
                 }
             }.padding(22).frame(width: 340)
+        }
+        .sheet(item: $sessionModel.selectionEditorRequest) { request in
+            SelectionEditor(request: request, now: { sessionModel.snapshot.map { model.sessionNow($0) } ?? Date() }) {
+                selection in
+                if let current = sessionModel.snapshot { model.setSelection(selection, session: current) }
+                sessionModel.selectionEditorRequest = nil
+            } cancel: {
+                sessionModel.selectionEditorRequest = nil
+            }
         }
         .sheet(item: $editingLocator) { guide in
             TimeLocatorEditor(
@@ -157,17 +168,21 @@ struct SessionWindow: View {
                     "No charts yet", systemImage: "chart.xyaxis.line",
                     description: Text("Create a chart or pipe values into pp."))
             } else {
-                if sessionModel.displayActive { sharedRuler(session) }
+                if sessionModel.displayActive {
+                    timelineBar(session)
+                    sharedRuler(session)
+                }
                 // Retain row identity (including open editors) while their canvases
                 // and query entry points are suspended.
                 chartRows(session)
+                    .frame(minHeight: 0, maxHeight: .infinity)
                 if sessionModel.displayActive, let selection = session.timeline.selection {
                     SelectionInspector(session: session, selection: selection, model: model) {
                         model.setSelection($0, session: session)
                     }
                 }
+
             }
-            if sessionModel.displayActive { timelineBar(session) }
         } else if sessionModel.isPermanentlyDeleted {
             ContentUnavailableView("Session Permanently Deleted", systemImage: "trash")
         } else {
@@ -232,93 +247,98 @@ struct SessionWindow: View {
     private var errorMessage: some View { Text(model.errorMessage ?? "") }
 
     @ViewBuilder private func timelineBar(_ session: SessionSnapshot) -> some View {
-        HStack {
-            Label("Session \(session.number)", systemImage: "circle.grid.2x2")
-                .foregroundStyle(.secondary)
-            if session.rejectedLineCount > 0 {
-                Text("\(session.rejectedLineCount) rejected input row\(session.rejectedLineCount == 1 ? "" : "s")")
-                    .font(.caption).foregroundStyle(.orange)
-                    .help("Rows rejected because the input was invalid or did not match the registered stream group")
-            }
-            Spacer()
-            if let date = hoverDate {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Session \(session.number)", systemImage: "circle.grid.2x2")
+                    .foregroundStyle(.secondary)
+                if session.rejectedLineCount > 0 {
+                    Text("\(session.rejectedLineCount) rejected input row\(session.rejectedLineCount == 1 ? "" : "s")")
+                        .font(.caption).foregroundStyle(.orange)
+                        .help(
+                            "Rows rejected because the input was invalid or did not match the registered stream group")
+                }
+                Spacer()
+                if let date = hoverDate {
+                    Text(
+                        TimeText.format(
+                            date, zone: session.timeline.timeZone, reference: timeReference(session),
+                            includeDate: true)
+                    ).monospacedDigit().font(.caption)
+                }
                 Text(
-                    TimeText.format(
-                        date, zone: session.timeline.timeZone, reference: timeReference(session),
-                        includeDate: true)
-                ).monospacedDigit().font(.caption)
+                    "Now \(TimeText.format(model.sessionNow(session), zone: session.timeline.timeZone, reference: timeReference(session)))"
+                )
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
-            Button {
-                model.navigateBack(session)
-            } label: {
-                Image(systemName: "chevron.left")
+            HStack(spacing: 8) {
+                Button {
+                    model.navigateBack(session)
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .disabled(!model.canNavigateBack(session.id)).help("Back in time navigation")
+                .accessibilityLabel("Back in time navigation")
+                Button {
+                    model.navigateForward(session)
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .disabled(!model.canNavigateForward(session.id)).help("Forward in time navigation")
+                .accessibilityLabel("Forward in time navigation")
+                Button {
+                    model.followNow(session)
+                } label: {
+                    Label("Follow Now", systemImage: "clock")
+                }
+                .buttonStyle(.borderedProminent).tint(session.timeline.followNow ? .accentColor : .gray)
+                .disabled(session.timeline.followNow)
+                Menu {
+                    Button("Last 5 minutes") { model.setSpan(5 * 60, session: session) }
+                    Button("Last 15 minutes") { model.setSpan(15 * 60, session: session) }
+                    Button("Last hour") { model.setSpan(60 * 60, session: session) }
+                    Button("Show all history") { model.showAllHistory(session) }
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }.help("Time range").accessibilityLabel("Time range")
+                SnapshotMenu(title: "Plot navigation", symbol: "arrow.up.left.and.arrow.down.right", compact: true) {
+                    let chart =
+                        visibleCharts.first(where: { $0.id == sessionModel.selectedChartID })
+                        ?? visibleCharts.last
+                    return [
+                        .command("Pan earlier") { model.pan(80, width: 800, session: session) },
+                        .command("Pan later") { model.pan(-80, width: 800, session: session) },
+                        .command("Zoom in") { zoomTimeline(1.25, session: session) },
+                        .command("Zoom out") { zoomTimeline(0.8, session: session) },
+                        .command("Frame selection", enabled: session.timeline.selection != nil) {
+                            model.frameSelection(session)
+                        },
+                        .command(
+                            "Select visible time range",
+                            enabled: chart?.streams.contains(where: { $0.isLayoutHidden != true }) == true
+                        ) {
+                            guard let chart else { return }
+                            model.setSelection(
+                                TimeSelection.visibleRange(
+                                    gestures.domain ?? model.domain(for: session), streams: chart.streams),
+                                session: session)
+                        },
+                        .command("Clear selection", enabled: session.timeline.selection != nil) {
+                            model.setSelection(nil, session: session)
+                        },
+                    ]
+                }
+                .frame(width: 30)
+                .help("Pan, zoom, frame and select the visible time range")
+                Menu {
+                    Button("Local time") { model.setTimeZone(.local, session: session) }
+                    Button("UTC") { model.setTimeZone(.utc, session: session) }
+                } label: {
+                    Label(session.timeline.timeZone == .utc ? "UTC" : "Local", systemImage: "globe")
+                }
+                .help("Display timestamps in local time or UTC")
             }
-            .disabled(!model.canNavigateBack(session.id)).help("Back in time navigation")
-            .accessibilityLabel("Back in time navigation")
-            Button {
-                model.navigateForward(session)
-            } label: {
-                Image(systemName: "chevron.right")
-            }
-            .disabled(!model.canNavigateForward(session.id)).help("Forward in time navigation")
-            .accessibilityLabel("Forward in time navigation")
-            Text(
-                "Now  \(TimeText.format(model.sessionNow(session), zone: session.timeline.timeZone, reference: timeReference(session)))"
-            )
-            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            Button {
-                model.followNow(session)
-            } label: {
-                Label("Follow Now", systemImage: "clock")
-            }
-            .buttonStyle(.borderedProminent).tint(session.timeline.followNow ? .accentColor : .gray)
-            .disabled(session.timeline.followNow)
-            Menu {
-                Button("Last 5 minutes") { model.setSpan(5 * 60, session: session) }
-                Button("Last 15 minutes") { model.setSpan(15 * 60, session: session) }
-                Button("Last hour") { model.setSpan(60 * 60, session: session) }
-                Button("Show all history") { model.showAllHistory(session) }
-            } label: {
-                Image(systemName: "clock.arrow.circlepath")
-            }.help("Time range").accessibilityLabel("Time range")
-            SnapshotMenu(title: "Plot navigation", symbol: "arrow.up.left.and.arrow.down.right", compact: true) {
-                let chart =
-                    visibleCharts.first(where: { $0.id == sessionModel.selectedChartID })
-                    ?? visibleCharts.last
-                return [
-                    .command("Pan earlier") { model.pan(80, width: 800, session: session) },
-                    .command("Pan later") { model.pan(-80, width: 800, session: session) },
-                    .command("Zoom in") { zoomTimeline(1.25, session: session) },
-                    .command("Zoom out") { zoomTimeline(0.8, session: session) },
-                    .command("Frame selection", enabled: session.timeline.selection != nil) {
-                        model.frameSelection(session)
-                    },
-                    .command(
-                        "Select visible time range",
-                        enabled: chart?.streams.contains(where: { $0.isLayoutHidden != true }) == true
-                    ) {
-                        guard let chart else { return }
-                        model.setSelection(
-                            TimeSelection.visibleRange(
-                                gestures.domain ?? model.domain(for: session), streams: chart.streams),
-                            session: session)
-                    },
-                    .command("Clear selection", enabled: session.timeline.selection != nil) {
-                        model.setSelection(nil, session: session)
-                    },
-                ]
-            }
-            .frame(width: 30)
-            .help("Pan, zoom, frame and select the visible time range")
-            Menu {
-                Button("Local time") { model.setTimeZone(.local, session: session) }
-                Button("UTC") { model.setTimeZone(.utc, session: session) }
-            } label: {
-                Label(session.timeline.timeZone == .utc ? "UTC" : "Local", systemImage: "globe")
-            }
-            .help("Display timestamps in local time or UTC")
         }
-        .padding(.horizontal, 18).padding(.vertical, 11)
+        .padding(.horizontal, 18).padding(.vertical, 8)
         .background(.bar)
         .overlay(alignment: .top) { Rectangle().fill(.separator).frame(height: 0.5) }
     }
@@ -763,6 +783,7 @@ private struct ChartRow: View {
                 ForEach(layoutStreams.filter { $0.derivedSeries != nil }) { stream in
                     DerivedSeriesPanel(
                         stream: stream, unit: chart.settings.unit, domain: plotDomain,
+                        zone: session.timeline.timeZone,
                         result: model.derivedSeries(stream, range: plotDomain, sessionID: session.id),
                         hoverDate: hoverDate,
                         edit: { derivedStream = stream },

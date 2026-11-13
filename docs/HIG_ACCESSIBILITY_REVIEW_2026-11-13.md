@@ -5,6 +5,9 @@ accessibility and narrow-layout gaps. The highest priorities are readable
 selection controls, precise selection without dragging, and accessible derived
 plots. This is a review, not an implementation or accessibility certification.
 
+Subsequent implementation and native validation are recorded in
+[the fixes report](HIG_ACCESSIBILITY_FIXES_2026-11-13.md).
+
 ## Basis and scope
 
 Read Apple's live guidance before inspecting the app: [Designing for macOS](https://developer.apple.com/design/human-interface-guidelines/designing-for-macos),

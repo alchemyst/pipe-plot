@@ -227,15 +227,23 @@ struct SessionPicker: View {
 }
 
 struct SettingsView: View {
+    @AppStorage("plotTextScale") private var plotTextScale = 1.0
     var body: some View {
         Form {
+            Section("Charts") {
+                Picker("Chart text size", selection: $plotTextScale) {
+                    Text("Standard (100%)").tag(1.0)
+                    Text("Large (150%)").tag(1.5)
+                    Text("Extra Large (200%)").tag(2.0)
+                }
+            }
             Section("Storage") {
                 Text("Sessions and samples are stored locally in Application Support/PipePlot.")
                 Text("Closing a session window disconnects its samplers and keeps its captured data.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(22).frame(width: 460, height: 220)
+        .padding(22).frame(width: 460, height: 300)
     }
 }
 
@@ -362,6 +370,40 @@ struct SessionCommandTarget {
     var canAddGuide: Bool { chart != nil }
     var canSelectVisibleRange: Bool { chart?.streams.contains(where: { $0.isLayoutHidden != true }) == true }
 
+    var canEditSelection: Bool { snapshot?.timeline.selection != nil || canSelectVisibleRange }
+
+    func editSelection(using model: PipePlotAppModel) {
+        guard let snapshot, canEditSelection else { return }
+        let selection: TimeSelection
+        if let current = snapshot.timeline.selection {
+            selection = current
+        } else if let chart {
+            selection = TimeSelection.visibleRange(model.domain(for: snapshot), streams: chart.streams)
+        } else {
+            return
+        }
+        focused?.selectionEditorRequest = SelectionEditorRequest(selection: selection, zone: snapshot.timeline.timeZone)
+    }
+    func zoom(_ factor: Double, using model: PipePlotAppModel) {
+        guard let snapshot else { return }
+        let range = model.domain(for: snapshot)
+        let anchor = range.lowerBound.addingTimeInterval(range.upperBound.timeIntervalSince(range.lowerBound) / 2)
+        model.zoom(factor, anchor: anchor, session: snapshot)
+    }
+    func exportChart(using model: PipePlotAppModel) {
+        guard let chart, !chart.streams.isEmpty else { return }
+        RawCSVExport.chooseDestination(store: model.store.samples, streams: chart.streams, name: chart.title)
+    }
+    func exportSelection(using model: PipePlotAppModel) {
+        guard let snapshot, let selection = snapshot.timeline.selection else { return }
+        let streams = snapshot.charts.flatMap(\.streams).filter {
+            selection.selectedStreamIDs.isEmpty || selection.selectedStreamIDs.contains($0.id)
+        }
+        guard !streams.isEmpty else { return }
+        RawCSVExport.chooseDestination(
+            store: model.store.samples, streams: streams,
+            bounds: model.resolvedSelectionBounds(selection, session: snapshot), name: "Selection")
+    }
     func createChart(using model: PipePlotAppModel) {
         guard let snapshot else { return }
         model.createChart(in: snapshot.id, after: chart?.id)
@@ -382,6 +424,7 @@ struct SessionCommandTarget {
 }
 
 struct PipePlotCommands: Commands {
+    @AppStorage("plotTextScale") private var plotTextScale = 1.0
     let model: PipePlotAppModel
     var installInitialWindowOpener: ((OpenWindowAction) -> Void)? = nil
     @Environment(\.openWindow) private var openWindow
@@ -408,6 +451,68 @@ struct PipePlotCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Session") { model.createSessionWindow() }.keyboardShortcut("n", modifiers: [.command])
         }
+        CommandGroup(after: .importExport) {
+            Button("Export Chart CSV…") { sessionTarget.exportChart(using: model) }
+                .disabled(sessionTarget.chart?.streams.isEmpty != false)
+            Button("Export Selection CSV…") { sessionTarget.exportSelection(using: model) }
+                .disabled(sessionTarget.snapshot?.timeline.selection == nil)
+        }
+        CommandGroup(after: .toolbar) {
+            Button(focusedSession?.inspectorVisible == true ? "Hide Chart Settings" : "Show Chart Settings") {
+                focusedSession?.inspectorVisible.toggle()
+            }.keyboardShortcut("i", modifiers: [.command, .option])
+                .disabled(focusedSession?.snapshot?.isOpen != true)
+            Menu("Selected Chart") {
+                ForEach(focusedSession?.snapshot?.charts.filter(\.isVisible) ?? []) { chart in
+                    Toggle(
+                        chart.title,
+                        isOn: Binding(
+                            get: {
+                                SessionCommandTarget(focused: focusedSession, editingText: false).chart?.id == chart.id
+                            },
+                            set: { if $0 { focusedSession?.selectedChartID = chart.id } }))
+                }
+            }.disabled(focusedSession?.snapshot?.isOpen != true)
+            Divider()
+            Button("Back in Time Navigation") {
+                if let session = sessionTarget.snapshot { model.navigateBack(session) }
+            }.disabled(sessionTarget.snapshot == nil || focusedSession?.canNavigateBack != true)
+            Button("Forward in Time Navigation") {
+                if let session = sessionTarget.snapshot { model.navigateForward(session) }
+            }.disabled(sessionTarget.snapshot == nil || focusedSession?.canNavigateForward != true)
+            Button("Pan Earlier") {
+                if let session = sessionTarget.snapshot { model.pan(80, width: 800, session: session) }
+            }
+            .disabled(sessionTarget.snapshot == nil)
+            Button("Pan Later") {
+                if let session = sessionTarget.snapshot { model.pan(-80, width: 800, session: session) }
+            }
+            .disabled(sessionTarget.snapshot == nil)
+            Button("Zoom In") { sessionTarget.zoom(1.25, using: model) }.disabled(sessionTarget.snapshot == nil)
+            Button("Zoom Out") { sessionTarget.zoom(0.8, using: model) }.disabled(sessionTarget.snapshot == nil)
+            Button("Fit Selection") { if let session = sessionTarget.snapshot { model.frameSelection(session) } }
+                .disabled(sessionTarget.snapshot?.timeline.selection == nil)
+            Button("Follow Now") { if let session = sessionTarget.snapshot { model.followNow(session) } }
+                .disabled(sessionTarget.snapshot == nil || sessionTarget.snapshot?.timeline.followNow == true)
+            Menu("Time Range") {
+                Button("Last 5 Minutes") {
+                    if let session = sessionTarget.snapshot { model.setSpan(300, session: session) }
+                }
+                Button("Last 15 Minutes") {
+                    if let session = sessionTarget.snapshot { model.setSpan(900, session: session) }
+                }
+                Button("Last Hour") {
+                    if let session = sessionTarget.snapshot { model.setSpan(3600, session: session) }
+                }
+                Button("Show All History") { if let session = sessionTarget.snapshot { model.showAllHistory(session) } }
+            }.disabled(sessionTarget.snapshot == nil)
+            Divider()
+            Picker("Chart Text Size", selection: $plotTextScale) {
+                Text("Standard (100%)").tag(1.0)
+                Text("Large (150%)").tag(1.5)
+                Text("Extra Large (200%)").tag(2.0)
+            }
+        }
         CommandGroup(replacing: .undoRedo) {
             Button(activeUndoManager?.undoMenuItemTitle ?? "Undo") { activeUndoManager?.undo() }
                 .keyboardShortcut("z", modifiers: [.command])
@@ -426,6 +531,11 @@ struct PipePlotCommands: Commands {
             Button("Select Visible Time Range") { sessionTarget.selectVisibleRange(using: model) }
                 .keyboardShortcut("v", modifiers: [.command, .option])
                 .disabled(!sessionTarget.canSelectVisibleRange)
+            Button("Edit Selection…") { sessionTarget.editSelection(using: model) }
+                .disabled(!sessionTarget.canEditSelection)
+            Button("Clear Selection") {
+                if let session = sessionTarget.snapshot { model.setSelection(nil, session: session) }
+            }.disabled(sessionTarget.snapshot?.timeline.selection == nil)
             Button("Open Saved Sessions…") { model.presentSessionPicker() }
         }
     }

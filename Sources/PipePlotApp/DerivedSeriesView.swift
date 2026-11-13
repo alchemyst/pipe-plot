@@ -88,9 +88,12 @@ struct DerivedSeriesSheet: View {
 }
 
 struct DerivedSeriesPanel: View {
+    @AppStorage("plotTextScale") private var storedTextScale = 1.0
+    private var textScale: Double { min(2, max(1, storedTextScale)) }
     let stream: StreamDescriptor
     let unit: String?
     let domain: ClosedRange<Date>
+    var zone: PlotTimeZone = .local
     let result: DerivedSeriesResult?
     let hoverDate: Date?
     let edit: () -> Void
@@ -119,12 +122,25 @@ struct DerivedSeriesPanel: View {
         let quantity = derivative ? "Rate (\(unit.map { $0 + "/s" } ?? "value/s"))" : "Smoothed (\(unit ?? "value"))"
         let values = points.map { derivative ? $0.derivative : $0.smoothed }
         let range = PlotValueRange.automatic(values)
+        let accessibility = DerivedPlotAccessibility(
+            title: "\(quantity) · \(stream.name)",
+            unit: derivative ? (unit.map { $0 + "/s" } ?? "value/s") : (unit ?? "value"),
+            points: points.map {
+                DerivedAccessiblePoint(
+                    timestamp: $0.timestamp, value: derivative ? $0.derivative : $0.smoothed, run: $0.run)
+            },
+            domain: domain, range: range, zone: zone,
+            status: failed ? "Derived estimates unavailable." : (result == nil ? "Calculating derived estimates." : nil)
+        )
         let scale = max(abs(range.lowerBound), abs(range.upperBound), 1)
         let low = range.lowerBound / scale, span = max(1e-15, range.upperBound / scale - low)
         return VStack(alignment: .leading, spacing: 2) {
             Text(quantity).font(.caption2).foregroundStyle(.secondary)
             Canvas { context, size in
-                let plot = CGRect(x: 56, y: 4, width: max(1, size.width - 56), height: max(1, size.height - 14))
+                context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(PlotAppearance.background))
+                let plot = CGRect(
+                    x: 56 * textScale, y: 12 * textScale, width: max(1, size.width - 56 * textScale),
+                    height: max(1, size.height - 26 * textScale))
                 let timeSpan = max(0.001, domain.upperBound.timeIntervalSince(domain.lowerBound))
                 func x(_ time: Date) -> Double {
                     plot.minX + time.timeIntervalSince(domain.lowerBound) / timeSpan * plot.width
@@ -142,7 +158,7 @@ struct DerivedSeriesPanel: View {
                 }
                 var clipped = context
                 clipped.clip(to: Path(plot))
-                clipped.stroke(path, with: .color(derivative ? .orange : .cyan), lineWidth: 1.5)
+                clipped.stroke(path, with: .color(PlotCanvas.color(derivative ? 1 : 0)), lineWidth: 1.5)
                 if let hoverDate, domain.contains(hoverDate) {
                     var hover = Path()
                     hover.move(to: CGPoint(x: x(hoverDate), y: plot.minY))
@@ -151,20 +167,18 @@ struct DerivedSeriesPanel: View {
                 }
                 for (value, y) in [(range.upperBound, plot.minY), (range.lowerBound, plot.maxY)] {
                     context.draw(
-                        Text(value.formatted(.number.precision(.significantDigits(3)))).font(.system(size: 9))
-                            .foregroundStyle(.secondary), at: CGPoint(x: 50, y: y), anchor: .trailing)
+                        Text(value.formatted(.number.precision(.significantDigits(3)))).font(
+                            .system(size: 11 * textScale)
+                        )
+                        .foregroundStyle(.secondary), at: CGPoint(x: 50 * textScale, y: y), anchor: .trailing)
                 }
             }
-            .frame(height: 82)
+            .frame(height: 82 * textScale)
             .accessibilityElement()
+            .accessibilityAddTraits(.isImage)
             .accessibilityLabel("\(quantity) derived estimate plot for \(stream.name)")
-            .accessibilityValue(
-                failed
-                    ? "Derived estimates unavailable."
-                    : (result == nil
-                        ? "Calculating derived estimates."
-                        : "\(points.count) estimates in the visible range. Calculated from raw observations with \(stream.derivedSeries?.kernel.title ?? "smoothing"); not raw measurements.")
-            )
+            .accessibilityValue(accessibility.summary)
+            .accessibilityChartDescriptor(accessibility)
         }
     }
 }

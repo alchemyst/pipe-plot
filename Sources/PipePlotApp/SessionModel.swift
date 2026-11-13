@@ -10,6 +10,8 @@ final class SessionModel {
     private(set) var snapshot: SessionSnapshot?
     private(set) var isPermanentlyDeleted = false
     var selectedChartID: ChartID?
+    var inspectorVisible = false
+    var selectionEditorRequest: SelectionEditorRequest?
     var chartAxisDrafts: [ChartID: ChartAxisDraft] = [:]
     var guideAlertDrafts: [UUID: GuideAlertDraft] = [:]
     private(set) var displayActive = true
@@ -29,6 +31,7 @@ final class SessionModel {
         {
             valueGuideRequest = nil
         }
+        if !value.isOpen || value.isDeleted { selectionEditorRequest = nil }
         snapshot = value
         var normalized = chartAxisDrafts
         for chart in value.charts {
@@ -45,6 +48,8 @@ final class SessionModel {
         isPermanentlyDeleted = true
         displayActive = false
         selectedChartID = nil
+        selectionEditorRequest = nil
+        inspectorVisible = false
         chartAxisDrafts.removeAll()
         guideAlertDrafts.removeAll()
         forecastStatuses.removeAll()

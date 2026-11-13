@@ -25,8 +25,8 @@ struct StreamLegend: View {
             HStack(spacing: 8) {
                 ForEach(Array(layoutStreams.enumerated()), id: \.element.id) { index, stream in
                     HStack(spacing: 6) {
-                        StreamDragHandle(stream: stream, state: model.streamDrag).frame(width: 18, height: 22)
-                        Circle().fill(PlotCanvas.color(for: stream, fallback: index)).frame(width: 8, height: 8)
+                        StreamDragHandle(stream: stream, state: model.streamDrag).frame(width: 24, height: 24)
+                        StreamStyleKey(stream: stream)
                         Text(stream.name).font(.caption.weight(.medium))
                         if !(stream.linesVisible ?? chart.settings.linesVisible)
                             && !(stream.dotsVisible ?? chart.settings.dotsVisible)

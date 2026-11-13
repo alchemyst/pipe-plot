@@ -14,104 +14,114 @@ struct ChartHeader: View {
     private var hiddenStreams: [StreamDescriptor] { chart.streams.filter { $0.isLayoutHidden == true } }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "chart.xyaxis.line").foregroundStyle(Color.accentColor).accessibilityHidden(true)
-            Text(chart.title).font(.headline)
-            if let unit = chart.settings.unit, !unit.isEmpty {
-                Text(unit).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(.quaternary, in: Capsule())
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                Image(systemName: "chart.xyaxis.line").foregroundStyle(Color.accentColor).accessibilityHidden(true)
+                Text(chart.title).font(.headline).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 0)
             }
-            Spacer()
-            SnapshotMenu(title: "Guides", symbol: "line.3.horizontal") {
-                [
-                    .command("Add horizontal value guide…") { sessionModel.requestValueGuide(for: chart.id) },
-                    .command("Add time guide at Now") {
-                        model.addTimeGuide(at: model.sessionNow(session), sessionID: session.id)
-                    },
-                    .command("Manage Guides…") {
-                        onManageGuides()
-                    },
-                ]
-            }.help("Create and edit chart guides")
-            SnapshotMenu(title: "Chart actions", symbol: "ellipsis.circle", compact: true) {
-                var items: [SnapshotMenuItem] = [
-                    .command("Rename Chart…") {
-                        renameChartText = chart.title
-                        showRenameChart = true
-                    }
-                ]
-                let charts = session.charts.filter(\.isVisible)
-                items += [
-                    .separator,
-                    .command(
-                        "Select Visible Time Range",
-                        enabled: chart.streams.contains { $0.isLayoutHidden != true },
-                        action: onSelectVisibleRange),
-                    .command("Clear Selection", enabled: session.timeline.selection != nil, action: onClearSelection),
-                    .command("Export Chart CSV…", enabled: !chart.streams.isEmpty) {
-                        RawCSVExport.chooseDestination(
-                            store: model.store.samples, streams: chart.streams, name: chart.title)
-                    },
-                ]
-                if let index = charts.firstIndex(where: { $0.id == chart.id }) {
-                    items += [
-                        .command("Move Up", enabled: index > 0) { model.reorderChart(chart.id, to: index - 1) },
-                        .command("Move Down", enabled: index < charts.count - 1) {
-                            model.reorderChart(chart.id, to: index + 1)
+            if let unit = chart.settings.unit, !unit.isEmpty {
+                Text(unit).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 10) {
+                SnapshotMenu(title: "Guides", symbol: "line.3.horizontal") {
+                    [
+                        .command("Add horizontal value guide…") { sessionModel.requestValueGuide(for: chart.id) },
+                        .command("Add time guide at Now") {
+                            model.addTimeGuide(at: model.sessionNow(session), sessionID: session.id)
+                        },
+                        .command("Manage Guides…") {
+                            onManageGuides()
                         },
                     ]
-                }
-                items.append(
-                    .command(chart.streams.isEmpty ? "Delete Empty Chart" : "Hide Chart") {
-                        model.deleteChart(chart.id)
-                    })
-                if !hiddenStreams.isEmpty {
+                }.help("Create and edit chart guides")
+                SnapshotMenu(title: "Chart actions", symbol: "ellipsis.circle", compact: true) {
+                    var items: [SnapshotMenuItem] = [
+                        .command("Rename Chart…") {
+                            renameChartText = chart.title
+                            showRenameChart = true
+                        }
+                    ]
+                    let charts = session.charts.filter(\.isVisible)
                     items += [
                         .separator,
-                        .submenu(
-                            "Restore Hidden Stream",
-                            hiddenStreams.map { stream in
-                                .command(stream.name) { model.setStreamLayoutHidden(false, streamID: stream.id) }
-                            }),
+                        .command(
+                            "Select Visible Time Range",
+                            enabled: chart.streams.contains { $0.isLayoutHidden != true },
+                            action: onSelectVisibleRange),
+                        .command(
+                            "Clear Selection", enabled: session.timeline.selection != nil, action: onClearSelection),
+                        .command("Export Chart CSV…", enabled: !chart.streams.isEmpty) {
+                            RawCSVExport.chooseDestination(
+                                store: model.store.samples, streams: chart.streams, name: chart.title)
+                        },
                     ]
+                    if let index = charts.firstIndex(where: { $0.id == chart.id }) {
+                        items += [
+                            .command("Move Up", enabled: index > 0) { model.reorderChart(chart.id, to: index - 1) },
+                            .command("Move Down", enabled: index < charts.count - 1) {
+                                model.reorderChart(chart.id, to: index + 1)
+                            },
+                        ]
+                    }
+                    items.append(
+                        .command(chart.streams.isEmpty ? "Delete Empty Chart" : "Hide Chart") {
+                            model.deleteChart(chart.id)
+                        })
+                    if !hiddenStreams.isEmpty {
+                        items += [
+                            .separator,
+                            .submenu(
+                                "Restore Hidden Stream",
+                                hiddenStreams.map { stream in
+                                    .command(stream.name) { model.setStreamLayoutHidden(false, streamID: stream.id) }
+                                }),
+                        ]
+                    }
+                    let hidden = session.charts.filter { !$0.isVisible }
+                    if !hidden.isEmpty {
+                        items += [
+                            .separator,
+                            .submenu(
+                                "Restore Hidden Chart",
+                                hidden.map { item in .command(item.title) { model.restoreChart(item.id) } }),
+                        ]
+                    }
+                    return items
+                }.help("Chart actions")
+                Button {
+                    model.toggleLines(chart)
+                } label: {
+                    Image(
+                        systemName: chart.settings.linesVisible
+                            ? "point.topleft.down.to.point.bottomright.curvepath"
+                            : "point.topleft.down.to.point.bottomright.curvepath"
+                    )
+                    .frame(width: 24, height: 24).contentShape(Rectangle())
                 }
-                let hidden = session.charts.filter { !$0.isVisible }
-                if !hidden.isEmpty {
-                    items += [
-                        .separator,
-                        .submenu(
-                            "Restore Hidden Chart",
-                            hidden.map { item in .command(item.title) { model.restoreChart(item.id) } }),
-                    ]
-                }
-                return items
-            }.help("Chart actions")
-            Button {
-                model.toggleLines(chart)
-            } label: {
-                Image(
-                    systemName: chart.settings.linesVisible
-                        ? "point.topleft.down.to.point.bottomright.curvepath"
-                        : "point.topleft.down.to.point.bottomright.curvepath")
+                .buttonStyle(.plain).foregroundStyle(chart.settings.linesVisible ? Color.accentColor : .secondary).help(
+                    "Toggle connecting lines"
+                )
+                .accessibilityLabel(
+                    chart.settings.linesVisible ? "Hide chart connecting lines" : "Show chart connecting lines")
+                Button {
+                    model.toggleDots(chart)
+                } label: {
+                    Image(systemName: "circle.fill").frame(width: 24, height: 24).contentShape(Rectangle())
+                }.buttonStyle(.plain).foregroundStyle(
+                    chart.settings.dotsVisible ? Color.accentColor : .secondary
+                ).help("Toggle dots")
+                    .accessibilityLabel(chart.settings.dotsVisible ? "Hide chart dots" : "Show chart dots")
+                Button {
+                    model.setTarget(chart.id)
+                } label: {
+                    Label(
+                        chart.isTarget ? "Target" : "Set target",
+                        systemImage: chart.isTarget ? "scope" : "circle.dashed")
+                }.buttonStyle(.bordered).tint(chart.isTarget ? .accentColor : .secondary).controlSize(.small)
             }
-            .buttonStyle(.plain).foregroundStyle(chart.settings.linesVisible ? Color.accentColor : .secondary).help(
-                "Toggle connecting lines"
-            )
-            .accessibilityLabel(
-                chart.settings.linesVisible ? "Hide chart connecting lines" : "Show chart connecting lines")
-            Button {
-                model.toggleDots(chart)
-            } label: {
-                Image(systemName: "circle.fill")
-            }.buttonStyle(.plain).foregroundStyle(
-                chart.settings.dotsVisible ? Color.accentColor : .secondary
-            ).help("Toggle dots")
-                .accessibilityLabel(chart.settings.dotsVisible ? "Hide chart dots" : "Show chart dots")
-            Button {
-                model.setTarget(chart.id)
-            } label: {
-                Label(chart.isTarget ? "Target" : "Set target", systemImage: chart.isTarget ? "scope" : "circle.dashed")
-            }.buttonStyle(.bordered).tint(chart.isTarget ? .accentColor : .secondary).controlSize(.small)
         }
         .padding(.horizontal, 15).padding(.top, 13).padding(.bottom, 5)
         .sheet(isPresented: $showRenameChart) {

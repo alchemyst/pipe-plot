@@ -3,6 +3,8 @@ import PipePlotCore
 
 /// One shared locator lane stays aligned with the plotting area in every row.
 struct TimelineLocators: View {
+    @AppStorage("plotTextScale") private var storedTextScale = 1.0
+    private var textScale: Double { min(2, max(1, storedTextScale)) }
     let range: ClosedRange<Date>
     let timeZone: PlotTimeZone
     let reference: Date?
@@ -22,8 +24,10 @@ struct TimelineLocators: View {
     private var span: TimeInterval { max(0.001, range.upperBound.timeIntervalSince(range.lowerBound)) }
     var body: some View {
         GeometryReader { geometry in
-            let plot = CGRect(x: 84, y: 23, width: max(0, geometry.size.width - 112), height: 49)
-            let selectionBar = CGRect(x: plot.minX, y: 56, width: plot.width, height: 16)
+            let plot = CGRect(
+                x: 28 + 56 * textScale, y: 23 * textScale, width: max(0, geometry.size.width - 56 * textScale - 56),
+                height: 49 * textScale)
+            let selectionBar = CGRect(x: plot.minX, y: 56 * textScale, width: plot.width, height: 16 * textScale)
             let x: (Date) -> CGFloat = { plot.minX + $0.timeIntervalSince(range.lowerBound) / span * plot.width }
             let date: (CGFloat) -> Date = {
                 range.lowerBound.addingTimeInterval(Double(($0 - plot.minX) / plot.width) * span)
@@ -31,32 +35,34 @@ struct TimelineLocators: View {
             ZStack(alignment: .topLeading) {
                 Canvas { context, _ in
                     guard PlotGeometry.isUsable(plot) else { return }
-                    for index in 0...4 {
-                        let t = range.lowerBound.addingTimeInterval(span * Double(index) / 4)
-                        let anchor: UnitPoint = index == 0 ? .topLeading : (index == 4 ? .topTrailing : .top)
+                    let tickCount = max(1, Int(plot.width / (130 * textScale)))
+                    for index in 0...tickCount {
+                        let t = range.lowerBound.addingTimeInterval(span * Double(index) / Double(tickCount))
+                        let anchor: UnitPoint = index == 0 ? .topLeading : (index == tickCount ? .topTrailing : .top)
                         context.draw(
                             Text(TimeText.format(t, zone: timeZone, reference: reference, includeDate: span > 86_400))
-                                .font(.system(size: 10).monospacedDigit()).foregroundColor(.secondary),
-                            at: CGPoint(x: x(t), y: 3), anchor: anchor)
+                                .font(.system(size: 11 * textScale).monospacedDigit()).foregroundColor(.secondary),
+                            at: CGPoint(x: x(t), y: 3 * textScale), anchor: anchor)
                     }
                     if let selection, let visibleSelection = TimeSelection.clippedForDisplay(selection, to: range) {
                         let left = x(visibleSelection.lowerBound), right = x(visibleSelection.upperBound)
                         if right >= left {
-                            let rect = CGRect(x: left, y: 59, width: max(1, right - left), height: 13)
+                            let rect = CGRect(
+                                x: left, y: 59 * textScale, width: max(1, right - left), height: 13 * textScale)
                             context.fill(Path(rect), with: .color(.accentColor.opacity(0.15)))
                             var brace = Path()
-                            brace.move(to: CGPoint(x: left, y: 69))
-                            brace.addLine(to: CGPoint(x: left, y: 58))
-                            brace.addLine(to: CGPoint(x: right, y: 58))
-                            brace.addLine(to: CGPoint(x: right, y: 69))
+                            brace.move(to: CGPoint(x: left, y: 69 * textScale))
+                            brace.addLine(to: CGPoint(x: left, y: 58 * textScale))
+                            brace.addLine(to: CGPoint(x: right, y: 58 * textScale))
+                            brace.addLine(to: CGPoint(x: right, y: 69 * textScale))
                             context.stroke(brace, with: .color(.accentColor), lineWidth: 2)
                             if right - left > 120 {
                                 context.draw(
                                     Text(
                                         "Interval · \(selection.upperBound.timeIntervalSince(selection.lowerBound).formatted(.number.precision(.fractionLength(1))))s"
                                     )
-                                    .font(.system(size: 9, weight: .semibold)).foregroundColor(.accentColor),
-                                    at: CGPoint(x: (left + right) / 2, y: 65))
+                                    .font(.system(size: 11 * textScale, weight: .semibold)).foregroundColor(.primary),
+                                    at: CGPoint(x: (left + right) / 2, y: 65 * textScale))
                             }
                         }
                     }
@@ -66,17 +72,17 @@ struct TimelineLocators: View {
                         guard range.contains(t) else { continue }
                         let gx = x(t), color = Color(hex: guide.color)
                         let lane = laneEnds.firstIndex(where: { $0 + 4 < gx })
-                        let y: CGFloat = lane == 1 ? 41 : 23
+                        let y: CGFloat = (lane == 1 ? 41 : 23) * textScale
                         var stem = Path()
                         stem.move(to: CGPoint(x: gx, y: y))
-                        stem.addLine(to: CGPoint(x: gx, y: 56))
+                        stem.addLine(to: CGPoint(x: gx, y: 56 * textScale))
                         context.stroke(stem, with: .color(color), lineWidth: 1)
-                        let flagWidth = min(104, max(12, plot.maxX - gx))
+                        let flagWidth = min(104 * textScale, max(12, plot.maxX - gx))
                         var flag = Path()
                         flag.move(to: CGPoint(x: gx, y: y))
                         flag.addLine(to: CGPoint(x: gx + flagWidth, y: y))
-                        flag.addLine(to: CGPoint(x: gx + flagWidth - 5, y: y + 13))
-                        flag.addLine(to: CGPoint(x: gx, y: y + 13))
+                        flag.addLine(to: CGPoint(x: gx + flagWidth - 5, y: y + 13 * textScale))
+                        flag.addLine(to: CGPoint(x: gx, y: y + 13 * textScale))
                         flag.closeSubpath()
                         if let lane {
                             context.fill(flag, with: .color(color.opacity(0.22)))
@@ -86,27 +92,32 @@ struct TimelineLocators: View {
                                     ? guide.label! : TimeText.format(t, zone: timeZone, reference: reference)).prefix(
                                         16))
                             context.drawLayer { layer in
-                                layer.clip(to: Path(CGRect(x: gx + 3, y: y, width: max(1, flagWidth - 8), height: 14)))
+                                layer.clip(
+                                    to: Path(
+                                        CGRect(x: gx + 3, y: y, width: max(1, flagWidth - 8), height: 14 * textScale)))
                                 layer.draw(
-                                    Text(title).font(.system(size: 9, weight: .medium)).foregroundColor(color),
-                                    at: CGPoint(x: gx + 4, y: y + 1), anchor: .topLeading)
+                                    Text(title).font(.system(size: 11 * textScale, weight: .medium)).foregroundColor(
+                                        .primary),
+                                    at: CGPoint(x: gx + 4, y: y + textScale), anchor: .topLeading)
                             }
                             laneEnds[lane] = gx + flagWidth
                         } else {
-                            context.fill(Path(CGRect(x: gx, y: 49, width: 3, height: 7)), with: .color(color))
+                            context.fill(
+                                Path(CGRect(x: gx, y: 49 * textScale, width: 3, height: 7 * textScale)),
+                                with: .color(color))
                         }
                     }
                     if let hover, range.contains(hover) {
                         var line = Path()
-                        line.move(to: CGPoint(x: x(hover), y: 18))
-                        line.addLine(to: CGPoint(x: x(hover), y: 74))
+                        line.move(to: CGPoint(x: x(hover), y: 18 * textScale))
+                        line.addLine(to: CGPoint(x: x(hover), y: 74 * textScale))
                         context.stroke(
                             line, with: .color(.secondary.opacity(0.7)), style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
                     }
                     if range.contains(now) {
                         var line = Path()
-                        line.move(to: CGPoint(x: x(now), y: 19))
-                        line.addLine(to: CGPoint(x: x(now), y: 74))
+                        line.move(to: CGPoint(x: x(now), y: 19 * textScale))
+                        line.addLine(to: CGPoint(x: x(now), y: 74 * textScale))
                         context.stroke(line, with: .color(.orange), lineWidth: 1.5)
                     }
                 }
@@ -122,7 +133,7 @@ struct TimelineLocators: View {
                 )
                 .accessibilityHidden(true)
             }
-        }.frame(height: 78).background(.bar)
+        }.frame(height: 78 * textScale).background(.bar)
             .help(
                 "Drag a locator to move it; click to edit. Drag the interval bar to move it, or drag its endpoints to resize. Double-click a triangle to toggle tracking."
             )
@@ -137,8 +148,8 @@ struct TimelineLocators: View {
             guard range.contains(date) else { continue }
             let gx = x(date)
             guard let lane = ends.firstIndex(where: { $0 + 4 < gx }) else { continue }
-            let width = min(104, max(12, plot.maxX - gx))
-            rects[guide.id] = CGRect(x: gx, y: lane == 1 ? 41 : 23, width: width, height: 14)
+            let width = min(104 * textScale, max(12, plot.maxX - gx))
+            rects[guide.id] = CGRect(x: gx, y: (lane == 1 ? 41 : 23) * textScale, width: width, height: 14 * textScale)
             ends[lane] = gx + width
         }
         return rects
