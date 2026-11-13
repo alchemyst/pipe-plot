@@ -29,6 +29,10 @@ bundle:
 install:
     ./scripts/install-local.sh
 
+# Build a release DMG and checksum; see docs/RELEASING.md for signing setup.
+release version:
+    ./scripts/package-release.sh {{quote(version)}}
+
 # Regenerate the icon and its compositing layers.
 icon:
     ./scripts/render-icon.sh .build/icon

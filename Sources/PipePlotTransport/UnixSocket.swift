@@ -403,12 +403,36 @@ public enum PipePlotLocations {
     public static var lockURL: URL { supportDirectory.appendingPathComponent("app.lock") }
     public static var appURL: URL {
         let fm = FileManager.default
+        if let bundledApp = appContainingCurrentExecutable() {
+            return bundledApp
+        }
         let candidates = [
             fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications/PipePlot.app"),
             URL(fileURLWithPath: "/Applications/PipePlot.app"),
             URL(fileURLWithPath: "/System/Applications/PipePlot.app"),
         ]
         return candidates.first(where: { fm.fileExists(atPath: $0.path) }) ?? candidates[0]
+    }
+
+    private static func appContainingCurrentExecutable() -> URL? {
+        // dyld provides the executable path even when argv[0] is only "pp".
+        // Resolve links created by the app menu or by Homebrew.
+        var capacity: UInt32 = 0
+        _ = _NSGetExecutablePath(nil, &capacity)
+        guard capacity > 0 else { return nil }
+        var path = [CChar](repeating: 0, count: Int(capacity))
+        guard _NSGetExecutablePath(&path, &capacity) == 0 else { return nil }
+        let executable = path.withUnsafeBufferPointer {
+            URL(fileURLWithPath: String(cString: $0.baseAddress!)).resolvingSymlinksInPath()
+        }
+        let macOS = executable.deletingLastPathComponent()
+        let contents = macOS.deletingLastPathComponent()
+        let app = contents.deletingLastPathComponent()
+        guard executable.lastPathComponent == "pp", macOS.lastPathComponent == "MacOS",
+            contents.lastPathComponent == "Contents", app.lastPathComponent == "PipePlot.app",
+            FileManager.default.isExecutableFile(atPath: macOS.appending(path: "PipePlot").path)
+        else { return nil }
+        return app
     }
 
     /// Present the locally installed app on cold launch. Ready warm connections
@@ -419,7 +443,7 @@ public enum PipePlotLocations {
             throw NSError(
                 domain: "PipePlot", code: 1,
                 userInfo: [
-                    NSLocalizedDescriptionKey: "PipePlot.app is not installed. Run the repository install script first."
+                    NSLocalizedDescriptionKey: "PipePlot.app is not installed. Move PipePlot.app to Applications first."
                 ])
         }
         let process = Process()

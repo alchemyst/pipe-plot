@@ -401,6 +401,10 @@ struct PipePlotCommands: Commands {
     }
     var body: some Commands {
         let _ = installInitialWindowOpener?(openWindow)
+        CommandGroup(after: .appInfo) {
+            Button("Install pp Command…") { PPCommandInstaller.install() }
+                .disabled(PPCommandInstaller.bundledCommand == nil)
+        }
         CommandGroup(replacing: .newItem) {
             Button("New Session") { model.createSessionWindow() }.keyboardShortcut("n", modifiers: [.command])
         }
@@ -424,5 +428,55 @@ struct PipePlotCommands: Commands {
                 .disabled(!sessionTarget.canSelectVisibleRange)
             Button("Open Saved Sessions…") { model.presentSessionPicker() }
         }
+    }
+}
+
+@MainActor
+private enum PPCommandInstaller {
+    static var bundledCommand: URL? {
+        let command = Bundle.main.bundleURL.appending(path: "Contents/MacOS/pp")
+        return FileManager.default.isExecutableFile(atPath: command.path) ? command : nil
+    }
+
+    static func install() {
+        guard let command = bundledCommand else { return }
+        let files = FileManager.default
+        let home = files.homeDirectoryForCurrentUser
+        let appDirectory = Bundle.main.bundleURL.deletingLastPathComponent().standardizedFileURL.path
+        guard appDirectory == "/Applications" || appDirectory == home.appending(path: "Applications").path else {
+            show("Install PipePlot First", "Move PipePlot.app to Applications, then open that copy and try again.")
+            return
+        }
+
+        let bin = home.appending(path: ".local/bin")
+        let link = bin.appending(path: "pp")
+        let pathHelp = "If your shell can’t find pp, add ~/.local/bin to your PATH. See the PipePlot README for help."
+        if (try? files.destinationOfSymbolicLink(atPath: link.path)) == command.path {
+            show("pp Is Already Installed", pathHelp)
+            return
+        }
+
+        let prompt = NSAlert()
+        prompt.messageText = "Install the pp Command?"
+        prompt.informativeText = "PipePlot will link ~/.local/bin/pp to the command bundled with this app. " + pathHelp
+        prompt.addButton(withTitle: "Install")
+        prompt.addButton(withTitle: "Cancel")
+        guard prompt.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            try files.createDirectory(at: bin, withIntermediateDirectories: true)
+            // Creating a link fails if any file or symlink already occupies this name.
+            try files.createSymbolicLink(atPath: link.path, withDestinationPath: command.path)
+            show("pp Installed", pathHelp)
+        } catch {
+            show("Couldn’t Install pp", "PipePlot could not create ~/.local/bin/pp.\n\n\(error.localizedDescription)")
+        }
+    }
+
+    private static func show(_ title: String, _ detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.runModal()
     }
 }

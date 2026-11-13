@@ -1,0 +1,85 @@
+name: Package macOS release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Validate release tag
+        id: tag
+        shell: bash
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [[ ! "$REF" =~ ^refs/tags/v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]]; then
+            echo "::error::Run this workflow on a vMAJOR.MINOR.PATCH tag."
+            exit 1
+          fi
+          echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install icon build tools
+        run: |
+          brew install povray
+          python3 -m venv "$RUNNER_TEMP/icon-venv"
+          "$RUNNER_TEMP/icon-venv/bin/python" -m pip install Pillow
+          echo "ICON_PYTHON=$RUNNER_TEMP/icon-venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Import signing and notarization credentials
+        shell: bash
+        env:
+          CERTIFICATE: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          : "${CERTIFICATE:?Missing DEVELOPER_ID_P12_BASE64}" "${CERTIFICATE_PASSWORD:?Missing DEVELOPER_ID_P12_PASSWORD}"
+          : "${APPLE_ID:?Missing APPLE_ID}" "${APPLE_APP_PASSWORD:?Missing APPLE_APP_SPECIFIC_PASSWORD}" "${APPLE_TEAM_ID:?Missing APPLE_TEAM_ID}"
+
+          keychain="$RUNNER_TEMP/pipeplot.keychain-db"
+          password="$(openssl rand -hex 32)"
+          echo "::add-mask::$password"
+          certificate="$(mktemp "$RUNNER_TEMP/pipeplot.XXXXXX")"
+          trap 'rm -f "$certificate"' EXIT
+          printf '%s' "$CERTIFICATE" | base64 -D > "$certificate"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          xcrun notarytool store-credentials pipeplot-release --keychain "$keychain" \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID"
+          echo "PIPEPLOT_NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+      - name: Build, sign, and notarize the DMG
+        env:
+          PIPEPLOT_SIGN_IDENTITY: ${{ vars.DEVELOPER_ID_APPLICATION }}
+          PIPEPLOT_NOTARY_PROFILE: pipeplot-release
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/package-release.sh "$VERSION"
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          dmg=".build/distribution/v$VERSION/PipePlot-$VERSION-macos-arm64.dmg"
+          gh release create "v$VERSION" "$dmg" "$dmg.sha256" --verify-tag --draft --generate-notes

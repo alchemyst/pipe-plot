@@ -2,6 +2,22 @@
 
 Native macOS plots for temporary numeric streams. Pipe a sampler into `pp`; each whitespace-separated column becomes a line in the current target chart. Data is saved locally, and inspecting history does not interrupt capture.
 
+## Install from a release
+
+On Apple Silicon with macOS 27 or later, download the DMG from
+[GitHub Releases](https://github.com/alchemyst/pipe-plot/releases) and drag
+**PipePlot.app** onto **Applications**. Open the installed app and choose
+**PipePlot → Install pp Command…** to make its bundled terminal command
+available. If Terminal can't find `pp`, add this line to `~/.zprofile` for the
+default macOS shell, then open a new Terminal window:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+See the [release guide](docs/RELEASING.md) for packaging, signing, and setting
+up the Homebrew cask.
+
 ## Build and install
 
 Requires Apple Silicon, macOS 27, Xcode's Swift toolchain, and [just](https://just.systems/). Building the app's icon also requires POV-Ray, Python 3 with Pillow, and macOS `iconutil`. No third-party Swift packages are required.
