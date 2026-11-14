@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#262626">
+  <meta name="description" content="PipePlot plots numeric terminal output over time in a native macOS window. Examples for process memory, load average, ping times, and pv transfer rates.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="PipePlot — plot numbers from stdin">
+  <meta property="og:description" content="A macOS utility for following numeric terminal output over time.">
+  <meta property="og:url" content="https://alchemyst.github.io/pipe-plot/">
+  <meta property="og:image" content="https://alchemyst.github.io/pipe-plot/assets/pipeplot.jpg">
+  <meta property="og:image:alt" content="PipePlot displaying two sample temperature streams">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="canonical" href="https://alchemyst.github.io/pipe-plot/">
+  <link rel="icon" href="assets/icon.png" type="image/png">
+  <link rel="stylesheet" href="style.css">
+  <script src="copy.js" defer></script>
+  <title>PipePlot — plot numbers from stdin</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="toolbar"><div class="wrap toolbar-inner">
+    <a class="brand" href="./" aria-label="PipePlot home"><img src="assets/icon.png" width="32" height="32" alt="">PipePlot</a>
+    <nav aria-label="Main navigation"><a href="#examples">Examples</a><a href="#install">Install</a><a href="https://github.com/alchemyst/pipe-plot">GitHub</a></nav>
+  </div></header>
+  <main id="main" class="wrap">
+    <section class="intro" aria-labelledby="title">
+      <div><h1 id="title">Plot numbers from stdin.</h1>
+        <p>PipePlot is a macOS utility for following numbers over time. Pipe numeric output into <code>pp</code>, or have it run a command repeatedly.</p>
+        <p>Zoom, select a time range, and read off values while capture continues. Sessions are saved locally.</p>
+        <p class="metadata">macOS 27+ · Apple Silicon · MIT license</p>
+        <a class="text-link" href="https://github.com/alchemyst/pipe-plot/blob/main/docs/USAGE.md">Usage reference</a>
+      </div>
+      <figure><a href="assets/pipeplot.jpg" aria-label="View full-size PipePlot screenshot"><img src="assets/pipeplot.jpg" width="1800" height="1264" alt="PipePlot's native macOS window with two temperature curves, labelled peaks and time navigation." fetchpriority="high"></a><figcaption>PipePlot with synthetic temperature data. Click to enlarge.</figcaption></figure>
+    </section>
+    <section id="examples" aria-labelledby="examples-title">
+      <div class="section-heading"><h2 id="examples-title">Examples</h2><span class="tag">macOS · zsh / bash</span></div>
+      <p>These commands assume <code>pp</code> is installed and on your <code>PATH</code>. Each opens a new chart (<code>-c</code>). Stop a running example with <kbd>Ctrl-C</kbd>; captured data remains saved.</p>
+<article class="example" id="memory"><h3>Track a process’s memory</h3><p>Sample resident memory once a second, in KiB. This runs as written for your current shell; replace <code>$$</code> with another process ID to track that process.</p><div class="command"><div class="command-bar"><span>shell</span><button type="button" class="copy" aria-label="Copy track a process’s memory command" hidden>Copy</button></div><pre tabindex="0"><code>pp --watch &quot;ps -p $$ -o rss=&quot; --interval 1 \
+  -c -n rss -u KiB</code></pre></div><p class="note">RSS is resident memory, not the “Memory” figure in Activity Monitor. Sampling stops if the process exits.</p></article>
+<article class="example" id="load"><h3>Track system load</h3><p>Read the one-minute load average once a second. Uses the macOS <code>sysctl</code> command.</p><div class="command"><div class="command-bar"><span>shell</span><button type="button" class="copy" aria-label="Copy track system load command" hidden>Copy</button></div><pre tabindex="0"><code>pp --watch &#x27;sysctl -n vm.loadavg | awk &quot;{print \$2}&quot;&#x27; \
+  --interval 1 -c -n load</code></pre></div><p class="note">Adapted from the load-average example in <a href="https://github.com/tenox7/ttyplot#examples">ttyplot</a>.</p></article>
+<article class="example" id="ping"><h3>Plot ping times</h3><p>Plot 30 round-trip times in milliseconds. This example uses loopback; replace <code>127.0.0.1</code> with your router or another host.</p><div class="command"><div class="command-bar"><span>shell</span><button type="button" class="copy" aria-label="Copy plot ping times command" hidden>Copy</button></div><pre tabindex="0"><code>LC_ALL=C ping -c 30 127.0.0.1 |
+  sed -n -l &#x27;s/.*time=\([0-9.]*\) ms.*/\1/p&#x27; |
+  pp -c -n latency -u ms</code></pre></div><p class="note">Adapted from <a href="https://github.com/tenox7/ttyplot#ping-plot-with-sed">ttyplot</a> and <a href="https://github.com/cactusdynamics/wesplot#example-use-cases">wesplot</a>. On macOS, <code>sed -l</code> flushes each line. Headers and unanswered pings produce no samples.</p></article>
+<article class="example" id="rate"><h3>Plot a transfer rate with pv</h3><p>Send 20 MiB of zeroes to <code>/dev/null</code>, limited to 2 MiB/s, and plot bytes per second. Requires <code>pv</code> (<code>brew install pv</code>). No file is created.</p><div class="command"><div class="command-bar"><span>shell</span><button type="button" class="copy" aria-label="Copy plot a transfer rate with pv command" hidden>Copy</button></div><pre tabindex="0"><code>{ dd if=/dev/zero bs=1048576 count=20 2&gt;/dev/null |
+    pv -n -r -L 2m -i 0.5 &gt;/dev/null
+} 2&gt;&amp;1 | pp -c -n throughput -u B/s</code></pre></div><p class="note"><a href="https://www.ivarch.com/programs/quickref/pv.shtml">pv’s numeric rate output</a> goes to stderr. The group sends that output to <code>pp</code> and discards the transferred bytes. This is a rate-limited demonstration, not a disk benchmark.</p></article>
+<article class="example" id="test"><h3>Try two generated signals</h3><p>Generate two sine waves at one sample per second. No other command is needed.</p><div class="command"><div class="command-bar"><span>shell</span><button type="button" class="copy" aria-label="Copy try two generated signals command" hidden>Copy</button></div><pre tabindex="0"><code>pp --test 2 -c</code></pre></div><p class="note">Each input column becomes a separate line. All columns are values; timestamps are assigned when rows arrive.</p></article>
+    </section>
+    <section class="reference" aria-labelledby="input-title">
+      <h2 id="input-title">Input</h2>
+      <p>One row per sample, with spaces or tabs between numeric values. Each column becomes a line. Input is timestamped on receipt; a first column containing a timestamp is treated as another value.</p>
+      <p>Flush output from long-running producers so samples arrive promptly. With Python, use <code>python3 -u</code> or <code>print(value, flush=True)</code>. Use <code>pp --help</code> for options, or see the <a href="https://github.com/alchemyst/pipe-plot/blob/main/docs/USAGE.md">usage guide</a> for chart controls, selections and CSV export.</p>
+    </section>
+    <section class="reference" id="install" aria-labelledby="install-title">
+      <h2 id="install-title">Install from source</h2>
+      <p>Requires Apple Silicon, macOS 27 or later, Xcode with the macOS 27 SDK, <a href="https://just.systems/">just</a>, POV-Ray, and Python 3 with Pillow. There is no published binary release yet.</p>
+<div class="command"><div class="command-bar"><span>shell</span><button type="button" class="copy" aria-label="Copy installation command" hidden>Copy</button></div><pre tabindex="0"><code>git clone https://github.com/alchemyst/pipe-plot.git
+cd pipe-plot
+just install</code></pre></div>
+      <p>This installs <code>~/Applications/PipePlot.app</code> and <code>~/.local/bin/pp</code>. Add <code>~/.local/bin</code> to your <code>PATH</code> if needed. See <a href="https://github.com/alchemyst/pipe-plot/blob/main/docs/DEVELOPMENT.md">build instructions</a> for details and <a href="https://github.com/alchemyst/pipe-plot/releases">Releases</a> for future downloads.</p>
+    </section>
+    <section class="reference" aria-labelledby="related-title">
+      <h2 id="related-title">Related tools and inspiration</h2>
+      <p><a href="https://www.ivarch.com/programs/pv.shtml">pv</a> reports progress through a pipe. <a href="https://github.com/tenox7/ttyplot">ttyplot</a> plots stdin in a terminal. <a href="https://github.com/cactusdynamics/wesplot">wesplot</a> plots it in a browser. Their pipeline workflows and examples are inspiration for PipePlot, which uses a native macOS window and keeps a local capture history.</p>
+      <p>The examples above adapt those workflows to macOS and <code>pp</code>. See <a href="https://github.com/alchemyst/pipe-plot/blob/main/docs/SIMILAR_PROJECTS.md">similar projects</a> for more plotting tools.</p>
+    </section>
+  </main>
+  <footer class="wrap"><span>PipePlot · © 2026 Carl Sandrock</span><nav aria-label="Footer navigation"><a href="https://github.com/alchemyst/pipe-plot">Source</a><a href="https://github.com/alchemyst/pipe-plot/issues">Issues</a><a href="https://github.com/alchemyst/pipe-plot/blob/main/CONTRIBUTING.md">Contributing</a><a href="https://github.com/alchemyst/pipe-plot/blob/main/LICENSE">MIT</a></nav></footer>
+  <p id="copy-status" class="sr-only" role="status" aria-live="polite"></p>
+</body>
+</html>

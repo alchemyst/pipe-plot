@@ -53,7 +53,7 @@ packaging script locally.
 ## Build on your Mac
 
 Use Apple Silicon and an Xcode toolchain with the macOS 27 SDK, plus the icon
-build tools listed in the README. Create a notarization profile once; the
+build tools listed in the [development guide](DEVELOPMENT.md). Create a notarization profile once; the
 command prompts for the credentials if they are omitted:
 
 ```sh

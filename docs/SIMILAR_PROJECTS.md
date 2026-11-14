@@ -20,6 +20,7 @@ LabPlot’s named pipe is a filesystem endpoint created with `mkfifo`. Select th
 
 | Project | Where the workflows meet |
 | --- | --- |
+| [pv](https://www.ivarch.com/programs/pv.shtml) | Reports progress through a pipe; its numeric rate output can be sent to `pp`. See the [transfer-rate example](USAGE.md#plot-a-transfer-rate-with-pv). |
 | [Perfetto](https://perfetto.dev/docs/visualization/perfetto-ui) | Trace exploration with linked tracks, keyboard navigation and time-range selection. It is a reference for PipePlot’s timeline interaction. |
 | [Grafana](https://grafana.com/docs/grafana/latest/datasources/) | Dashboards and monitoring over configured data sources. [Grafana Cloud forecasting](https://grafana.com/docs/grafana-cloud/ai-tools/machine-learning/forecasting/) produces forecast metrics from a configured source. |
 
