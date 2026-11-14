@@ -35,7 +35,33 @@ published release asset was replaced.
   equality with the locally verified DMG before publishing.
 
 Local logs are in `.build/release-validation/` (ignored by Git).
-A clean-machine Gatekeeper installation, menu-based CLI installation on a
-fresh account, and Homebrew installation were not verified. This release does
-not add a Homebrew cask. Developer ID signing and notarization remain future
-release work.
+A clean-machine Gatekeeper installation and menu-based CLI installation on a
+fresh account were not verified. Developer ID signing and notarization remain
+future release work.
+
+## Homebrew distribution
+
+The same release asset is available through
+[alchemyst/homebrew-tap](https://github.com/alchemyst/homebrew-tap):
+
+```sh
+brew install --cask alchemyst/tap/pipe-plot
+```
+
+The cask installs the app and links its CLI as `pipeplot-pp`. It requires Apple
+Silicon and macOS 27 or later, preserves quarantine, and displays the preview
+notice. A version-specific audit exception permits this intentionally marked
+GitHub prerelease; it does not bypass macOS security checks.
+
+- Homebrew style and online cask audit passed.
+- Installation from the public tap downloaded the published DMG and linked the
+  CLI successfully, using an isolated app directory to preserve the existing
+  development installation.
+- Signature integrity passed and the installed app retained quarantine.
+- Launching the quarantined CLI produced macOS's “PipePlot.app Not Opened”
+  warning. The warning was dismissed; no security override was applied. A
+  successful first launch after user approval remains unverified.
+- Uninstall removed the test app and Homebrew CLI link, while preserving the
+  existing development app.
+- The cask generator was checked with both notarized and ad-hoc filenames,
+  checksum output, preview caveats, and an invalid filename.

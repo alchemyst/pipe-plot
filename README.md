@@ -36,6 +36,18 @@ memory, ping times and transfer rates with `pv`. Run `pp --help` for options.
 
 ## Install
 
+With [Homebrew](https://brew.sh/):
+
+```sh
+brew install --cask alchemyst/tap/pipe-plot
+```
+
+The Homebrew command is `pipeplot-pp`; use it wherever the examples say `pp`.
+Open PipePlot from Applications before the first capture. The same
+unnotarized-preview notice below applies to Homebrew installations.
+
+### Download the disk image
+
 [Download PipePlot 0.2.0 preview](https://github.com/alchemyst/pipe-plot/releases/download/v0.2.0/PipePlot-0.2.0-macos-arm64-adhoc.dmg) for **Apple Silicon, macOS 27 or later**.
 [Release notes and checksum](https://github.com/alchemyst/pipe-plot/releases/tag/v0.2.0).
 

@@ -57,6 +57,10 @@
     </section>
     <section class="reference" id="install" aria-labelledby="install-title">
       <h2 id="install-title">Install</h2>
+      <p>With <a href="https://brew.sh/">Homebrew</a>:</p>
+      <div class="command"><div class="command-bar"><span>shell</span><button type="button" class="copy" aria-label="Copy Homebrew installation command" hidden>Copy</button></div><pre tabindex="0"><code>brew install --cask alchemyst/tap/pipe-plot</code></pre></div>
+      <p>Homebrew installs the CLI as <code>pipeplot-pp</code>; use it wherever the examples say <code>pp</code>. Open PipePlot from Applications before the first capture. The same unnotarized-preview notice below applies. <a href="https://github.com/alchemyst/homebrew-tap">Tap source and update instructions</a>.</p>
+      <h3>Download the disk image</h3>
       <p><a href="https://github.com/alchemyst/pipe-plot/releases/download/v0.2.0/PipePlot-0.2.0-macos-arm64-adhoc.dmg">Download PipePlot 0.2.0 preview</a> for Apple Silicon and macOS 27 or later. <a href="https://github.com/alchemyst/pipe-plot/releases/tag/v0.2.0">Release notes and SHA-256 checksum</a>.</p>
       <p><strong>Unnotarized preview:</strong> this build is ad-hoc signed, without Developer ID signing or Apple notarization. macOS may block its first launch. See <a href="https://support.apple.com/en-us/102445">Apple’s instructions</a> if you choose to open it.</p>
       <ol><li>Open the DMG and drag <strong>PipePlot.app</strong> to <strong>Applications</strong>.</li><li>Open the installed app and choose <strong>PipePlot → Install pp Command…</strong>.</li><li>If Terminal cannot find <code>pp</code>, add the following to <code>~/.zprofile</code>, then open a new Terminal window.</li></ol>

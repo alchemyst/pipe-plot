@@ -82,18 +82,27 @@ binaries, and runs `pp --help` before moving the outputs into place.
 
 ## Publish the Homebrew cask
 
-Create a public GitHub repository named **`alchemyst/homebrew-tap`**. After
-publishing the GitHub release, use its final DMG (download it if Actions built
-it) to generate the cask in a local checkout of the tap:
+The public tap is [alchemyst/homebrew-tap](https://github.com/alchemyst/homebrew-tap).
+After publishing a GitHub release, use its final DMG (download it if Actions
+built it) to generate the cask in a local checkout of the tap:
 
 ```sh
-dmg=PipePlot-0.2.0-macos-arm64.dmg
+dmg=PipePlot-0.2.0-macos-arm64-adhoc.dmg
 gh release download v0.2.0 --pattern "$dmg"
 mkdir -p /path/to/homebrew-tap/Casks
 ./scripts/render-cask.sh "$dmg" > /path/to/homebrew-tap/Casks/pipe-plot.rb
 ```
 
-Commit and push `Casks/pipe-plot.rb`. Users can then run:
+The generator also accepts the future notarized filename without `-adhoc`.
+For ad-hoc builds, it preserves that suffix in the URL and adds explicit
+unnotarized-preview caveats. It does not disable quarantine or Gatekeeper.
+
+Run `brew style /path/to/homebrew-tap/Casks/pipe-plot.rb` and, once the tap is
+installed, `brew audit --cask --online alchemyst/tap/pipe-plot`. The tap's
+`audit_exceptions/github_prerelease_allowlist.json` permits only version 0.2.0
+as a GitHub prerelease, matching its preview status. Revisit that exception
+when publishing the next version. Commit and push the cask update. Users can
+then run:
 
 ```sh
 brew install --cask alchemyst/tap/pipe-plot
