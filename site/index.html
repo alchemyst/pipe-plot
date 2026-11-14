@@ -30,6 +30,7 @@
         <p>PipePlot is a macOS utility for following numbers over time. Pipe numeric output into <code>pp</code>, or have it run a command repeatedly.</p>
         <p>Zoom, select a time range, and read off values while capture continues. Sessions are saved locally.</p>
         <p class="metadata">macOS 27+ · Apple Silicon · MIT license</p>
+        <p class="download"><a href="https://github.com/alchemyst/pipe-plot/releases/download/v0.2.0/PipePlot-0.2.0-macos-arm64-adhoc.dmg">Download v0.2.0 preview</a><br><span class="note">Unnotarized · <a href="#install">Installation notes</a></span></p>
         <a class="text-link" href="https://github.com/alchemyst/pipe-plot/blob/main/docs/USAGE.md">Usage reference</a>
       </div>
       <figure><a href="assets/pipeplot.jpg" aria-label="View full-size PipePlot screenshot"><img src="assets/pipeplot.jpg" width="1800" height="1264" alt="PipePlot's native macOS window with two temperature curves, labelled peaks and time navigation." fetchpriority="high"></a><figcaption>PipePlot with synthetic temperature data. Click to enlarge.</figcaption></figure>
@@ -55,12 +56,17 @@
       <p>Flush output from long-running producers so samples arrive promptly. With Python, use <code>python3 -u</code> or <code>print(value, flush=True)</code>. Use <code>pp --help</code> for options, or see the <a href="https://github.com/alchemyst/pipe-plot/blob/main/docs/USAGE.md">usage guide</a> for chart controls, selections and CSV export.</p>
     </section>
     <section class="reference" id="install" aria-labelledby="install-title">
-      <h2 id="install-title">Install from source</h2>
-      <p>Requires Apple Silicon, macOS 27 or later, Xcode with the macOS 27 SDK, <a href="https://just.systems/">just</a>, POV-Ray, and Python 3 with Pillow. There is no published binary release yet.</p>
-<div class="command"><div class="command-bar"><span>shell</span><button type="button" class="copy" aria-label="Copy installation command" hidden>Copy</button></div><pre tabindex="0"><code>git clone https://github.com/alchemyst/pipe-plot.git
+      <h2 id="install-title">Install</h2>
+      <p><a href="https://github.com/alchemyst/pipe-plot/releases/download/v0.2.0/PipePlot-0.2.0-macos-arm64-adhoc.dmg">Download PipePlot 0.2.0 preview</a> for Apple Silicon and macOS 27 or later. <a href="https://github.com/alchemyst/pipe-plot/releases/tag/v0.2.0">Release notes and SHA-256 checksum</a>.</p>
+      <p><strong>Unnotarized preview:</strong> this build is ad-hoc signed, without Developer ID signing or Apple notarization. macOS may block its first launch. See <a href="https://support.apple.com/en-us/102445">Apple’s instructions</a> if you choose to open it.</p>
+      <ol><li>Open the DMG and drag <strong>PipePlot.app</strong> to <strong>Applications</strong>.</li><li>Open the installed app and choose <strong>PipePlot → Install pp Command…</strong>.</li><li>If Terminal cannot find <code>pp</code>, add the following to <code>~/.zprofile</code>, then open a new Terminal window.</li></ol>
+      <div class="command"><div class="command-bar"><span>shell</span><button type="button" class="copy" aria-label="Copy PATH setup command" hidden>Copy</button></div><pre tabindex="0"><code>export PATH="$HOME/.local/bin:$PATH"</code></pre></div>
+      <h3>Build from source</h3>
+      <p>Requires Xcode with the macOS 27 SDK, <a href="https://just.systems/">just</a>, POV-Ray, and Python 3 with Pillow.</p>
+<div class="command"><div class="command-bar"><span>shell</span><button type="button" class="copy" aria-label="Copy source build command" hidden>Copy</button></div><pre tabindex="0"><code>git clone https://github.com/alchemyst/pipe-plot.git
 cd pipe-plot
 just install</code></pre></div>
-      <p>This installs <code>~/Applications/PipePlot.app</code> and <code>~/.local/bin/pp</code>. Add <code>~/.local/bin</code> to your <code>PATH</code> if needed. See <a href="https://github.com/alchemyst/pipe-plot/blob/main/docs/DEVELOPMENT.md">build instructions</a> for details and <a href="https://github.com/alchemyst/pipe-plot/releases">Releases</a> for future downloads.</p>
+      <p>This installs <code>~/Applications/PipePlot.app</code> and <code>~/.local/bin/pp</code>. Add <code>~/.local/bin</code> to your <code>PATH</code> if needed. See <a href="https://github.com/alchemyst/pipe-plot/blob/main/docs/DEVELOPMENT.md">build instructions</a> for details.</p>
     </section>
     <section class="reference" aria-labelledby="related-title">
       <h2 id="related-title">Related tools and inspiration</h2>

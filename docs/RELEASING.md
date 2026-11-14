@@ -1,5 +1,8 @@
 # Releasing PipePlot for macOS
 
+The [0.2.0 preview](RELEASE_0.2.0.md) is an explicitly labelled, ad-hoc signed
+prerelease. The signing workflow below describes future notarized releases.
+
 The distribution is an Apple Silicon DMG for macOS 27 or later. It contains
 `PipePlot.app` and an Applications shortcut. Drag the app onto Applications,
 then open the installed copy. Use **PipePlot → Install pp Command…** to link

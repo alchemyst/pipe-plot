@@ -78,3 +78,10 @@ section[id], main { scroll-margin-top: 20px; }
   .example { padding: 16px; }
   pre { padding: 12px; font-size: 12px; }
 }
+
+.download > a { font-weight: 600; }
+.download .note { font-size: 12px; }
+.reference ol { padding-left: 22px; color: var(--muted); }
+.reference li { margin-block: 8px; }
+.reference h3 { margin-top: 24px; }
+.reference li code { font-size: .9em; overflow-wrap: anywhere; }

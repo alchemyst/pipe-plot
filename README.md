@@ -36,9 +36,26 @@ memory, ping times and transfer rates with `pv`. Run `pp --help` for options.
 
 ## Install
 
-Requires **Apple Silicon, macOS 27 or later**, Xcode with the macOS 27 SDK,
-[just](https://just.systems/), POV-Ray, and Python 3 with Pillow. No binary
-release has been published yet.
+[Download PipePlot 0.2.0 preview](https://github.com/alchemyst/pipe-plot/releases/download/v0.2.0/PipePlot-0.2.0-macos-arm64-adhoc.dmg) for **Apple Silicon, macOS 27 or later**.
+[Release notes and checksum](https://github.com/alchemyst/pipe-plot/releases/tag/v0.2.0).
+
+**Unnotarized preview:** this build is ad-hoc signed, without Developer ID
+signing or Apple notarization. macOS may block its first launch. See
+[Apple's instructions](https://support.apple.com/en-us/102445) if you choose to open it.
+
+1. Open the DMG and drag **PipePlot.app** to **Applications**.
+2. Open the installed app and choose **PipePlot → Install pp Command…**.
+3. If Terminal cannot find `pp`, add the following to `~/.zprofile`, then open
+   a new Terminal window:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+## Build from source
+
+Requires Xcode with the macOS 27 SDK, [just](https://just.systems/), POV-Ray,
+and Python 3 with Pillow.
 
 ```sh
 git clone https://github.com/alchemyst/pipe-plot.git
@@ -46,8 +63,7 @@ cd pipe-plot
 just install
 ```
 
-This installs `~/Applications/PipePlot.app` and `~/.local/bin/pp`. Add
-`~/.local/bin` to your `PATH` if needed. See the
+This installs `~/Applications/PipePlot.app` and `~/.local/bin/pp`. See the
 [development guide](docs/DEVELOPMENT.md) for toolchain and build details.
 
 ## Documentation

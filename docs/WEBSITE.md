@@ -40,9 +40,11 @@ See [GitHub's custom workflow documentation](https://docs.github.com/en/pages/ge
   identified as synthetic in the page caption. No user measurements are shown.
 
 The source-build instructions reflect the current macOS 27 / Apple Silicon
-requirements. No public binary releases existed when the page was created.
-When the first release is published, update both the website and README with
-the download link and the installation steps in [the release guide](RELEASING.md).
+requirements. The website and README link directly to the v0.2.0 unnotarized
+preview and label it as such. GitHub's `/releases/latest` endpoint does not
+select prereleases, so keep the explicit versioned download link until a
+stable release is available. Update both locations for subsequent releases.
+See [the release guide](RELEASING.md) for packaging and installation checks.
 Update the canonical and Open Graph URLs if the hosting address changes.
 
 ## Initial verification — 14 November 2026
